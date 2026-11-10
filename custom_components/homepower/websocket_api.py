@@ -51,7 +51,7 @@ def _settings(entry) -> dict:
 def _payload(hass: HomeAssistant) -> dict:
     mgr, entry = _mgr(hass), _entry(hass)
     return {
-        "devices": list(mgr.devices.values()),
+        "devices": mgr.public_devices(),
         "schedules": list(mgr.schedules.values()),
         "settings": _settings(entry) if entry else {},
         "catalogue": catalogue(),
@@ -64,7 +64,8 @@ def _payload(hass: HomeAssistant) -> dict:
 def async_register(hass: HomeAssistant) -> None:
     for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device,
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
-                ws_override, ws_clear_override):
+                ws_override, ws_clear_override,
+                ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control):
         websocket_api.async_register_command(hass, cmd)
 
 
@@ -207,4 +208,50 @@ async def ws_clear_override(hass, msg):
     coord = _mgr(hass).coordinator
     coord.clear_override(msg["device_ids"] or None)
     await coord.async_request_refresh()
+    return {}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/discover/anker"})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_discover_anker(hass, msg):
+    """Scan the local network for Anker batteries that have Modbus TCP switched on."""
+    return {"found": await _mgr(hass).discover_anker()}
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "homepower/discover/ecoflow",
+    vol.Required("region"): str, vol.Required("access_key"): str, vol.Required("secret_key"): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_discover_ecoflow(hass, msg):
+    return {"devices": await _mgr(hass).discover_ecoflow(msg["region"], msg["access_key"], msg["secret_key"])}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/probe", vol.Required("device"): dict})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_probe(hass, msg):
+    """Read the battery once (no writes) so the user can see it works before saving."""
+    return await _mgr(hass).probe(msg["device"])
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "homepower/device/control",
+    vol.Required("device_id"): str, vol.Required("enabled"): bool,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_control(hass, msg):
+    """Allow / stop HomePower sending commands to one battery (monitor-only when off)."""
+    mgr = _mgr(hass)
+    dev = mgr.devices.get(msg["device_id"])
+    if dev is None:
+        raise ValidationError("unknown battery")
+    await mgr.save_device({**dev, "control_enabled": msg["enabled"]})
     return {}

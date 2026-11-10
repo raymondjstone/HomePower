@@ -10,6 +10,9 @@ class DeviceAdapter(ABC):
     def __init__(self, config: DeviceConfig) -> None:
         self.config = config
 
+    async def close(self) -> None:
+        """Release connections (default: nothing to release)."""
+
     @abstractmethod
     async def read(self) -> Actual:
         """Read current state. Must never write."""

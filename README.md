@@ -2,20 +2,22 @@
 
 A Home Assistant custom integration that acts as a **central battery manager** for:
 
-| Battery | Upstream HA integration (HomePower drives its entities) | Modes HomePower can use |
+HomePower connects to your batteries **directly**. It does not need, use or depend on any other Anker or
+EcoFlow integration (the open-source ones were only a reference for the protocols).
+
+| Battery | How HomePower connects | Modes |
 |---|---|---|
-| Anker SOLIX Solarbank Max AC / Max, XE AC / XE, Solarbank 4 E5000 Pro | [anker-charging/ha-anker-solix-official](https://github.com/anker-charging/ha-anker-solix-official) (local Modbus TCP) | Auto, Charge, Discharge, Hold |
-| Anker SOLIX X1 | [afewyards/anker-x1-ha](https://github.com/afewyards/anker-x1-ha) or [cbource/anker-solix-x1-modbus](https://github.com/cbource/anker-solix-x1-modbus) (local Modbus TCP) | Auto, Charge, Discharge, Hold |
-| EcoFlow STREAM AC / Pro / Ultra / Ultra X, STREAM AC 5000 (ES5000, to confirm) | [tolwi/hassio-ecoflow-cloud](https://github.com/tolwi/hassio-ecoflow-cloud) | Auto, Hold only |
-| EcoFlow STREAM Ultra X / Max | [htims1989/ecoflow-public-api](https://github.com/htims1989/ecoflow-public-api) | Auto, Hold only |
-| Anything else with a mode select + power number | any | Auto, Charge, Discharge, Hold |
+| Anker SOLIX Solarbank Max AC / Max, XE AC / XE, Solarbank 4 E5000 Pro, X1 | Local **Modbus TCP** on your network (switch it on in the Anker app: device > Settings > Three-Party Control). HomePower scans your network and finds the battery. | Auto, Charge, Discharge, Hold |
+| EcoFlow STREAM AC / Pro / Ultra / Ultra X / Max (and AC 5000, model to confirm) | EcoFlow's own **developer API**: create an Access Key and Secret Key at developer.ecoflow.com; HomePower lists the batteries on your account. | Auto, Hold only |
+| Anything else | Advanced: choose Home Assistant entities that read and control it. | Auto, Charge, Discharge, Hold |
 
-**EcoFlow limitation:** those integrations expose no charge/discharge power setpoint. Auto = self-powered; Hold = backup reserve raised to 95% (no discharge; solar still charges). Cheap-rate grid charging is not possible on STREAM through them. Unverified on hardware.
+New batteries start in **monitor-only** mode: HomePower reads and shows them but sends no commands until you allow control.
 
-**Regions:** HomePower only uses HA entities, so it works wherever the upstream integration does. Use the matching EcoFlow API host (`api-e.ecoflow.com` EU, `api.ecoflow.com` global/US). Anker grid feed-in is off by default in IT/ES/TH/VN/PH.
+**EcoFlow limitation:** EcoFlow's API has no charge/discharge power setpoint. Auto = self-powered; Hold = backup reserve raised to 95% (no discharge; solar still charges).
 
-HomePower does **not** reimplement the vendor protocols. Each device gets an adapter that drives the
-entities of the upstream integration; the scheduling, coordination and settings-protection logic lives here.
+**Regions:** Anker control is local (works in any region); grid feed-in is off by default in IT/ES/TH/VN/PH. For EcoFlow pick your account's region (`api-e.ecoflow.com` Europe, `api.ecoflow.com` global/US).
+
+**Unverified on hardware:** the Anker register map and EcoFlow API calls follow the vendors' published behaviour and are tested against simulators only. Use monitor-only first and check the readings.
 
 ## Status: stage 0 (scaffold)
 
@@ -41,7 +43,7 @@ See [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Known limits
 
-- Entity names and option strings come from reading each upstream integration's source; none of it has been run against real hardware yet.
+- The Anker Modbus and EcoFlow API drivers have only been run against simulators, not real hardware. New batteries are monitor-only until you allow control.
 - If Home Assistant is hard-killed (power cut) while a battery is being forced, it stays in that mode until HomePower next starts and releases it. The X1's own comms watchdog (upstream `set_watchdog` service) is not configured by HomePower.
 
 ## Development

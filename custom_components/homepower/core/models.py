@@ -47,6 +47,9 @@ class Actual:
     target_soc: int | None = None
     reserve_soc: int | None = None
     protected: bool = False         # manufacturer protection/calibration active
+    grid_w: float | None = None     # house grid power if the device can see it (+ importing)
+    pv_w: float | None = None
+    load_w: float | None = None
 
 
 @dataclass(slots=True)

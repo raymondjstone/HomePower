@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -22,13 +22,17 @@ def _info(entry: ConfigEntry) -> DeviceInfo:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     coord: HomePowerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    add([BatteryFlow(coord, entry), StoredEnergy(coord, entry)])
+    add([BatteryFlow(coord, entry), StoredEnergy(coord, entry), GridPower(coord, entry)])
     known: set[str] = set()
 
     def _sync() -> None:
         new = [a.config for a in coord.adapters if a.config.device_id not in known]
         known.update(c.device_id for c in new)
-        add([BatteryTarget(coord, entry, c.device_id, c.name) for c in new])
+        ents = []
+        for c in new:
+            ents += [BatterySoc(coord, entry, c.device_id, c.name), BatteryDevicePower(coord, entry, c.device_id, c.name),
+                     BatteryTarget(coord, entry, c.device_id, c.name)]
+        add(ents)
 
     _sync()
     entry.async_on_unload(coord.async_add_listener(_sync))
@@ -106,3 +110,63 @@ class BatteryTarget(_Base):
         v = self.coordinator.view()["devices"].get(self._did, {})
         return {k: v.get(k) for k in ("decision", "desired_power_w", "mode", "soc", "power_w", "online",
                                      "active_schedules", "override", "last_error")}
+
+
+class GridPower(_Base):
+    """House grid power as seen by the batteries / your grid sensor: + importing, - exporting."""
+
+    _attr_name = "Grid power"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+
+    def __init__(self, coord, entry) -> None:
+        super().__init__(coord, entry)
+        self._attr_unique_id = f"{entry.entry_id}_grid_power"
+
+    @property
+    def native_value(self):
+        v = self.coordinator.view().get("grid_w")
+        return None if v is None else round(v)
+
+
+class _BatteryBase(_Base):
+    def __init__(self, coord, entry, device_id: str, name: str, suffix: str, label: str) -> None:
+        super().__init__(coord, entry)
+        self._did = device_id
+        self._attr_name = f"{name} {label}"
+        self._attr_unique_id = f"{entry.entry_id}_{device_id}_{suffix}"
+
+    def _actual(self):
+        st = self.coordinator._snap.devices.get(self._did)
+        return st.actual if st and st.actual and st.actual.online else None
+
+
+class BatterySoc(_BatteryBase):
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+        super().__init__(coord, entry, device_id, name, "soc", "charge")
+
+    @property
+    def native_value(self):
+        a = self._actual()
+        return None if a is None or a.soc is None else round(a.soc, 1)
+
+
+class BatteryDevicePower(_BatteryBase):
+    """+ charging, - discharging."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+
+    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+        super().__init__(coord, entry, device_id, name, "power", "power")
+
+    @property
+    def native_value(self):
+        a = self._actual()
+        return None if a is None or a.power_w is None else round(a.power_w)

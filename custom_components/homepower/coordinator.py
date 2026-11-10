@@ -127,6 +127,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         st = self.hass.states.get(entity_id)
         return bool(st and st.state == "on")
 
+    async def async_close(self) -> None:
+        for a in self.adapters:
+            await a.close()
+
     async def release_all(self) -> None:
         """Best effort on shutdown: hand every battery we forced back to its own control."""
         if self.paused:
@@ -170,6 +174,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "desired_power_w": want.power_w if want else None,
                 "decision": st.decision.value if st.decision else None,
                 "managed": want is not None,
+                "control_enabled": bool(a.config.extra.get("control_enabled", True)),
                 "active_schedules": active,
                 "override": ({"mode": ov[0].mode.value, "power_w": ov[0].power_w, "until": ov[1].isoformat()}
                              if (ov := self.overrides.get(did)) else None),
@@ -179,6 +184,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         return {
             "devices": out,
             "events": [list(e) for e in list(self._snap.events)[-60:]],
+            "grid_w": self._grid_import_w({a.config.device_id: s.actual for a in self.adapters
+                                           if (s := self._snap.devices.get(a.config.device_id)) and s.actual}),
             "now": now.isoformat(),
             "paused": self.paused,
         }
@@ -187,19 +194,25 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self._snap.events.append((dt_util.now().isoformat(), device_id, msg))
         _LOGGER.info("%s: %s", device_id, msg)
 
-    def _grid_import_w(self) -> float | None:
+    def _grid_import_w(self, actuals: dict | None = None) -> float | None:
+        """House grid power (+ importing). Prefer the sensor the user chose; otherwise use a
+        battery that can see the grid meter itself (Anker / EcoFlow report it)."""
         st = self.hass.states.get(self.grid_import_entity) if self.grid_import_entity else None
         try:
             v = float(st.state)  # type: ignore[union-attr]
+            return -v if self.grid_invert else v
         except (AttributeError, TypeError, ValueError):
-            return None
-        return -v if self.grid_invert else v
+            pass
+        for a in (actuals or {}).values():
+            if a.online and a.grid_w is not None:
+                return a.grid_w
+        return None
 
     def _zero_import_desired(self, actuals: dict[str, Actual]) -> Desired:
         zid = self.zero_import_device
         a = next(x for x in self.adapters if x.config.device_id == zid)
         act = actuals[zid]
-        grid = self._grid_import_w()
+        grid = self._grid_import_w(actuals)
         if grid is None or not act.online:
             return desired_for(None, a.config.caps, act.soc)  # fail safe: HOLD
         # Deliberate charging on other batteries is not "import" to be cancelled.
@@ -251,7 +264,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             apply_totals(
                 {k: (d, by_id[k].config.caps, by_id[k].config.priority) for k, d in wants.items()},
                 charge_ceiling(
-                    self.charge_cap_w, self.import_limit_w, self._grid_import_w(),
+                    self.charge_cap_w, self.import_limit_w, self._grid_import_w(actuals),
                     sum(x.power_w or 0.0 for x in actuals.values() if x.online),
                 ),
                 self.discharge_cap_w,
@@ -268,8 +281,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 st.decision = None
                 st.guard_held = False
                 continue
-            if self.paused:
-                st.decision = None
+            if self.paused or not a.config.extra.get("control_enabled", True):
+                st.decision = None  # monitor-only: read and report, never write
                 continue
             if st.desired.mode is Mode.AUTO and st.actual.online and st.actual.mode in (Mode.AUTO, None):
                 self._set_release(did, st, False)  # handed back and confirmed

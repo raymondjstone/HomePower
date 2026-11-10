@@ -1,6 +1,8 @@
 """Native Home Assistant forms (Configure button) for batteries and schedules.
 
-A second, panel-free way to manage HomePower, so setup never depends on the custom sidebar panel.
+Batteries are connected to directly: Anker over Modbus TCP (found by scanning your network) and
+EcoFlow through your EcoFlow developer keys (devices listed from your account). No other integration
+is needed. New batteries start in monitor-only mode until you allow control.
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ from homeassistant.helpers import selector as sel
 
 from ._schema import vol
 from .const import DOMAIN
-from .core.profiles import PROFILE_BY_ID, PROFILES, STRATEGIES
+from .core.profiles import DRIVERS, PROFILE_BY_ID, PROFILES
 from .core.serde import ValidationError
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -28,16 +30,36 @@ def _slug(s: str) -> str:
 
 
 def _num(lo, hi, unit=None, step=1):
-    return sel.NumberSelector(sel.NumberSelectorConfig(min=lo, max=hi, step=step, unit_of_measurement=unit, mode=sel.NumberSelectorMode.BOX))
+    cfg = {"min": lo, "max": hi, "step": step, "mode": sel.NumberSelectorMode.BOX}
+    if unit:  # the validator rejects unit_of_measurement=None
+        cfg["unit_of_measurement"] = unit
+    return sel.NumberSelector(sel.NumberSelectorConfig(**cfg))
 
 
-def _dropdown(options):
-    return sel.SelectSelector(sel.SelectSelectorConfig(options=options, mode=sel.SelectSelectorMode.DROPDOWN))
+def _dropdown(options, custom=False):
+    return sel.SelectSelector(sel.SelectSelectorConfig(options=options, custom_value=custom, mode=sel.SelectSelectorMode.DROPDOWN))
+
+
+def _readings(info: dict) -> str:
+    if not info:
+        return ""
+    bits = []
+    if info.get("model"):
+        bits.append(str(info["model"]))
+    if info.get("soc") is not None:
+        bits.append(f"charge {info['soc']:.0f}%")
+    if info.get("power_w") is not None:
+        p = info["power_w"]
+        bits.append("idle" if abs(p) < 20 else f"{'charging' if p > 0 else 'discharging'} {abs(p):.0f} W")
+    return ", ".join(bits)
 
 
 class HomePowerOptionsFlow(config_entries.OptionsFlow):
     def __init__(self) -> None:
         self._d: dict = {}
+        self._info: dict = {}
+        self._found: list[dict] | None = None
+        self._eco_devices: list[dict] = []
 
     def _mgr(self):
         return self.hass.data.get(DOMAIN, {}).get("manager")
@@ -45,40 +67,118 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
     def _done(self):
         return self.async_create_entry(data=dict(self.config_entry.options))
 
+    def _driver(self) -> str:
+        return PROFILE_BY_ID[self._d["kind"]]["driver"]
+
     async def async_step_init(self, user_input=None):
         mgr = self._mgr()
         if mgr is None:
             return self.async_abort(reason="not_loaded")
         menu = ["add_battery", "add_schedule"]
         if mgr.devices:
-            menu.append("remove_battery")
+            menu += ["control_battery", "remove_battery"]
         if mgr.schedules:
             menu.append("remove_schedule")
         return self.async_show_menu(step_id="init", menu_options=menu)
 
-    # ---- add battery ----
+    # ---------------------------------------------------------------- add battery
     async def async_step_add_battery(self, user_input=None):
         if user_input is not None:
             self._d = {"name": user_input["name"].strip(), "kind": user_input["kind"]}
-            return await self.async_step_battery_details()
+            driver = self._driver()
+            if driver == "anker_modbus":
+                return await self.async_step_anker_find()
+            if driver == "ecoflow_stream":
+                return await self.async_step_ecoflow_account()
+            return await self.async_step_entity_details()
         options = [{"value": p["id"], "label": p["label"]} for p in PROFILES]
         return self.async_show_form(step_id="add_battery", data_schema=vol.Schema({
             vol.Required("name"): str,
             vol.Required("kind", default=PROFILES[0]["id"]): _dropdown(options),
         }))
 
-    def _spec(self):
-        return STRATEGIES[PROFILE_BY_ID[self._d["kind"]]["strategy"]]
+    # ---- Anker: scan the network, then read the battery to prove it works
+    async def async_step_anker_find(self, user_input=None):
+        mgr = self._mgr()
+        errors, detail = {}, ""
+        if user_input is not None:
+            conn = {"host": str(user_input["host"]).strip(), "port": int(user_input.get("port", 502))}
+            try:
+                self._info = await mgr.probe({"kind": self._d["kind"], "connection": conn})
+                self._d["connection"] = conn
+                return await self.async_step_battery_details()
+            except ValidationError as err:
+                errors, detail = {"base": "cannot_connect"}, str(err)
+        if self._found is None:
+            self._found = await mgr.discover_anker()
+        options = [{"value": f["host"], "label": f"{f['host']} - {f.get('model') or 'Anker battery'} ({f['soc']}%)"} for f in self._found]
+        host = _dropdown(options, custom=True) if options else str
+        host_key = vol.Required("host", default=self._found[0]["host"]) if self._found else vol.Required("host")
+        return self.async_show_form(
+            step_id="anker_find", errors=errors,
+            data_schema=vol.Schema({host_key: host,
+                                    vol.Optional("port", default=502): _num(1, 65535)}),
+            description_placeholders={"found": f"{len(self._found)} found on your network" if self._found else "none found automatically - enter its IP address",
+                                      "error": detail})
 
+    # ---- EcoFlow: account keys -> list devices -> pick one
+    async def async_step_ecoflow_account(self, user_input=None):
+        errors, detail = {}, ""
+        if user_input is not None:
+            try:
+                self._d["connection"] = {"region": user_input["region"], "access_key": user_input["access_key"].strip(),
+                                         "secret_key": user_input["secret_key"].strip()}
+                self._eco_devices = await self._mgr().discover_ecoflow(**self._d["connection"])
+                if not self._eco_devices:
+                    raise ValidationError("no devices on that EcoFlow account")
+                return await self.async_step_ecoflow_device()
+            except ValidationError as err:
+                errors, detail = {"base": "cannot_connect"}, str(err)
+        region = DRIVERS["ecoflow_stream"]["connection"][0]["options"]
+        return self.async_show_form(
+            step_id="ecoflow_account", errors=errors,
+            data_schema=vol.Schema({vol.Required("region", default="eu"): _dropdown(region),
+                                    vol.Required("access_key"): str, vol.Required("secret_key"): str}),
+            description_placeholders={"error": detail})
+
+    async def async_step_ecoflow_device(self, user_input=None):
+        errors, detail = {}, ""
+        if user_input is not None:
+            self._d["connection"]["sn"] = user_input["sn"]
+            try:
+                self._info = await self._mgr().probe({"kind": self._d["kind"], "connection": self._d["connection"]})
+                return await self.async_step_battery_details()
+            except ValidationError as err:
+                errors, detail = {"base": "cannot_connect"}, str(err)
+        opts = [{"value": d["sn"], "label": f"{d['name']} ({d['sn']}){'' if d['online'] else ' - offline'}"} for d in self._eco_devices]
+        return self.async_show_form(step_id="ecoflow_device", errors=errors,
+                                    data_schema=vol.Schema({vol.Required("sn", default=opts[0]["value"]): _dropdown(opts)}),
+                                    description_placeholders={"error": detail})
+
+    # ---- limits + control switch (direct batteries)
     async def async_step_battery_details(self, user_input=None):
-        spec = self._spec()
+        if user_input is not None:
+            self._d.update({k: user_input[k] for k in ("capacity_wh", "max_charge_w", "max_discharge_w", "min_soc") if k in user_input})
+            self._d["control_enabled"] = bool(user_input.get("control_enabled", False))
+            return await self._save_battery()
+        i = self._info
+        cap = vol.Required("capacity_wh", default=i["capacity_wh"]) if i.get("capacity_wh") else vol.Required("capacity_wh")
+        mc = vol.Required("max_charge_w", default=i["max_charge_w"]) if i.get("max_charge_w") else vol.Required("max_charge_w")
+        md = vol.Required("max_discharge_w", default=i["max_discharge_w"]) if i.get("max_discharge_w") else vol.Required("max_discharge_w")
+        return self.async_show_form(step_id="battery_details", data_schema=vol.Schema({
+            cap: _num(100, 200000, "Wh", 10), mc: _num(0, 50000, "W", 50), md: _num(0, 50000, "W", 50),
+            vol.Required("min_soc", default=10): _num(0, 100, "%"),
+            vol.Optional("control_enabled", default=False): bool,
+        }), description_placeholders={"readings": _readings(i) or "connected"})
+
+    # ---- advanced: any battery via Home Assistant entities
+    async def async_step_entity_details(self, user_input=None):
+        spec = DRIVERS["entities"]
         if user_input is not None:
             self._d.update({k: user_input[k] for k in ("capacity_wh", "max_charge_w", "max_discharge_w", "min_soc") if k in user_input})
             self._d["invert_power"] = bool(user_input.get("invert_power", False))
             self._d["entities"] = {f["k"]: user_input[f"e_{f['k']}"] for f in spec["entities"] if user_input.get(f"e_{f['k']}")}
-            if any(m["entity"] in self._d["entities"] for m in spec["mode_map"]):
-                return await self.async_step_battery_modes()
-            return await self._save_battery()
+            return await self.async_step_battery_modes()
         fields: dict = {
             vol.Required("capacity_wh"): _num(100, 200000, "Wh", 10),
             vol.Required("max_charge_w"): _num(0, 50000, "W", 50),
@@ -88,27 +188,23 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         for f in spec["entities"]:
             marker = vol.Required if f["req"] else vol.Optional
             fields[marker(f"e_{f['k']}")] = sel.EntitySelector(sel.EntitySelectorConfig(domain=f["domains"]))
-        if any(f["k"] == "power" for f in spec["entities"]):
-            fields[vol.Optional("invert_power", default=bool(spec.get("defaults", {}).get("invert_power", False)))] = bool
-        return self.async_show_form(step_id="battery_details", data_schema=vol.Schema(fields),
-                                    description_placeholders={"model": PROFILE_BY_ID[self._d["kind"]]["label"]})
+        fields[vol.Optional("invert_power", default=False)] = bool
+        return self.async_show_form(step_id="entity_details", data_schema=vol.Schema(fields))
 
     async def async_step_battery_modes(self, user_input=None):
-        spec = self._spec()
+        spec = DRIVERS["entities"]
         if user_input is not None:
             self._d["mode_map"] = {m["k"]: user_input[f"mm_{m['k']}"] for m in spec["mode_map"] if user_input.get(f"mm_{m['k']}")}
+            self._d["control_enabled"] = True
             return await self._save_battery()
         fields: dict = {}
         for m in spec["mode_map"]:
-            eid = self._d["entities"].get(m["entity"])
-            if not eid:
-                continue
-            st = self.hass.states.get(eid)
+            st = self.hass.states.get(self._d["entities"].get(m["entity"], ""))
             opts = list((st.attributes.get("options") if st else None) or [])
             guess = next((o for o in opts if m["rx"] and re.search(m["rx"], o, re.I)), None)
             marker = vol.Optional if m["optional"] else vol.Required
             key = marker(f"mm_{m['k']}", default=guess) if guess else marker(f"mm_{m['k']}")
-            fields[key] = sel.SelectSelector(sel.SelectSelectorConfig(options=opts, custom_value=True, mode=sel.SelectSelectorMode.DROPDOWN)) if opts else str
+            fields[key] = _dropdown(opts, custom=True) if opts else str
         return self.async_show_form(step_id="battery_modes", data_schema=vol.Schema(fields))
 
     async def _save_battery(self):
@@ -119,7 +215,19 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
         return self._done()
 
-    # ---- add schedule ----
+    async def async_step_control_battery(self, user_input=None):
+        mgr = self._mgr()
+        if user_input is not None:
+            dev = mgr.devices[user_input["device"]]
+            await mgr.save_device({**dev, "control_enabled": bool(user_input["enabled"])})
+            return self._done()
+        opts = [{"value": d["device_id"], "label": f"{d['name']} - {'control ON' if d.get('control_enabled', True) else 'monitor only'}"} for d in mgr.devices.values()]
+        return self.async_show_form(step_id="control_battery", data_schema=vol.Schema({
+            vol.Required("device", default=opts[0]["value"]): _dropdown(opts),
+            vol.Required("enabled", default=True): bool,
+        }))
+
+    # ---------------------------------------------------------------- schedules
     async def async_step_add_schedule(self, user_input=None):
         mgr = self._mgr()
         if user_input is not None:
@@ -150,7 +258,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         }
         return self.async_show_form(step_id="add_schedule", data_schema=vol.Schema(fields))
 
-    # ---- remove ----
+    # ---------------------------------------------------------------- remove
     async def async_step_remove_battery(self, user_input=None):
         mgr = self._mgr()
         if user_input is not None:

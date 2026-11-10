@@ -46,3 +46,31 @@ def test_all_day_needs_condition():
         schedule_from_dict({**SCH, "all_day": True})
     e = schedule_from_dict({**SCH, "all_day": True, "condition_entity": "binary_sensor.cheap_rate"})
     assert schedule_from_dict(schedule_to_dict(e)) == e
+
+
+ANKER = {"device_id": "x1", "name": "X1", "kind": "anker_x1", "capacity_wh": 5000, "max_charge_w": 3000,
+         "max_discharge_w": 3000, "min_soc": 10, "connection": {"host": "192.168.1.50"}}
+ECO = {"device_id": "e", "name": "E", "kind": "ecoflow_stream_ultra_x", "capacity_wh": 5000, "max_charge_w": 2300,
+       "max_discharge_w": 2300, "connection": {"region": "eu", "access_key": "a", "secret_key": "s", "sn": "BK61"}}
+
+
+def test_anker_direct_defaults_to_monitor_only_and_roundtrips():
+    c = device_from_dict(ANKER)
+    assert c.extra["connection"] == {"host": "192.168.1.50", "port": 502, "unit_id": 1}
+    assert c.extra["control_enabled"] is False and c.extra["watchdog"] is True and c.extra["restore_mode"] == 20
+    assert Mode.CHARGE in c.caps.supported_modes
+    assert device_from_dict(device_to_dict(c)) == c
+    assert device_from_dict({**ANKER, "control_enabled": True}).extra["control_enabled"] is True
+
+
+def test_direct_connection_validation():
+    with pytest.raises(ValidationError):
+        device_from_dict({**ANKER, "connection": {}})
+    with pytest.raises(ValidationError):
+        device_from_dict({**ECO, "connection": {"region": "eu", "access_key": "a"}})
+    with pytest.raises(ValidationError):
+        device_from_dict({**ECO, "connection": {**ECO["connection"], "region": "mars"}})
+
+
+def test_ecoflow_only_auto_and_hold():
+    assert device_from_dict(ECO).caps.supported_modes == {Mode.AUTO, Mode.HOLD}

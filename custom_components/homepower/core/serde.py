@@ -5,7 +5,7 @@ from datetime import date, time
 from typing import Any
 
 from .models import Capabilities, Desired, DeviceConfig, Mode
-from .profiles import PROFILE_BY_ID, STRATEGIES
+from .profiles import DRIVERS, PROFILE_BY_ID
 from .schedule import ALL_DAYS, ScheduleEntry
 
 
@@ -39,6 +39,28 @@ def _time(s: Any, name: str) -> time:
         raise ValidationError(f"{name} must be HH:MM") from e
 
 
+def _connection(driver: str, raw: dict) -> dict:
+    raw = raw or {}
+    if driver == "anker_modbus":
+        host = str(raw.get("host") or "").strip()
+        if not host:
+            raise ValidationError("the battery's IP address is required")
+        return {"host": host, "port": _int(raw.get("port"), "port", 1, 65535, 502),
+                "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, 1)}
+    if driver == "ecoflow_stream":
+        region = str(raw.get("region") or "eu")
+        if region not in ("eu", "global"):
+            raise ValidationError("region must be eu or global")
+        out = {"region": region}
+        for k, label in (("access_key", "Access Key"), ("secret_key", "Secret Key"), ("sn", "device")):
+            v = str(raw.get(k) or "").strip()
+            if not v:
+                raise ValidationError(f"{label} is required")
+            out[k] = v
+        return out
+    return {}
+
+
 def device_from_dict(d: dict) -> DeviceConfig:
     did = str(d.get("device_id") or "").strip()
     if not did:
@@ -46,8 +68,8 @@ def device_from_dict(d: dict) -> DeviceConfig:
     name = str(d.get("name") or "").strip() or did
     kind = str(d.get("kind") or "custom")
     profile = PROFILE_BY_ID.get(kind) or PROFILE_BY_ID["custom"]
-    strategy = profile["strategy"]
-    spec = STRATEGIES[strategy]
+    driver = profile["driver"]
+    spec = DRIVERS[driver]
     modes = frozenset(Mode(m) for m in spec["modes"])
     caps = Capabilities(
         capacity_wh=_int(d.get("capacity_wh"), "capacity", 100, 200000),
@@ -56,31 +78,24 @@ def device_from_dict(d: dict) -> DeviceConfig:
         min_soc=_int(d.get("min_soc"), "minimum SOC", 0, 100, 0),
         supported_modes=modes,
     )
-    valid_keys = {f["k"] for f in spec["entities"]}
-    ents = {k: str(v).strip() for k, v in (d.get("entities") or {}).items() if k in valid_keys and v}
-    for f in spec["entities"]:
-        if f["req"] and f["k"] not in ents:
-            raise ValidationError(f"entity '{f['label']}' is required")
-    one_of = spec.get("needs_one_of")
-    if one_of and not any(k in ents for k in one_of):
-        raise ValidationError("pick at least one of: " + ", ".join(one_of))
-    valid_mm = {m["k"]: m for m in spec["mode_map"]}
-    mode_map = {k: v for k, v in (d.get("mode_map") or {}).items() if k in valid_mm and v}
-    for k, m in valid_mm.items():
-        # Mode names are only needed for entities that were actually mapped.
-        needed = not m["optional"] and (m["entity"] in ents)
-        if strategy == "signed_setpoint" and "engage" not in ents:
-            needed = True
-        if needed and k not in mode_map:
-            raise ValidationError(f"select option for '{m['label']}' is required")
-    defaults = spec.get("defaults", {})
-    extra = {
-        "strategy": strategy, "entities": ents, "mode_map": mode_map,
-        "invert_power": bool(d.get("invert_power", defaults.get("invert_power", False))),
-    }
-    for k in ("discharge_positive", "hold_reserve"):
-        if k in defaults:
-            extra[k] = defaults[k]
+    extra: dict = {"driver": driver}
+    if driver == "entities":
+        valid_keys = {f["k"] for f in spec["entities"]}
+        ents = {k: str(v).strip() for k, v in (d.get("entities") or {}).items() if k in valid_keys and v}
+        for f in spec["entities"]:
+            if f["req"] and f["k"] not in ents:
+                raise ValidationError(f"entity '{f['label']}' is required")
+        valid_mm = {m["k"] for m in spec["mode_map"]}
+        mode_map = {k: v for k, v in (d.get("mode_map") or {}).items() if k in valid_mm and v}
+        for m in spec["mode_map"]:
+            if not m["optional"] and m["k"] not in mode_map:
+                raise ValidationError(f"select option for '{m['label']}' is required")
+        extra.update(strategy="generic", entities=ents, mode_map=mode_map,
+                     invert_power=bool(d.get("invert_power", False)), control_enabled=bool(d.get("control_enabled", True)))
+    else:
+        extra.update(connection=_connection(driver, d.get("connection")),
+                     restore_mode=int(profile.get("restore_mode", 0)), watchdog=bool(profile.get("watchdog", False)),
+                     control_enabled=bool(d.get("control_enabled", False)))  # monitor-only until the user opts in
     return DeviceConfig(
         device_id=did, name=name, kind=kind, caps=caps,
         priority=_int(d.get("priority"), "priority", -100, 100, 0), extra=extra,
@@ -88,13 +103,16 @@ def device_from_dict(d: dict) -> DeviceConfig:
 
 
 def device_to_dict(c: DeviceConfig) -> dict:
+    e = c.extra
     return {
         "device_id": c.device_id, "name": c.name, "kind": c.kind, "priority": c.priority,
         "capacity_wh": c.caps.capacity_wh, "max_charge_w": c.caps.max_charge_w,
         "max_discharge_w": c.caps.max_discharge_w, "min_soc": c.caps.min_soc,
         "supported_modes": sorted(m.value for m in c.caps.supported_modes),
-        "entities": c.extra.get("entities", {}), "mode_map": c.extra.get("mode_map", {}),
-        "invert_power": bool(c.extra.get("invert_power", False)),
+        "driver": e.get("driver", "entities"), "connection": e.get("connection", {}),
+        "control_enabled": bool(e.get("control_enabled", True)),
+        "entities": e.get("entities", {}), "mode_map": e.get("mode_map", {}),
+        "invert_power": bool(e.get("invert_power", False)),
     }
 
 
