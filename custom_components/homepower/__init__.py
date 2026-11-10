@@ -47,6 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     cfg = {**entry.data, **entry.options}  # options override initial setup values
     coordinator = HomePowerCoordinator(
         hass,
+        entry,
         adapters=adapters,
         schedules=schedules,
         cooldown_s=cfg.get(CONF_COOLDOWN_S, DEFAULT_COOLDOWN_S),

@@ -45,6 +45,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
     def __init__(
         self,
         hass: HomeAssistant,
+        config_entry,
         adapters: list[DeviceAdapter],
         schedules: list[ScheduleEntry],
         cooldown_s: float,
@@ -59,7 +60,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         on_forced_change: Callable[[set[str]], None] | None = None,
     ) -> None:
         super().__init__(
-            hass, _LOGGER, name=DOMAIN, update_interval=timedelta(seconds=UPDATE_INTERVAL_S)
+            hass, _LOGGER, config_entry=config_entry, name=DOMAIN,
+            update_interval=timedelta(seconds=UPDATE_INTERVAL_S),
         )
         self.adapters = adapters
         self.schedules = schedules
