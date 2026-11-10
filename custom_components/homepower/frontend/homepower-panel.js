@@ -551,7 +551,7 @@ class HomePowerPanel extends HTMLElement {
     const vendors = [...new Set(cat.profiles.map((p) => p.vendor))];
     const profOpts = vendors.map((v) => `<optgroup label="${esc(v)}">${cat.profiles.filter((p) => p.vendor === v).map((p) => `<option value="${esc(p.id)}" ${p.id === d.kind ? "selected" : ""}>${esc(p.label)}</option>`).join("")}</optgroup>`).join("");
     const html = `<div class="overlay"><div class="modal" role="dialog" aria-label="Battery">
-      <h2>${isNew ? "Add battery" : "Edit battery"}</h2><p class="lead">HomePower drives the entities that your existing Anker / EcoFlow integration already created. Install that integration first.</p>
+      <h2>${isNew ? "Add battery" : "Edit battery"}</h2><p class="lead">HomePower drives any Home Assistant entities you point it at. Picking a model just pre-selects the right fields. No particular integration is required, and \"Other battery\" works with anything.</p>
       <h3>1 · Which battery?</h3>
       <div class="f"><select id="b-kind">${profOpts}</select></div>
       <div id="b-notes"></div>
@@ -581,13 +581,13 @@ class HomePowerPanel extends HTMLElement {
     const ent = (keepValues && d.entities) || {};
     const vend = (cat.vendors[prof.vendor] || {}).regions;
     r.getElementById("b-notes").innerHTML = `<div class="sub" style="font-size:13px;color:var(--secondary-text-color);margin-top:6px">
-      ${prof.integration ? `Uses the <b>${esc(prof.integration)}</b> integration. ` : ""}${esc(prof.notes || "")}
+      ${prof.integration ? `Pre-set for the <b>${esc(prof.integration)}</b> integration; any integration exposing equivalent entities works. ` : ""}${esc(prof.notes || "")}
       <div class="chips"><span class="chip">Modes: ${(spec.modes || []).map((m) => (MODES[m] || {}).label).join(", ")}</span></div>
       ${vend ? `<details><summary>Regions & setup notes</summary><p>${esc(vend)}</p></details>` : ""}</div>`;
     const en = this._hass.entities || {}, dv = this._hass.devices || {};
     const devs = Object.values(dv).filter((x) => Object.values(en).some((e) => e.device_id === x.id && (!prof.integration || e.platform === prof.integration)));
     r.getElementById("b-dev").innerHTML = devs.length ? `<div class="f"><label>Auto-fill from a device</label><select id="b-devsel"><option value="">Choose a device…</option>${devs.map((x) => `<option value="${esc(x.id)}">${esc(x.name_by_user || x.name || x.id)}</option>`).join("")}</select><span class="hint">Picks likely entities for you; check each one below.</span></div>`
-      : prof.integration ? `<div class="hint" style="font-size:12px;color:var(--secondary-text-color)">No devices found for the ${esc(prof.integration)} integration yet — install it in Home Assistant, or type entity IDs below.</div>` : "";
+      : prof.integration ? `<div class="hint" style="font-size:12px;color:var(--secondary-text-color)">No devices found for the ${esc(prof.integration)} integration — pick any entities below (any integration works).</div>` : "";
     r.getElementById("b-ents").innerHTML = spec.entities.map((f) => `<div class="f"><label>${esc(f.label)}${f.req ? " *" : ""}</label><input type="text" id="e-${f.k}" list="dl-${f.k}" value="${esc(ent[f.k] || "")}" placeholder="${f.domains[0]}.…" autocomplete="off"><datalist id="dl-${f.k}">${this._entityOptions(f.domains, prof.integration)}</datalist>${f.hint ? `<span class="hint">${esc(f.hint)}</span>` : ""}</div>`).join("");
     const defInv = ((spec.defaults) || {}).invert_power;
     const inv = keepValues && d.invert_power != null ? d.invert_power : !!defInv;

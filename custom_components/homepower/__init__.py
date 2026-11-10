@@ -1,15 +1,14 @@
 """HomePower: central battery scheduling for Anker SOLIX and EcoFlow STREAM systems."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from homeassistant.components import frontend, panel_custom
-from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant
 
-from . import services, websocket_api
+from . import services
 from .const import (
     CONF_CHARGE_CAP_W,
     CONF_COOLDOWN_S,
@@ -25,6 +24,7 @@ from .const import (
 from .coordinator import HomePowerCoordinator
 from .manager import HomePowerManager
 
+_LOGGER = logging.getLogger(__name__)
 PANEL_URL = "homepower"
 STATIC_URL = "/homepower_static"
 PLATFORMS = ["sensor"]
@@ -34,12 +34,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     domain_data = hass.data.setdefault(DOMAIN, {})
 
     if not domain_data.get("registered"):
-        websocket_api.async_register(hass)
         services.async_register(hass)
-        await hass.http.async_register_static_paths(
-            [StaticPathConfig(STATIC_URL, str(Path(__file__).parent / "frontend"), cache_headers=False)]
-        )
         domain_data["registered"] = True
+    # The control loop must not depend on the UI: the panel, its API and its static files are
+    # best effort, so a missing/failed frontend never stops batteries being scheduled.
+    await _async_setup_ui_api(hass, domain_data)
 
     manager = HomePowerManager(hass)
     await manager.async_load()
@@ -76,24 +75,55 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     domain_data["manager"] = manager
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    await panel_custom.async_register_panel(
-        hass,
-        webcomponent_name="homepower-panel",
-        frontend_url_path=PANEL_URL,
-        module_url=f"{STATIC_URL}/homepower-panel.js?v=0.3.0",
-        sidebar_title="HomePower",
-        sidebar_icon="mdi:home-battery",
-        require_admin=True,
-        config={},
-        update=True,
-    )
+    await _async_register_panel(hass)
     return True
+
+
+async def _async_setup_ui_api(hass: HomeAssistant, domain_data: dict) -> None:
+    if domain_data.get("ui_api"):
+        return
+    try:
+        from homeassistant.components.http import StaticPathConfig
+
+        from . import websocket_api
+
+        websocket_api.async_register(hass)
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(STATIC_URL, str(Path(__file__).parent / "frontend"), cache_headers=False)]
+        )
+        domain_data["ui_api"] = True
+    except Exception:  # noqa: BLE001 - UI is optional
+        _LOGGER.warning("HomePower UI API unavailable; scheduling still works", exc_info=True)
+
+
+async def _async_register_panel(hass: HomeAssistant) -> None:
+    try:
+        from homeassistant.components import frontend, panel_custom
+
+        frontend.async_remove_panel(hass, PANEL_URL, warn_if_unknown=False)  # clear stale registration
+        await panel_custom.async_register_panel(
+            hass,
+            webcomponent_name="homepower-panel",
+            frontend_url_path=PANEL_URL,
+            module_url=f"{STATIC_URL}/homepower-panel.js?v=0.3.1",
+            sidebar_title="HomePower",
+            sidebar_icon="mdi:home-battery",
+            require_admin=True,
+            config={},
+        )
+    except Exception:  # noqa: BLE001 - UI is optional
+        _LOGGER.warning("HomePower sidebar panel could not be registered", exc_info=True)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
-        frontend.async_remove_panel(hass, PANEL_URL)
+        try:
+            from homeassistant.components import frontend
+
+            frontend.async_remove_panel(hass, PANEL_URL, warn_if_unknown=False)
+        except Exception:  # noqa: BLE001
+            pass
         data = hass.data.get(DOMAIN, {})
         data.pop(entry.entry_id, None)
         data.pop("manager", None)
