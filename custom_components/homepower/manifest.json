@@ -1,0 +1,12 @@
+{
+  "domain": "homepower",
+  "name": "HomePower Battery Manager",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://example.invalid/homepower",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "requirements": [],
+  "version": "0.1.0"
+}

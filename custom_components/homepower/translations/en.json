@@ -1,0 +1,17 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "HomePower Battery Manager",
+        "description": "Central scheduler for your home batteries. Devices are added afterwards via options.",
+        "data": {
+          "import_limit_w": "Whole-house import limit (W)",
+          "cooldown_s": "Re-apply cooldown (s)"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one HomePower instance is supported."
+    }
+  }
+}
