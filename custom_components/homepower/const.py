@@ -10,3 +10,9 @@ UPDATE_INTERVAL_S = 30
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.config"
+
+CONF_CHARGE_CAP_W = "total_charge_limit_w"        # all schedules combined
+CONF_DISCHARGE_CAP_W = "total_discharge_limit_w"  # all schedules combined
+CONF_GRID_ENTITY = "grid_import_entity"           # sensor, W
+CONF_GRID_INVERT = "grid_invert"                  # True if sensor is + when exporting
+CONF_ZERO_IMPORT_DEVICE = "zero_import_device"
