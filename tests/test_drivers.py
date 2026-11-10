@@ -333,3 +333,45 @@ def test_anker_keepalive_rewrites_the_setpoint_unchanged():
             assert dev.writes == [(10071, [dev.hold[10071], dev.hold[10072]])] and sp(dev) == -1200
             await d.close()
     asyncio.run(go())
+
+
+def test_anker_driver_clamps_to_the_batterys_limits():
+    async def go():
+        async with fake_anker() as dev:
+            d = AnkerModbusDriver(cfg(dev.port))          # limits 3600 W
+            await d.apply(Desired(Mode.CHARGE, 99999))
+            assert sp(dev) == -3600
+            await d.apply(Desired(Mode.DISCHARGE, 500000))
+            assert sp(dev) == 3600
+            await d.apply(Desired(Mode.CHARGE, -50))
+            assert sp(dev) == 0
+            await d.close()
+    asyncio.run(go())
+
+
+def test_anker_driver_refuses_to_guess_the_word_order():
+    async def go():
+        async with fake_anker() as dev:
+            for a in list(dev.inp):                        # an idle, all-zero battery: nothing tells the order
+                dev.inp[a] = 0
+            dev.inp[10014] = 50
+            d = AnkerModbusDriver(cfg(dev.port))
+            with pytest.raises(ModbusError):
+                await d.apply(Desired(Mode.CHARGE, 1000))
+            assert dev.writes == []                        # nothing at all was written
+            await d.apply(Desired(Mode.AUTO))              # handing back needs no order (zeros)
+            dev.put(10008, -700)                           # the battery starts moving: now it is learnable
+            await d.apply(Desired(Mode.CHARGE, 1000))
+            assert sp(dev) == -1000
+            await d.close()
+    asyncio.run(go())
+
+
+def test_generic_driver_clamps_to_limits():
+    async def go():
+        async with fake_anker() as dev:
+            d = GenericModbusDriver(gcfg(dev.port, ANKER_AS_MAP))   # limits 3600 W
+            await d.apply(Desired(Mode.CHARGE, 99999))
+            assert sp(dev) == -3600
+            await d.close()
+    asyncio.run(go())

@@ -17,6 +17,9 @@ from .core.profiles import DRIVERS, PROFILE_BY_ID, PROFILES
 from .core.serde import ValidationError, fill_from_probe
 from .core.settings import DEFAULTS, SettingsError, clean
 
+FLOW_SETTING_KEYS = ("import_limit_w", "peak_shaving", "export_limit_w", "grid_import_entity", "rates_entity", "price_peak",
+                     "price_offpeak", "offpeak_start", "offpeak_end", "forecast_entity", "backup_reserve_pct", "storm_entity",
+                     "away_entity", "notify_service")
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 MODE_OPTIONS = [
     {"value": "auto", "label": "Auto (hand back to the battery)"},
@@ -337,7 +340,9 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         cur = {**{k: v for k, v in DEFAULTS.items()}, **self.config_entry.options}
         if user_input is not None:
             try:
-                new = clean({k: ("" if v is None else v) for k, v in user_input.items()})
+                # Home Assistant leaves a cleared field out of the submission: that means "clear it", not "keep it".
+                full = {k: user_input.get(k, False if isinstance(DEFAULTS[k], bool) else "") for k in FLOW_SETTING_KEYS}
+                new = clean({k: ("" if v is None else v) for k, v in full.items()})
                 for k in ("offpeak_start", "offpeak_end"):
                     if new.get(k):
                         new[k] = new[k][:5]

@@ -368,3 +368,9 @@ def test_setpoint_rounding_is_not_a_mismatch():
     assert diff(d, Actual(True, mode=Mode.CHARGE, set_power_w=2000)) == []
     assert diff(Desired(Mode.CHARGE, 2000), Actual(True, mode=Mode.CHARGE, set_power_w=1500))   # a real difference is still one
     assert diff(Desired(Mode.CHARGE, 60), Actual(True, mode=Mode.CHARGE, set_power_w=100))
+
+
+def test_goal_on_batteries_that_cannot_charge_explains_itself():
+    g = Goal("g", frozenset(), 100, time(7))
+    r = compute(world([dev(modes={Mode.AUTO, Mode.HOLD})], goals=[g], rates=cheap_night_rates(), now=datetime(2026, 11, 11, 0, 30, tzinfo=UTC)))
+    assert not r.wants and any("can charge right now" in n for n in r.notes)

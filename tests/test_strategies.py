@@ -32,3 +32,9 @@ def test_generic_requires_entities_and_modes():
         device_from_dict({**BASE, "device_id": "g", "kind": "custom",
                           "entities": {"soc": "sensor.a", "power": "sensor.b", "mode": "select.c", "set_power": "number.d"},
                           "mode_map": {"auto": "A"}})
+
+
+def test_generic_plan_clamps_power_to_the_battery_limit():
+    c = generic()                                           # max charge 3000 / discharge 2500
+    assert plan(c.extra, c.caps, Desired(Mode.CHARGE, 99999))[0][2]["value"] == 3000
+    assert plan(c.extra, c.caps, Desired(Mode.DISCHARGE, 99999))[0][2]["value"] == 2500

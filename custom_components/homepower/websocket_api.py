@@ -165,9 +165,9 @@ async def ws_pause(hass, msg):
     vol.Required("type"): "homepower/override",
     vol.Required("device_ids"): [str],
     vol.Required("mode"): vol.In(["auto", "charge", "discharge", "hold"]),
-    vol.Optional("power_w"): vol.Any(None, vol.All(int, vol.Range(min=0, max=50000))),
-    vol.Optional("target_soc"): vol.Any(None, vol.All(int, vol.Range(min=0, max=100))),
-    vol.Required("minutes"): vol.All(int, vol.Range(min=1, max=1440)),
+    vol.Optional("power_w"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=0, max=50000))),
+    vol.Optional("target_soc"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=0, max=100))),
+    vol.Required("minutes"): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
 })
 @websocket_api.require_admin
 @websocket_api.async_response

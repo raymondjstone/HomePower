@@ -123,6 +123,16 @@ class AnkerModbusDriver:
         hold = await self.client.read_holding(REG_HOLD_BASE, REG_HOLD_COUNT)
         cur_mode = hold[MODE_REG - REG_HOLD_BASE]
 
+        if desired.mode in (Mode.CHARGE, Mode.DISCHARGE):
+            if self._order is None:   # learn the 32-bit word order before the first non-zero setpoint
+                self._learn_order(await self.client.read_input(REG_BASE, REG_COUNT), hold)
+            if self._order is None:
+                raise ModbusError("the battery's 32-bit word order is not known yet (all readings are zero), "
+                                  "so no setpoint was sent; it is learned automatically once the battery reports power")
+            limit = caps.max_charge_w if desired.mode is Mode.CHARGE else caps.max_discharge_w
+            watts = desired.power_w if desired.power_w is not None else limit
+            desired = Desired(desired.mode, int(max(0, min(watts, limit))), desired.target_soc, desired.reserve_soc)
+
         if desired.mode is Mode.AUTO:
             if cur_mode == MODE_THIRD_PARTY:
                 await self._set_setpoint(0)

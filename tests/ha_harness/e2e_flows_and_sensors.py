@@ -59,6 +59,15 @@ async def main():
     assert r["type"] == "create_entry" and r["data"]["offpeak_start"] == "23:30" and r["data"]["peak_shaving"] is True
     coord.apply_settings({**entry.data, **r["data"]})
     assert coord.settings.engine.import_limit_w == 6000 and coord.settings.engine.peak_shaving
+    # a later submission that omits fields (cleared in the UI) must clear them
+    f2 = flow(); f2.config_entry.__class__  # noqa
+    entry_opts = r["data"]
+    class E2(SimpleNamespace): pass
+    hass.config_entries = SimpleNamespace(async_get_known_entry=lambda i: SimpleNamespace(options=entry_opts, data={}))
+    r2 = await flow().async_step_settings({"import_limit_w": 6000})
+    print("cleared  :", {k: r2["data"].get(k) for k in ("price_peak", "offpeak_start", "peak_shaving", "import_limit_w")})
+    assert r2["data"]["price_peak"] is None and r2["data"]["offpeak_start"] == "" and r2["data"]["peak_shaving"] is False
+    hass.config_entries = SimpleNamespace(async_get_known_entry=lambda i: entry)
 
     # generic Modbus map through the flow
     f = flow(); r = await f.async_step_add_battery({"name": "Mapped", "kind": "modbus_map"})
@@ -70,6 +79,38 @@ async def main():
     r = await f.async_step_battery_details(r["data_schema"]({"capacity_wh": 8000, "max_charge_w": 3000, "max_discharge_w": 3000}))
     print("map saved:", r["type"], mgr.devices["mapped"]["supported_modes"], mgr.devices["mapped"]["max_charge_w"])
     assert r["type"] == "create_entry"
+
+    # --- the remaining Configure steps, with real selectors
+    f = flow(); r = await f.async_step_add_schedule()
+    v = r["data_schema"]({"name": "Eve", "devices": ["a"], "mode": "discharge", "start": "17:00:00", "end": "22:00:00", "power_w": 1500,
+                          "days": ["mon", "tue"], "condition_entity": "binary_sensor.peak"})
+    r = await f.async_step_add_schedule(v)
+    print("schedule :", r["type"], mgr.schedules["Eve"]["days"], mgr.schedules["Eve"]["condition_entity"])
+    assert r["type"] == "create_entry" and mgr.schedules["Eve"]["days"] == [0, 1]
+    f = flow(); r = await f.async_step_add_schedule()
+    r = await f.async_step_add_schedule(r["data_schema"]({"name": "Eve", "mode": "charge", "start": "01:00:00", "end": "02:00:00"}))
+    assert r["type"] == "abort", r                                   # a duplicate name never overwrites
+    f = flow(); r = await f.async_step_control_battery()
+    r = await f.async_step_control_battery(r["data_schema"]({"device": "a", "enabled": False}))
+    assert r["type"] == "create_entry" and mgr.devices["a"]["control_enabled"] is False
+    hass.states.async_set("sensor.soc", "55"); hass.states.async_set("sensor.pw", "300"); hass.states.async_set("number.sp", "0")
+    hass.states.async_set("select.md", "auto", {"options": ["auto", "charge", "discharge", "hold"]})
+    f = flow(); r = await f.async_step_add_battery({"name": "Ent", "kind": "custom"})
+    assert r["step_id"] == "entity_details", r
+    v = r["data_schema"]({"capacity_wh": 5000, "max_charge_w": 3000, "max_discharge_w": 3000, "min_soc": 10, "e_soc": "sensor.soc",
+                          "e_power": "sensor.pw", "e_mode": "select.md", "e_set_power": "number.sp"})
+    r = await f.async_step_entity_details(v)
+    assert r["step_id"] == "battery_modes", r
+    r = await f.async_step_battery_modes(r["data_schema"]({}))       # option names are guessed from the select's options
+    print("entities :", r["type"], mgr.devices["ent"]["mode_map"])
+    assert r["type"] == "create_entry" and mgr.devices["ent"]["mode_map"]["charge"] == "charge" and mgr.devices["ent"]["control_enabled"]
+    for step, key, val in (("remove_schedule", "schedule", "Eve"), ("remove_goal", "goal", "Morning"), ("remove_battery", "device", "ent")):
+        f = flow(); r = await getattr(f, f"async_step_{step}")()
+        r = await getattr(f, f"async_step_{step}")(r["data_schema"]({key: val}))
+        assert r["type"] == "create_entry", (step, r)
+    assert "Eve" not in mgr.schedules and "Morning" not in mgr.goals and "ent" not in mgr.devices
+    await mgr.save_device({**mgr.devices["a"], "control_enabled": True})
+    print("removals :", sorted(mgr.devices))
 
     # a few control cycles so energy/savings accumulate
     await coord._async_update_data()

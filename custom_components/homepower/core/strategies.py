@@ -68,8 +68,9 @@ def _plan_generic(extra, caps, d) -> list[Command]:
         out += _number(ent, "reserve_soc", d.reserve_soc)
     if d.target_soc is not None:
         out += _number(ent, "target_soc", d.target_soc)
-    if d.power_w is not None:
-        out += _number(ent, "set_power", d.power_w)
+    if d.power_w is not None:   # defence in depth: never above the battery's own limit
+        limit = caps.max_charge_w if d.mode is Mode.CHARGE else caps.max_discharge_w
+        out += _number(ent, "set_power", int(max(0, min(d.power_w, limit))) if d.mode in (Mode.CHARGE, Mode.DISCHARGE) else d.power_w)
     return out + _select(ent, "mode", mm[d.mode.value])
 
 

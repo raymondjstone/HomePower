@@ -108,6 +108,9 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         devs = [d for d in w.devices if g.covers(d.config.device_id) and d.actual.online and d.actual.soc is not None
                 and Mode.CHARGE in d.config.caps.supported_modes and d.config.caps.max_charge_w > 0]
         if not devs:
+            if any(g.covers(d.config.device_id) for d in w.devices):
+                res.notes.append(f"goal '{g.id}': none of its batteries can charge right now (offline, or charge control is not "
+                                 "supported: EcoFlow STREAM only offers Auto and Hold)")
             continue
         target = g.target_soc
         if g.use_forecast:

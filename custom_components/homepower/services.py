@@ -62,9 +62,9 @@ def async_register(hass: HomeAssistant) -> None:
         schema=vol.Schema({
             vol.Optional("device_ids"): [str],
             vol.Required("mode"): vol.In([m.value for m in Mode]),
-            vol.Optional("power_w"): vol.All(int, vol.Range(min=0, max=50000)),
-            vol.Optional("target_soc"): vol.All(int, vol.Range(min=0, max=100)),
-            vol.Optional("minutes", default=60): vol.All(int, vol.Range(min=1, max=1440)),
+            vol.Optional("power_w"): vol.All(vol.Coerce(int), vol.Range(min=0, max=50000)),
+            vol.Optional("target_soc"): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+            vol.Optional("minutes", default=60): vol.All(vol.Coerce(int), vol.Range(min=1, max=1440)),
         }),
     )
     hass.services.async_register(

@@ -98,7 +98,7 @@ class GenericModbusDriver:
             await write(mode_reg, mode_reg["auto_value"] * mode_reg["scale"])
             return
         await write(mode_reg, mode_reg["control_value"] * mode_reg["scale"])
-        watts = 0 if desired.mode is Mode.HOLD else int(desired.power_w if desired.power_w is not None else (
-            self.config.caps.max_charge_w if desired.mode is Mode.CHARGE else self.config.caps.max_discharge_w))
+        limit = self.config.caps.max_charge_w if desired.mode is Mode.CHARGE else self.config.caps.max_discharge_w
+        watts = 0 if desired.mode is Mode.HOLD else int(max(0, min(desired.power_w if desired.power_w is not None else limit, limit)))
         signed = watts if desired.mode is Mode.DISCHARGE else -watts if desired.mode is Mode.CHARGE else 0
         await write(sp_reg, -signed if sp_reg["positive_is"] == "charge" else signed)

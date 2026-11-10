@@ -237,6 +237,7 @@ class HomePowerPanel extends HTMLElement {
   async _tabLoad() {
     if (this._modal) return;
     this._lastTabLoad = Date.now();
+    this._tabError = null;
     try {
       if (this.tab === "plan") this._preview = await this._hass.callWS({ type: "homepower/preview", hours: 24 });
       else if (this.tab === "diagnostics") this._diag = await this._hass.callWS({ type: "homepower/diagnostics" });
@@ -966,7 +967,7 @@ class HomePowerPanel extends HTMLElement {
     };
     this._settingKeys = SEC.flatMap(([, , fs]) => fs);
     return `<div class="bar-actions"><h2>Settings</h2></div><div style="max-width:720px">${SEC.map(([h, icon, fs]) => `<div class="card" style="margin-bottom:16px"><h2><ha-icon icon="${icon}"></ha-icon>${h}</h2>${fs.map(field).join("")}</div>`).join("")}
-      <div class="err" id="g-msg"></div><div class="foot"><span></span><div class="r"><button class="btn pri" data-act="save-settings">Save settings</button></div></div></div>`;
+      <div class="err" id="g-msg" ${this._savedNote ? 'style="color:#16a34a"' : ""}>${this._savedNote ? "Saved." : ""}</div><div class="foot"><span></span><div class="r"><button class="btn pri" data-act="save-settings">Save settings</button></div></div></div>`;
   }
 
   _ruleRow(r) {
@@ -1086,7 +1087,11 @@ class HomePowerPanel extends HTMLElement {
       case "save-settings": {
         const msg = this.shadowRoot.getElementById("g-msg");
         const ok = await this._call({ type: "homepower/settings/save", settings: this._collectSettings() }, (m) => { msg.style.color = ""; msg.textContent = m; });
-        if (ok) { msg.style.color = "#16a34a"; msg.textContent = "Saved."; await this._reload(); }
+        if (ok) {
+          this._savedNote = true;   // survives the re-render that follows
+          await this._reload();
+          setTimeout(() => { this._savedNote = false; if (this.tab === "settings" && !this._modal) this._render(); }, 3000);
+        }
         return;
       }
       case "add-rule": { this.shadowRoot.getElementById("st-rules").insertAdjacentHTML("beforeend", this._ruleRow({ block: "discharge" })); return; }
