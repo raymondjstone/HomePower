@@ -14,7 +14,7 @@ from homeassistant.helpers import selector as sel
 from ._schema import vol
 from .const import DOMAIN
 from .core.profiles import DRIVERS, PROFILE_BY_ID, PROFILES
-from .core.serde import ValidationError
+from .core.serde import ValidationError, fill_from_probe
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 MODE_OPTIONS = [
@@ -46,11 +46,15 @@ def _readings(info: dict) -> str:
     bits = []
     if info.get("model"):
         bits.append(str(info["model"]))
+    if info.get("capacity_wh"):
+        bits.append(f"{info['capacity_wh'] / 1000:.1f} kWh")
     if info.get("soc") is not None:
         bits.append(f"charge {info['soc']:.0f}%")
     if info.get("power_w") is not None:
         p = info["power_w"]
         bits.append("idle" if abs(p) < 20 else f"{'charging' if p > 0 else 'discharging'} {abs(p):.0f} W")
+    if info.get("max_charge_w") or info.get("max_discharge_w"):
+        bits.append(f"limits {info.get('max_charge_w') or '?'} W in / {info.get('max_discharge_w') or '?'} W out")
     return ", ".join(bits)
 
 
@@ -155,21 +159,24 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                                     data_schema=vol.Schema({vol.Required("sn", default=opts[0]["value"]): _dropdown(opts)}),
                                     description_placeholders={"error": detail})
 
-    # ---- limits + control switch (direct batteries)
+    # ---- direct batteries: everything the battery can report is read from it; ask only for the rest
     async def async_step_battery_details(self, user_input=None):
+        wanted = ("capacity_wh", "max_charge_w", "max_discharge_w") if self._driver() == "anker_modbus" else ("capacity_wh",)
+        missing = [k for k in wanted if not self._info.get(k)]
         if user_input is not None:
-            self._d.update({k: user_input[k] for k in ("capacity_wh", "max_charge_w", "max_discharge_w", "min_soc") if k in user_input})
+            self._d.update({k: user_input[k] for k in missing if k in user_input})
             self._d["control_enabled"] = bool(user_input.get("control_enabled", False))
+            self._d = fill_from_probe(self._d, self._info)
+            if self._driver() == "ecoflow_stream":
+                self._d.setdefault("max_charge_w", 0)
+                self._d.setdefault("max_discharge_w", 0)
+            self._d.setdefault("min_soc", 10)  # safe floor when the battery reports none
             return await self._save_battery()
-        i = self._info
-        cap = vol.Required("capacity_wh", default=i["capacity_wh"]) if i.get("capacity_wh") else vol.Required("capacity_wh")
-        mc = vol.Required("max_charge_w", default=i["max_charge_w"]) if i.get("max_charge_w") else vol.Required("max_charge_w")
-        md = vol.Required("max_discharge_w", default=i["max_discharge_w"]) if i.get("max_discharge_w") else vol.Required("max_discharge_w")
-        return self.async_show_form(step_id="battery_details", data_schema=vol.Schema({
-            cap: _num(100, 200000, "Wh", 10), mc: _num(0, 50000, "W", 50), md: _num(0, 50000, "W", 50),
-            vol.Required("min_soc", default=10): _num(0, 100, "%"),
-            vol.Optional("control_enabled", default=False): bool,
-        }), description_placeholders={"readings": _readings(i) or "connected"})
+        selectors = {"capacity_wh": _num(100, 200000, "Wh", 10), "max_charge_w": _num(0, 50000, "W", 50), "max_discharge_w": _num(0, 50000, "W", 50)}
+        fields: dict = {vol.Required(k): selectors[k] for k in missing}
+        fields[vol.Optional("control_enabled", default=False)] = bool
+        return self.async_show_form(step_id="battery_details", data_schema=vol.Schema(fields),
+                                    description_placeholders={"readings": _readings(self._info) or "connected"})
 
     # ---- advanced: any battery via Home Assistant entities
     async def async_step_entity_details(self, user_input=None):

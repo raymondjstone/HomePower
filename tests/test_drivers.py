@@ -9,23 +9,28 @@ from core.models import Capabilities, Desired, DeviceConfig, Mode
 from hp.drivers import discovery
 from hp.drivers.anker import AnkerModbusDriver
 from hp.drivers.ecoflow import EcoFlowStreamDriver, flatten, sign
-from hp.drivers.modbus import ModbusError, from_i32, to_i32
+from hp.drivers.modbus import ModbusError, detect_word_order, from_i32, to_i32
 
 
 class FakeAnker:
     """Tiny Modbus TCP server: FC03/04/06/16 over plain dict register spaces."""
 
-    def __init__(self):
+    def __init__(self, order="big"):
+        self.order = order                                    # real units send the HIGH word first
         self.inp = {a: 0 for a in range(10000, 10260)}
         self.hold = {a: 0 for a in range(10060, 10085)}
+        self.hold[60001] = 10                                 # the battery's own discharge floor
         self.writes = []
         self.inp[10014] = 62                                  # SOC
-        self.inp[10008], self.inp[10009] = from_i32(-1500)    # battery: charging 1500 W
-        self.inp[10012], self.inp[10013] = from_i32(300)      # grid import 300 W
-        self.inp[10036], self.inp[10037] = from_i32(3600)
-        self.inp[10038], self.inp[10039] = from_i32(3600)
-        self.inp[10250] = 50                                  # 5.0 kWh
+        self.put(10008, -1500)                                # battery: charging 1500 W
+        self.put(10012, 300)                                  # grid import 300 W
+        self.put(10036, 3600)
+        self.put(10038, 3600)
+        self.put(10250, 100)                                  # rated energy 10.0 kWh (0.1 kWh units)
         self.model = struct.unpack(">8H", b"A17C0 E5\x00\x00\x00\x00\x00\x00\x00\x00")
+
+    def put(self, addr, value):
+        self.inp[addr], self.inp[addr + 1] = from_i32(value, self.order)
 
     async def handle(self, r, w):
         try:
@@ -66,8 +71,8 @@ class FakeAnker:
 
 
 @asynccontextmanager
-async def fake_anker():
-    dev = FakeAnker()
+async def fake_anker(order="big"):
+    dev = FakeAnker(order)
     srv = await asyncio.start_server(dev.handle, "127.0.0.1", 0)
     dev.port = srv.sockets[0].getsockname()[1]
     try:
@@ -84,7 +89,7 @@ def cfg(port, **extra):
 
 
 def sp(dev):
-    return to_i32(dev.hold[10071], dev.hold[10072])
+    return to_i32(dev.hold[10071], dev.hold[10072], dev.order)
 
 
 def test_read_decodes_and_normalises_sign():
@@ -103,7 +108,9 @@ def test_probe_reports_capabilities():
         async with fake_anker() as dev:
             d = AnkerModbusDriver(cfg(dev.port))
             info = await d.probe()
-            assert info["capacity_wh"] == 5000 and info["max_charge_w"] == 3600 and info["soc"] == 62
+            # everything setup needs comes from the battery: nothing for the user to type
+            assert info["capacity_wh"] == 10000 and info["max_charge_w"] == 3600 and info["max_discharge_w"] == 3600
+            assert info["min_soc"] == 10 and info["soc"] == 62 and info["word_order"] == "big"
             assert info["model"] == "A17C0 E5"
             await d.close()
     asyncio.run(go())
@@ -202,3 +209,39 @@ def test_ecoflow_read_and_commands():
         d.api._q = {"backupReverseSoc": 95}
         assert (await d.read()).mode is Mode.HOLD
     asyncio.run(go())
+
+
+def test_real_hardware_values_decode_correctly():
+    """Regression: a real battery sent battery power as regs [0xFFFF, 0xFFBA] and grid [0xFFFF, 0xFFBB].
+    Decoding them low-word-first gave -4,587,520 W; the right answer is -70 W / -69 W."""
+    async def go():
+        async with fake_anker() as dev:
+            dev.inp[10008], dev.inp[10009] = 0xFFFF, 0xFFBA
+            dev.inp[10012], dev.inp[10013] = 0xFFFF, 0xFFBB
+            d = AnkerModbusDriver(cfg(dev.port))
+            a = await d.read()
+            assert a.power_w == 70.0          # register -70 (negative = charging) => +70 W charging
+            assert a.grid_w == -69.0          # exporting 69 W
+            await d.close()
+    asyncio.run(go())
+
+
+def test_little_word_order_devices_work_too():
+    async def go():
+        async with fake_anker("little") as dev:
+            d = AnkerModbusDriver(cfg(dev.port))
+            a = await d.read()
+            assert a.power_w == 1500 and a.grid_w == 300
+            await d.apply(Desired(Mode.CHARGE, 2000))
+            assert sp(dev) == -2000            # the setpoint is written in the order the device uses
+            info = await d.probe()
+            assert info["capacity_wh"] == 10000 and info["word_order"] == "little"
+            await d.close()
+    asyncio.run(go())
+
+
+def test_detect_word_order():
+    assert detect_word_order([(0xFFFF, 0xFFBA)]) == "big"
+    assert detect_word_order([(0xFFBA, 0xFFFF)]) == "little"
+    assert detect_word_order([(0, 0), (0, 0)]) is None
+    assert detect_word_order([(0, 1500), (0xFFFF, 0xFFBA)]) == "big"

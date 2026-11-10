@@ -564,13 +564,15 @@ class HomePowerPanel extends HTMLElement {
       <h3>2 · Connect</h3>
       <div id="b-conn"></div>
       <div id="b-test"></div>
-      <h3>3 · Name & limits</h3>
+      <h3>3 · Name</h3>
       <div class="f"><label>Name</label><input type="text" id="b-name" value="${esc(d.name)}" placeholder="e.g. Garage battery"></div>
-      <div class="three"><div class="f"><label>Capacity (Wh) *</label><input type="number" id="b-cap" value="${d.capacity_wh ?? ""}" placeholder="filled in by Test"></div>
-        <div class="f"><label>Max charge (W) *</label><input type="number" id="b-mc" value="${d.max_charge_w ?? ""}" placeholder="filled in by Test"></div>
-        <div class="f"><label>Max discharge (W) *</label><input type="number" id="b-md" value="${d.max_discharge_w ?? ""}" placeholder="filled in by Test"></div></div>
-      <div class="two"><div class="f"><label>Minimum SOC (%)</label><input type="number" id="b-min" min="0" max="100" value="${d.min_soc ?? 10}"></div>
-        <div class="f"><label>Priority (lower = discharges first)</label><input type="number" id="b-prio" value="${d.priority ?? 0}"></div></div>
+      <p class="hint" style="font-size:13px;color:var(--secondary-text-color);margin:6px 0">Capacity, power limits and minimum charge are read from the battery itself. Open "Limits" only to override them.</p>
+      <details ${isNew ? "" : "open"}><summary>Limits (read from the battery; override only if needed)</summary>
+        <div class="three"><div class="f"><label>Capacity (Wh)</label><input type="number" id="b-cap" value="${d.capacity_wh ?? ""}" placeholder="from the battery"></div>
+          <div class="f"><label>Max charge (W)</label><input type="number" id="b-mc" value="${d.max_charge_w ?? ""}" placeholder="from the battery"></div>
+          <div class="f"><label>Max discharge (W)</label><input type="number" id="b-md" value="${d.max_discharge_w ?? ""}" placeholder="from the battery"></div></div>
+        <div class="two"><div class="f"><label>Minimum SOC (%)</label><input type="number" id="b-min" min="0" max="100" value="${d.min_soc ?? ""}" placeholder="from the battery"></div>
+          <div class="f"><label>Priority (lower = discharges first)</label><input type="number" id="b-prio" value="${d.priority ?? 0}"></div></div></details>
       <h3>4 · Control</h3>
       <label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="b-control" ${d.control_enabled ? "checked" : ""} style="margin-top:3px"><span>Let HomePower send commands to this battery.<br><span class="hint" style="font-size:12px;color:var(--secondary-text-color)">Leave off at first: HomePower only reads and shows it. Turn on once the test readings above look right.</span></span></label>
       <div class="err" id="m-err"></div>
@@ -709,9 +711,9 @@ class HomePowerPanel extends HTMLElement {
       const info = await this._hass.callWS({ type: "homepower/probe", device: { kind: d.kind, device_id: origId || "", connection: d.connection } });
       const p = info.power_w;
       box.innerHTML = `<div class="card" style="margin-top:8px;border-color:#16a34a"><b style="color:#16a34a">Connected</b> · ${esc(info.model || "battery")}${info.serial ? " · " + esc(info.serial) : ""}
-        <div class="chips"><span class="chip">Charge ${info.soc != null ? Math.round(info.soc) + "%" : "–"}</span><span class="chip">${p == null ? "–" : Math.abs(p) < 20 ? "Idle" : (p > 0 ? "Charging " : "Discharging ") + fmtW(Math.abs(p))}</span>${info.grid_w != null ? `<span class="chip">Grid ${fmtW(Math.abs(info.grid_w))} ${info.grid_w > 0 ? "import" : "export"}</span>` : ""}${info.pv_w != null ? `<span class="chip">Solar ${fmtW(info.pv_w)}</span>` : ""}</div></div>`;
+        <div class="chips">${info.capacity_wh ? `<span class="chip">${(info.capacity_wh / 1000).toFixed(1)} kWh</span>` : ""}<span class="chip">Charge ${info.soc != null ? Math.round(info.soc) + "%" : "–"}</span>${info.max_charge_w || info.max_discharge_w ? `<span class="chip">Up to ${info.max_charge_w || "?"} W in / ${info.max_discharge_w || "?"} W out</span>` : ""}<span class="chip">${p == null ? "–" : Math.abs(p) < 20 ? "Idle" : (p > 0 ? "Charging " : "Discharging ") + fmtW(Math.abs(p))}</span>${info.grid_w != null ? `<span class="chip">Grid ${fmtW(Math.abs(info.grid_w))} ${info.grid_w > 0 ? "import" : "export"}</span>` : ""}${info.pv_w != null ? `<span class="chip">Solar ${fmtW(info.pv_w)}</span>` : ""}</div></div>`;
       const fill = (id, val) => { const el = r.getElementById(id); if (el && !el.value && val) el.value = val; };
-      fill("b-cap", info.capacity_wh); fill("b-mc", info.max_charge_w); fill("b-md", info.max_discharge_w);
+      fill("b-cap", info.capacity_wh); fill("b-mc", info.max_charge_w); fill("b-md", info.max_discharge_w); fill("b-min", info.min_soc);
       if (!r.getElementById("b-name").value && info.model) r.getElementById("b-name").value = info.model;
     } catch (e) { box.innerHTML = `<div class="err">Could not read the battery: ${esc(e.message || e)}</div>`; }
   }

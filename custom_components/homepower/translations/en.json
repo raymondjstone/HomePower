@@ -58,12 +58,11 @@
       },
       "battery_details": {
         "title": "Connected: {readings}",
-        "description": "Check the values (filled in from the battery where it reports them). New batteries are monitor-only: leave 'control' off until the readings above look right, then turn it on here or later via Configure.",
+        "description": "Everything the battery reports (capacity, power limits, minimum charge) is read from it directly. Only anything it can't report is asked for. New batteries are monitor-only: leave control off until the readings above look right, then turn it on here or later via Configure.",
         "data": {
-          "capacity_wh": "Capacity (Wh)",
-          "max_charge_w": "Max charge (W)",
-          "max_discharge_w": "Max discharge (W)",
-          "min_soc": "Minimum SOC (%)",
+          "capacity_wh": "Capacity (Wh) - the battery didn't report it",
+          "max_charge_w": "Max charge (W) - the battery didn't report it",
+          "max_discharge_w": "Max discharge (W) - the battery didn't report it",
           "control_enabled": "Let HomePower send commands to this battery"
         }
       },

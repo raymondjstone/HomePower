@@ -7,14 +7,15 @@ Register map (from the vendors' published Modbus protocol as used by the open-so
                            10100 serial | 32768 model
   holding regs (FC03/06/16): 10064 work mode (3 = third-party/VPP control) | 10071 battery setpoint
                            (i32, negative = charge, positive = discharge) | 10080 comms watchdog (s, X1)
-32-bit values are sent LOW word first.
+32-bit values are two registers; the word order is detected from the device's own readings (the
+units seen so far send the HIGH word first).
 """
 from __future__ import annotations
 
 import logging
 
 from ..core.models import Actual, Desired, DeviceConfig, Mode
-from .modbus import ModbusError, ModbusTcpClient, from_i32, to_i32, to_text, to_u32
+from .modbus import ModbusError, ModbusTcpClient, detect_word_order, from_i32, to_i32, to_text, to_u32
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,9 +26,7 @@ MODE_THIRD_PARTY = 3
 WATCHDOG_SECONDS = 600
 
 
-def _i32(regs: list[int], addr: int) -> int:
-    i = addr - REG_BASE
-    return to_i32(regs[i], regs[i + 1])
+PAIRS = (10002, 10008, 10010, 10012, 10036, 10038)  # 32-bit power registers used to detect word order
 
 
 class AnkerModbusDriver:
@@ -36,6 +35,7 @@ class AnkerModbusDriver:
         c = config.extra["connection"]
         self.client = client or ModbusTcpClient(c["host"], int(c.get("port", 502)), int(c.get("unit_id", 1)))
         self._restore: int | None = None  # mode the device was in before we took control
+        self._order: str | None = None    # "big" / "little" once detected
 
     async def close(self) -> None:
         await self.client.close()
@@ -45,10 +45,20 @@ class AnkerModbusDriver:
         return (await self.client.read_input(REG_BASE, REG_COUNT),
                 await self.client.read_holding(REG_HOLD_BASE, REG_HOLD_COUNT))
 
-    @staticmethod
-    def _decode(inp: list[int], hold: list[int]) -> Actual:
+    def _i32(self, regs: list[int], addr: int, base: int = REG_BASE) -> int:
+        i = addr - base
+        return to_i32(regs[i], regs[i + 1], self._order or "big")
+
+    def _learn_order(self, inp: list[int], hold: list[int]) -> None:
+        if self._order is None:
+            pairs = [(inp[a - REG_BASE], inp[a - REG_BASE + 1]) for a in PAIRS]
+            pairs.append((hold[SETPOINT_REG - REG_HOLD_BASE], hold[SETPOINT_REG - REG_HOLD_BASE + 1]))
+            self._order = detect_word_order(pairs)
+
+    def _decode(self, inp: list[int], hold: list[int]) -> Actual:
+        self._learn_order(inp, hold)
         mode_raw = hold[MODE_REG - REG_HOLD_BASE]
-        sp = to_i32(hold[SETPOINT_REG - REG_HOLD_BASE], hold[SETPOINT_REG - REG_HOLD_BASE + 1])
+        sp = self._i32(hold, SETPOINT_REG, REG_HOLD_BASE)
         if mode_raw != MODE_THIRD_PARTY:
             mode, set_w = Mode.AUTO, None
         elif sp == 0:
@@ -58,9 +68,9 @@ class AnkerModbusDriver:
         return Actual(
             online=True,
             soc=float(inp[14]),
-            power_w=float(-_i32(inp, 10008)),  # register: negative = charging; we use + charging
+            power_w=float(-self._i32(inp, 10008)),  # register: negative = charging; we use + charging
             mode=mode, set_power_w=set_w,
-            grid_w=float(_i32(inp, 10012)), pv_w=float(_i32(inp, 10002)), load_w=float(_i32(inp, 10010)),
+            grid_w=float(self._i32(inp, 10012)), pv_w=float(self._i32(inp, 10002)), load_w=float(self._i32(inp, 10010)),
         )
 
     async def read(self) -> Actual:
@@ -71,13 +81,15 @@ class AnkerModbusDriver:
             return Actual(online=False)
 
     async def probe(self) -> dict:
-        """Everything useful for the setup screen: live values plus what the device says it is."""
+        """Everything useful for setup, read from the battery itself: live values, model, capacity,
+        power limits and its configured minimum charge. Never writes."""
         inp, hold = await self._blocks()
         a = self._decode(inp, hold)
         info: dict = {
             "soc": a.soc, "power_w": a.power_w, "mode": a.mode.value if a.mode else None,
-            "grid_w": a.grid_w, "pv_w": a.pv_w, "load_w": a.load_w,
-            "max_charge_w": _i32(inp, 10036) or None, "max_discharge_w": _i32(inp, 10038) or None,
+            "grid_w": a.grid_w, "pv_w": a.pv_w, "load_w": a.load_w, "word_order": self._order,
+            "max_charge_w": self._i32(inp, 10036) or None, "max_discharge_w": self._i32(inp, 10038) or None,
+            "min_soc": None,
         }
         for key, addr, count in (("serial", 10100, 8), ("model", 32768, 16)):
             try:
@@ -85,15 +97,19 @@ class AnkerModbusDriver:
             except ModbusError:
                 info[key] = None
         try:
-            rated = to_u32(*await self.client.read_input(10250, 2))
+            rated = to_u32(*await self.client.read_input(10250, 2), self._order or "big")
             info["capacity_wh"] = int(rated * 100) or None  # register is in 0.1 kWh
         except ModbusError:
             info["capacity_wh"] = None
+        try:  # the battery's own discharge floor (not present on every model)
+            info["min_soc"] = (await self.client.read_holding(60001, 1))[0]
+        except ModbusError:
+            pass
         return info
 
     # ----------------------------------------------------------------- write
     async def _set_setpoint(self, watts: int) -> None:
-        await self.client.write_multiple(SETPOINT_REG, from_i32(watts))
+        await self.client.write_multiple(SETPOINT_REG, from_i32(watts, self._order or "big"))
 
     async def apply(self, desired: Desired) -> None:
         caps, extra = self.config.caps, self.config.extra

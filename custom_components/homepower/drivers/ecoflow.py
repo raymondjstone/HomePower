@@ -133,7 +133,8 @@ class EcoFlowStreamDriver:
         a = self._decode(q)
         return {"soc": a.soc, "power_w": a.power_w, "mode": a.mode.value if a.mode else None,
                 "grid_w": a.grid_w, "pv_w": a.pv_w, "load_w": a.load_w, "model": q.get("productName") or None,
-                "serial": self.sn, "capacity_wh": None, "max_charge_w": None, "max_discharge_w": None,
+                "serial": self.sn, "capacity_wh": int(q["cmsBattFullEnergy"]) if isinstance(q.get("cmsBattFullEnergy"), (int, float)) and q["cmsBattFullEnergy"] > 0 else None,
+                "max_charge_w": None, "max_discharge_w": None, "min_soc": None,
                 "reserve": q.get("backupReverseSoc")}
 
     async def apply(self, desired: Desired) -> None:

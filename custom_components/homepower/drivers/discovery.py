@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 
-from .modbus import ModbusError, ModbusTcpClient, to_i32, to_text
+from .modbus import ModbusError, ModbusTcpClient, detect_word_order, to_i32, to_text
 
 
 def subnet_hosts(address: str, prefix: int, limit: int = 254) -> list[str]:
@@ -22,7 +22,8 @@ async def probe_host(host: str, port: int = 502, unit: int = 1, timeout: float =
         soc = regs[14]
         if not 0 <= soc <= 100:
             return None
-        info = {"host": host, "port": port, "soc": soc, "power_w": -to_i32(regs[8], regs[9])}
+        order = detect_word_order([(regs[i], regs[i + 1]) for i in (2, 8, 10, 12, 36, 38)]) or "big"
+        info = {"host": host, "port": port, "soc": soc, "power_w": -to_i32(regs[8], regs[9], order)}
         for key, addr, count in (("model", 32768, 16), ("serial", 10100, 8)):
             try:
                 info[key] = to_text(await client.read_input(addr, count)) or None

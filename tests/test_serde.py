@@ -74,3 +74,12 @@ def test_direct_connection_validation():
 
 def test_ecoflow_only_auto_and_hold():
     assert device_from_dict(ECO).caps.supported_modes == {Mode.AUTO, Mode.HOLD}
+
+
+def test_fill_from_probe_uses_battery_values_and_keeps_user_overrides():
+    from core.serde import fill_from_probe
+    info = {"capacity_wh": 10000, "max_charge_w": 3600, "max_discharge_w": 3600, "min_soc": 10}
+    out = fill_from_probe({"name": "x", "capacity_wh": "", "max_charge_w": None}, info)
+    assert out["capacity_wh"] == 10000 and out["max_charge_w"] == 3600 and out["min_soc"] == 10
+    assert fill_from_probe({"capacity_wh": 8000}, info)["capacity_wh"] == 8000   # user override wins
+    assert fill_from_probe({}, {"capacity_wh": None}).get("capacity_wh") is None  # nothing invented

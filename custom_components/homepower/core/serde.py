@@ -61,6 +61,15 @@ def _connection(driver: str, raw: dict) -> dict:
     return {}
 
 
+def fill_from_probe(raw: dict, info: dict) -> dict:
+    """Use what the battery itself reports for anything the user didn't enter (capacity, limits, min SOC)."""
+    out = dict(raw)
+    for key in ("capacity_wh", "max_charge_w", "max_discharge_w", "min_soc"):
+        if out.get(key) in (None, "") and info.get(key) is not None:
+            out[key] = info[key]
+    return out
+
+
 def device_from_dict(d: dict) -> DeviceConfig:
     did = str(d.get("device_id") or "").strip()
     if not did:

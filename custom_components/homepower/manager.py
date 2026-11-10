@@ -15,6 +15,7 @@ from .drivers.anker import AnkerModbusDriver
 from .drivers.ecoflow import EcoFlowApi, EcoFlowError, EcoFlowStreamDriver
 from .core.serde import (
     ValidationError,
+    fill_from_probe,
     device_from_dict,
     device_to_dict,
     schedule_from_dict,
@@ -90,7 +91,8 @@ class HomePowerManager:
     async def probe(self, raw: dict) -> dict:
         """Connect with the given settings and return live readings; never changes anything on the device."""
         raw = self._with_saved_secret(raw)
-        probe_raw = {"capacity_wh": 5000, "max_charge_w": 1000, "max_discharge_w": 1000, **{k: v for k, v in raw.items() if v not in (None, "")},
+        # Placeholder limits only so the config validates; probing never uses or saves them.
+        probe_raw = {"capacity_wh": 1000, "max_charge_w": 0, "max_discharge_w": 0, **{k: v for k, v in raw.items() if v not in (None, "")},
                      "device_id": raw.get("device_id") or "probe", "name": raw.get("name") or "probe"}
         cfg = device_from_dict(probe_raw)
         adapter = self.make_adapter(cfg)
@@ -151,8 +153,28 @@ class HomePowerManager:
         await self._save()
 
     # --- mutations (raise ValidationError on bad input) ---
+    async def _autofill(self, raw: dict) -> dict:
+        """Capacity, power limits and minimum SOC come from the battery itself, not from the user."""
+        from .core.profiles import DRIVERS, PROFILE_BY_ID
+
+        driver = PROFILE_BY_ID.get(raw.get("kind"), {}).get("driver", "entities")
+        if driver == "entities":
+            return raw
+        need = ("capacity_wh", "max_charge_w", "max_discharge_w", "min_soc")
+        if all(raw.get(k) not in (None, "") for k in need):
+            return raw
+        try:
+            raw = fill_from_probe(raw, await self.probe(raw))
+        except ValidationError:
+            pass  # offline right now: fall through to the normal validation message
+        if driver == "ecoflow_stream":  # only Auto/Hold: power limits are irrelevant
+            raw.setdefault("max_charge_w", 0)
+            raw.setdefault("max_discharge_w", 0)
+        raw.setdefault("min_soc", 10)  # safe floor if the battery doesn't report one
+        return raw
+
     async def save_device(self, raw: dict) -> dict:
-        d = device_to_dict(device_from_dict(self._with_saved_secret(raw)))
+        d = device_to_dict(device_from_dict(await self._autofill(self._with_saved_secret(raw))))
         self.devices[d["device_id"]] = d
         await self._apply()
         return d

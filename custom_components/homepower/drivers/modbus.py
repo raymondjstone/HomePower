@@ -11,19 +11,43 @@ class ModbusError(Exception):
         self.code = code  # Modbus exception code, if the device answered with one
 
 
-def to_i32(lo: int, hi: int) -> int:
-    """32-bit signed from two registers, LOW word first (as Anker devices send it)."""
-    v = (hi << 16) | lo
+def _signed(v: int) -> int:
     return v - (1 << 32) if v & 0x80000000 else v
 
 
-def to_u32(lo: int, hi: int) -> int:
-    return (hi << 16) | lo
+def to_u32(a: int, b: int, order: str = "big") -> int:
+    """32-bit unsigned from two registers. order="big": first register is the HIGH word."""
+    return (a << 16) | b if order == "big" else (b << 16) | a
 
 
-def from_i32(value: int) -> list[int]:
+def to_i32(a: int, b: int, order: str = "big") -> int:
+    return _signed(to_u32(a, b, order))
+
+
+def from_i32(value: int, order: str = "big") -> list[int]:
     v = value & 0xFFFFFFFF
-    return [v & 0xFFFF, v >> 16]
+    hi, lo = v >> 16, v & 0xFFFF
+    return [hi, lo] if order == "big" else [lo, hi]
+
+
+def detect_word_order(pairs: list[tuple[int, int]], limit: int = 200_000) -> str | None:
+    """Work out which register of a 32-bit pair is the high word.
+
+    A power value in the wrong order looks like millions of watts, so for every non-trivial pair
+    the order that gives a plausible magnitude wins. Returns None when the data can't tell
+    (e.g. everything is zero).
+    """
+    big = little = 0
+    for a, b in pairs:
+        vb, vl = to_i32(a, b, "big"), to_i32(a, b, "little")
+        if vb == vl:
+            continue
+        ok_b, ok_l = abs(vb) <= limit, abs(vl) <= limit
+        if ok_b and not ok_l:
+            big += 1
+        elif ok_l and not ok_b:
+            little += 1
+    return "big" if big > little else "little" if little > big else None
 
 
 def to_text(regs: list[int]) -> str:
