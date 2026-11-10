@@ -21,7 +21,10 @@
           "add_schedule": "Add a schedule",
           "control_battery": "Allow / stop control of a battery",
           "remove_battery": "Remove a battery",
-          "remove_schedule": "Remove a schedule"
+          "remove_schedule": "Remove a schedule",
+          "add_goal": "Add a goal (be at X% by a time)",
+          "remove_goal": "Remove a goal",
+          "settings": "Settings (limits, tariff, forecast, backup)"
         }
       },
       "add_battery": {
@@ -129,10 +132,58 @@
         "data": {
           "schedule": "Schedule"
         }
+      },
+      "add_goal": {
+        "title": "Add a goal",
+        "description": "HomePower charges in the cheapest half-hours so the battery reaches the target by the deadline. Needs prices: set them in Settings.",
+        "data": {
+          "name": "Name",
+          "devices": "Batteries (empty = all)",
+          "target_soc": "Target charge (%)",
+          "by": "Be there by",
+          "days": "Days",
+          "use_forecast": "Charge less when tomorrow's solar forecast is good"
+        }
+      },
+      "remove_goal": {
+        "title": "Remove a goal",
+        "data": {
+          "goal": "Goal"
+        }
+      },
+      "modbus_map": {
+        "title": "Modbus device",
+        "description": "Describe the registers as a small JSON map (see the README). Map: {preset}. {error}",
+        "data": {
+          "host": "IP address",
+          "port": "Port",
+          "unit_id": "Unit ID",
+          "map": "Register map (JSON)"
+        }
+      },
+      "settings": {
+        "title": "Settings",
+        "description": "The common settings. The HomePower panel has all of them, including protected loads.",
+        "data": {
+          "import_limit_w": "House import limit (W)",
+          "peak_shaving": "Peak shaving (discharge to stay under the import limit)",
+          "export_limit_w": "Export limit (W, 0 = none)",
+          "grid_import_entity": "Grid power sensor (optional)",
+          "rates_entity": "Rates entity (Octopus, Agile, Nord Pool...)",
+          "price_peak": "Standard rate",
+          "price_offpeak": "Cheap rate",
+          "offpeak_start": "Cheap rate starts",
+          "offpeak_end": "Cheap rate ends",
+          "forecast_entity": "Tomorrow's solar forecast (kWh)",
+          "backup_reserve_pct": "Backup reserve (%)",
+          "storm_entity": "Turn backup on while this is on",
+          "away_entity": "Away entity",
+          "notify_service": "Also send alerts to (notify.xxx)"
+        }
       }
     },
     "error": {
-      "cannot_connect": "Could not read the battery. {error}"
+      "cannot_connect": "Could not read the device. {error}"
     },
     "abort": {
       "not_loaded": "HomePower is not loaded yet; restart Home Assistant or check the log.",
@@ -168,6 +219,18 @@
     "clear_override": {
       "name": "Clear manual override",
       "description": "Go back to schedules."
+    },
+    "backup": {
+      "name": "Backup mode",
+      "description": "Keep a reserve for power cuts."
+    },
+    "away": {
+      "name": "Away mode",
+      "description": "Use only schedules for away."
+    },
+    "test_control": {
+      "name": "Test control",
+      "description": "Send a tiny safe command and check the battery follows it."
     }
   }
 }

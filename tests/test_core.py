@@ -91,3 +91,13 @@ def test_condition_entity_and_all_day():
     assert resolve([w], "d", dt(2026, 11, 10, 3), on) is None
     assert resolve([w], "d", dt(2026, 11, 10, 1, 30), on) == CHARGE
     assert resolve([w], "d", dt(2026, 11, 10, 1, 30), off) is None
+
+
+def test_materially_different_bypasses_cooldown_only_for_real_changes():
+    from core.reconcile import materially_different as md
+    a = Desired(Mode.CHARGE, 2000)
+    assert md(None, a) and md(a, Desired(Mode.DISCHARGE, 2000)) and md(a, Desired(Mode.HOLD))
+    assert not md(a, Desired(Mode.CHARGE, 2050))          # noise: wait out the cooldown
+    assert md(a, Desired(Mode.CHARGE, 1000)) and md(a, Desired(Mode.CHARGE, 2500))
+    assert not md(Desired(Mode.AUTO), Desired(Mode.AUTO))
+    assert md(Desired(Mode.CHARGE, None), Desired(Mode.CHARGE, 500))

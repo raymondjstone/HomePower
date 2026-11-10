@@ -16,5 +16,10 @@ class DirectAdapter(DeviceAdapter):
     async def apply(self, desired: Desired) -> None:
         await self.driver.apply(desired)
 
+    async def keepalive(self) -> None:
+        fn = getattr(self.driver, "keepalive", None)
+        if fn:
+            await fn()
+
     async def close(self) -> None:
         await self.driver.close()

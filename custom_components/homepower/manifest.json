@@ -4,15 +4,18 @@
   "codeowners": [],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://example.invalid/homepower",
+  "documentation": "https://github.com/raymondjstone/HomePower",
   "integration_type": "service",
-  "iot_class": "calculated",
+  "iot_class": "local_polling",
   "requirements": [],
-  "version": "0.5.1",
+  "version": "0.6.0",
   "after_dependencies": [
     "http",
     "frontend",
     "panel_custom",
-    "websocket_api"
-  ]
+    "websocket_api",
+    "network",
+    "recorder"
+  ],
+  "issue_tracker": "https://github.com/raymondjstone/HomePower/issues"
 }

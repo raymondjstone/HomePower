@@ -10,6 +10,9 @@ class DeviceAdapter(ABC):
     def __init__(self, config: DeviceConfig) -> None:
         self.config = config
 
+    async def keepalive(self) -> None:
+        """Called periodically while a battery is under forced control (default: nothing)."""
+
     async def close(self) -> None:
         """Release connections (default: nothing to release)."""
 

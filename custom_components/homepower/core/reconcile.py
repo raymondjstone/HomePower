@@ -22,6 +22,14 @@ class Diff:
     actual: object
 
 
+def _close(name: str, want: int, have: int) -> bool:
+    """Devices round setpoints; a power within a few watts / 3% counts as 'the same' so we do not
+    re-send the command every cooldown."""
+    if name != "power_w":
+        return want == have
+    return abs(want - have) <= max(20, 0.03 * max(want, have))
+
+
 def diff(desired: Desired, actual: Actual) -> list[Diff]:
     """Managed fields that differ. Unmanaged (None) desired fields are ignored."""
     out: list[Diff] = []
@@ -32,7 +40,7 @@ def diff(desired: Desired, actual: Actual) -> list[Diff]:
         ("target_soc", desired.target_soc, actual.target_soc),
         ("reserve_soc", desired.reserve_soc, actual.reserve_soc),
     ):
-        if want is not None and have is not None and want != have:
+        if want is not None and have is not None and not _close(name, want, have):
             out.append(Diff(name, want, have))
     return out
 
@@ -68,3 +76,16 @@ def clamp(desired: Desired, *, max_charge_w: int, max_discharge_w: int, min_soc:
     if reserve is not None:
         reserve = max(reserve, min_soc)
     return Desired(desired.mode, power, desired.target_soc, reserve)
+
+
+def materially_different(prev: Desired | None, new: Desired, min_w: int = 150, frac: float = 0.15) -> bool:
+    """Is `new` a genuinely new instruction (so it should not wait out the re-apply cooldown)?
+
+    The cooldown exists to stop re-sending the SAME command to a device that is slow to confirm it.
+    A different mode, or a power change that is more than noise, is applied straight away.
+    """
+    if prev is None or prev.mode != new.mode:
+        return True
+    if prev.power_w is None or new.power_w is None:
+        return prev.power_w != new.power_w
+    return abs(prev.power_w - new.power_w) >= max(min_w, frac * max(prev.power_w, new.power_w))

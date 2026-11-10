@@ -107,6 +107,13 @@ class AnkerModbusDriver:
             pass
         return info
 
+    async def keepalive(self) -> None:
+        """Re-send the current setpoint unchanged so the device's comms watchdog (X1) stays fed."""
+        hold = await self.client.read_holding(REG_HOLD_BASE, REG_HOLD_COUNT)
+        if hold[MODE_REG - REG_HOLD_BASE] == MODE_THIRD_PARTY:
+            i = SETPOINT_REG - REG_HOLD_BASE
+            await self.client.write_multiple(SETPOINT_REG, hold[i:i + 2])
+
     # ----------------------------------------------------------------- write
     async def _set_setpoint(self, watts: int) -> None:
         await self.client.write_multiple(SETPOINT_REG, from_i32(watts, self._order or "big"))

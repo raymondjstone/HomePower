@@ -26,6 +26,8 @@ class ScheduleEntry:
     enabled: bool = True
     all_day: bool = False               # ignore start/end (use with a condition entity)
     condition_entity: str | None = None  # only active while this HA entity is 'on' (tariff window etc.)
+    total_power_w: int | None = None     # share this total across the batteries (balanced by capacity / charge)
+    presence: str = "any"                # "any" | "home" | "away"
 
     def _in_season(self, d: date) -> bool:
         if not (self.season_start and self.season_end):
@@ -54,13 +56,21 @@ class ScheduleEntry:
         return False
 
 
-def resolve(entries: list[ScheduleEntry], device_id: str, now: datetime, condition_ok=None) -> Desired | None:
+def resolve_entry(
+    entries: list[ScheduleEntry], device_id: str, now: datetime, condition_ok=None, away: bool = False
+) -> ScheduleEntry | None:
     """Highest-priority matching entry wins; a date-specific entry beats recurring on ties."""
     hits = [
         e for e in entries
         if e.applies(device_id, now)
+        and (e.presence == "any" or (e.presence == "away") == away)
         and (not e.condition_entity or condition_ok is None or condition_ok(e.condition_entity))
     ]
     if not hits:
         return None
-    return max(hits, key=lambda e: (e.priority, e.on_date is not None)).desired
+    return max(hits, key=lambda e: (e.priority, e.on_date is not None))
+
+
+def resolve(entries: list[ScheduleEntry], device_id: str, now: datetime, condition_ok=None, away: bool = False) -> Desired | None:
+    e = resolve_entry(entries, device_id, now, condition_ok, away)
+    return e.desired if e else None

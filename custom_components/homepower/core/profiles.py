@@ -38,7 +38,9 @@ DRIVERS: dict[str, dict] = {
         "discover": "network",   # can scan the LAN
         "setup_help": (
             "In the Anker app open the device > Settings > Three-Party Control Settings and switch on "
-            "Modbus TCP. HomePower then finds the battery on your network and reads it directly."
+            "Modbus TCP. HomePower then finds the battery on your network and reads it directly. "
+            "The battery accepts one controlling Modbus client, so switch off any other integration or tool "
+            "that talks to it over Modbus (for example Anker's own Home Assistant integration)."
         ),
     },
     "ecoflow_stream": {
@@ -54,6 +56,20 @@ DRIVERS: dict[str, dict] = {
         "setup_help": (
             "Create an Access Key and Secret Key at developer.ecoflow.com (sign in with your EcoFlow account), "
             "then HomePower lists the batteries on your account. No other integration is needed."
+        ),
+    },
+    "modbus_generic": {
+        "modes": ALL_MODES,   # narrowed to Auto when the map is read-only
+        "connection": [
+            {"k": "host", "label": "IP address of the device", "type": "text", "req": True},
+            {"k": "port", "label": "Modbus TCP port", "type": "number", "req": False, "default": 502},
+            {"k": "unit_id", "label": "Modbus unit ID", "type": "number", "req": False, "default": 1},
+            {"k": "map", "label": "Register map (JSON)", "type": "json", "req": False},
+        ],
+        "discover": None,
+        "setup_help": (
+            "Describe where the battery keeps its charge level and power as a small JSON register map "
+            "(see the README). Without a setpoint and mode entry it is read-only: monitored, never controlled."
         ),
     },
     "entities": {
@@ -117,6 +133,14 @@ PROFILES: list[dict] = [
     _p("ecoflow_stream_max", "EcoFlow", "EcoFlow STREAM Max", "ecoflow_stream", _EF),
     _p("ecoflow_stream_ac_5000", "EcoFlow", "EcoFlow STREAM AC 5000 / ES5000 (model to confirm)", "ecoflow_stream",
        _EF + " Whether EcoFlow's developer API covers this exact model is unconfirmed; the setup test will tell you."),
+    _p("victron_gx", "Other", "Victron GX system (read-only)", "modbus_generic",
+       "Reads the GX system registers over Modbus TCP (enable it in the GX device: Settings > Services > Modbus/TCP). "
+       "Read-only: shown and recorded, never controlled. Unverified on hardware.",
+       default_unit=100, preset_map={
+           "soc": {"addr": 843, "type": "u16", "fc": 3},
+           "power": {"addr": 842, "type": "i16", "fc": 3, "positive_is": "charging"},
+           "grid": {"addrs": [820, 821, 822], "type": "i16", "fc": 3, "positive_is": "import"}}),
+    _p("modbus_map", "Other", "Other battery via Modbus register map (advanced)", "modbus_generic"),
     _p("custom", "Other", "Other battery (use Home Assistant entities)", "entities"),
 ]
 PROFILE_BY_ID = {p["id"]: p for p in PROFILES}

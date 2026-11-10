@@ -245,3 +245,91 @@ def test_detect_word_order():
     assert detect_word_order([(0xFFBA, 0xFFFF)]) == "little"
     assert detect_word_order([(0, 0), (0, 0)]) is None
     assert detect_word_order([(0, 1500), (0xFFFF, 0xFFBA)]) == "big"
+
+
+# ------------------------------------------------------------ generic Modbus register map
+from hp.drivers.modbus_generic import GenericModbusDriver
+from core.modbus_map import MapError, has_control, parse_map
+from core.serde import ValidationError, device_from_dict
+
+ANKER_AS_MAP = {
+    "soc": {"addr": 10014, "type": "u16", "fc": 4},
+    "power": {"addr": 10008, "type": "i32", "fc": 4, "positive_is": "discharging"},
+    "grid": {"addr": 10012, "type": "i32", "fc": 4, "positive_is": "import"},
+    "setpoint": {"addr": 10071, "type": "i32", "fc": 3, "positive_is": "discharge"},
+    "mode": {"addr": 10064, "type": "u16", "fc": 3, "control_value": 3, "auto_value": 0},
+}
+
+
+def gcfg(port, mp):
+    caps = Capabilities(10000, 3600, 3600, 10)
+    return DeviceConfig("g", "G", "modbus_map", caps, extra={"connection": {"host": "127.0.0.1", "port": port, "unit_id": 1, "map": mp}})
+
+
+def test_map_validation():
+    assert has_control(parse_map(ANKER_AS_MAP)) and not has_control(parse_map({k: ANKER_AS_MAP[k] for k in ("soc", "power")}))
+    for bad in (None, {}, {"soc": {"addr": 1}}, {**ANKER_AS_MAP, "mode": None},
+                {"soc": {"addr": 1, "type": "f64"}, "power": {"addr": 2}}):
+        with pytest.raises(MapError):
+            parse_map(bad)
+    with pytest.raises(MapError):
+        parse_map("{not json")
+    assert parse_map(json_dump := __import__("json").dumps(ANKER_AS_MAP))["soc"]["addrs"] == [10014]
+
+
+def test_generic_driver_reads_and_controls_through_the_map():
+    async def go():
+        async with fake_anker() as dev:
+            d = GenericModbusDriver(gcfg(dev.port, ANKER_AS_MAP))
+            a = await d.read()
+            assert a.online and a.soc == 62 and a.power_w == 1500 and a.grid_w == 300 and a.mode is Mode.AUTO
+            await d.apply(Desired(Mode.CHARGE, 2000))
+            assert dev.hold[10064] == 3 and sp(dev) == -2000
+            a = await d.read()
+            assert a.mode is Mode.CHARGE and a.set_power_w == 2000
+            await d.apply(Desired(Mode.AUTO))
+            assert sp(dev) == 0 and dev.hold[10064] == 0
+            await d.close()
+    asyncio.run(go())
+
+
+def test_generic_read_only_map_never_writes():
+    async def go():
+        async with fake_anker() as dev:
+            d = GenericModbusDriver(gcfg(dev.port, {k: ANKER_AS_MAP[k] for k in ("soc", "power")}))
+            assert (await d.read()).soc == 62
+            await d.apply(Desired(Mode.AUTO))
+            with pytest.raises(ValueError):
+                await d.apply(Desired(Mode.CHARGE, 1000))
+            assert dev.writes == []
+            await d.close()
+    asyncio.run(go())
+
+
+def test_serde_for_generic_and_victron_presets():
+    base = {"device_id": "v", "name": "V", "capacity_wh": 10000, "max_charge_w": 0, "max_discharge_w": 0}
+    v = device_from_dict({**base, "kind": "victron_gx", "connection": {"host": "10.0.0.9"}})
+    assert v.extra["connection"]["unit_id"] == 100 and v.caps.supported_modes == {Mode.AUTO}   # read-only
+    sized = {**base, "max_charge_w": 3000, "max_discharge_w": 3000}
+    with pytest.raises(ValidationError):   # a controllable map with no power limits would silently never charge
+        device_from_dict({**base, "kind": "modbus_map", "connection": {"host": "10.0.0.9", "map": ANKER_AS_MAP}})
+    g = device_from_dict({**sized, "kind": "modbus_map", "connection": {"host": "10.0.0.9", "map": ANKER_AS_MAP}})
+    assert Mode.CHARGE in g.caps.supported_modes
+    g2 = device_from_dict({**sized, "kind": "modbus_map", "connection": {"host": "10.0.0.9", "map": __import__("json").dumps(ANKER_AS_MAP)}})
+    assert g2.extra["connection"]["map"] == ANKER_AS_MAP                                         # JSON text is normalised
+    with pytest.raises(ValidationError):
+        device_from_dict({**base, "kind": "modbus_map", "connection": {"host": "10.0.0.9", "map": "{oops"}})
+
+
+def test_anker_keepalive_rewrites_the_setpoint_unchanged():
+    async def go():
+        async with fake_anker() as dev:
+            d = AnkerModbusDriver(cfg(dev.port))
+            await d.keepalive()
+            assert dev.writes == []                       # not under our control: nothing written
+            await d.apply(Desired(Mode.CHARGE, 1200))
+            dev.writes.clear()
+            await d.keepalive()
+            assert dev.writes == [(10071, [dev.hold[10071], dev.hold[10072]])] and sp(dev) == -1200
+            await d.close()
+    asyncio.run(go())

@@ -114,6 +114,14 @@ input:focus,select:focus{outline:2px solid var(--primary-color);outline-offset:-
 .foot .r{display:flex;gap:8px;margin-left:auto}
 details summary{cursor:pointer;color:var(--secondary-text-color);font-size:13px;margin:12px 0 0}
 .rng{display:flex;gap:10px;align-items:center}.rng input[type=range]{flex:1}.rng output{min-width:70px;text-align:right;font-weight:600}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th,.tbl td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--divider-color)}
+.tbl th{color:var(--secondary-text-color);font-weight:500}
+.banner{border-radius:10px;padding:10px 14px;margin:0 0 14px;font-size:14px}
+.banner.warn{background:#b45309;color:#fff}.banner.info{background:var(--secondary-background-color)}
+.seg2{position:absolute;top:3px;bottom:3px;border-radius:4px;color:#fff;font-size:11px;padding:0 5px;display:flex;align-items:center;overflow:hidden;white-space:nowrap}
+.rule{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:8px;align-items:end;margin:6px 0}
+.steps div{padding:3px 0}.ok{color:#16a34a}.bad{color:#ef4444}
 @media(max-width:600px){.tl .row,.axis{grid-template-columns:80px 1fr}.two,.three{grid-template-columns:1fr}.seg-pick{grid-template-columns:repeat(2,1fr)}}
 `;
 
@@ -223,6 +231,18 @@ class HomePowerPanel extends HTMLElement {
     const now = Date.now();
     if (!force && now - this._lastRender < 1900) return;
     if (this.tab === "overview") this._render();
+    else if (["plan", "insights", "diagnostics"].includes(this.tab) && now - (this._lastTabLoad || 0) > 30000) this._tabLoad();
+  }
+
+  async _tabLoad() {
+    if (this._modal) return;
+    this._lastTabLoad = Date.now();
+    try {
+      if (this.tab === "plan") this._preview = await this._hass.callWS({ type: "homepower/preview", hours: 24 });
+      else if (this.tab === "diagnostics") this._diag = await this._hass.callWS({ type: "homepower/diagnostics" });
+      else if (this.tab === "insights") await this._loadHistory();
+    } catch (e) { this._tabError = e.message || String(e); }
+    if (!this._modal) this._render();
   }
 
   // ---- rendering -------------------------------------------------------
@@ -230,15 +250,20 @@ class HomePowerPanel extends HTMLElement {
     const app = this.shadowRoot.getElementById("app");
     if (!app) return;
     this._lastRender = Date.now();
-    const tabs = [["overview", "mdi:view-dashboard", "Overview"], ["schedules", "mdi:calendar-clock", "Schedules"], ["batteries", "mdi:home-battery", "Batteries"], ["settings", "mdi:cog", "Settings"]];
+    const tabs = [["overview", "mdi:view-dashboard", "Overview"], ["plan", "mdi:target", "Plan"], ["schedules", "mdi:calendar-clock", "Schedules"], ["batteries", "mdi:home-battery", "Batteries"], ["insights", "mdi:chart-line", "Insights"], ["settings", "mdi:cog", "Settings"], ["diagnostics", "mdi:stethoscope", "Diagnostics"]];
     let body = "";
     if (this._loadError) body = `<div class="card empty"><ha-icon icon="mdi:alert-circle"></ha-icon><h3>Couldn't load HomePower</h3>${esc(this._loadError)}</div>`;
     else if (this.tab === "overview") body = this._overview();
     else if (this.tab === "schedules") body = this._schedules();
     else if (this.tab === "batteries") body = this._batteries();
+    else if (this.tab === "plan") body = this._planView();
+    else if (this.tab === "insights") body = this._insightsView();
+    else if (this.tab === "diagnostics") body = this._diagView();
     else body = this._settingsView();
     const paused = !!this.data.paused;
     const html = `<header><ha-menu-button></ha-menu-button><h1><ha-icon icon="mdi:home-battery"></ha-icon>HomePower</h1>
+      <button class="btn sm" data-act="flag" data-flag="backup" data-on="${this.live.backup ? 0 : 1}" title="Keep a reserve for power cuts">${this.live.backup ? "Backup: ON" : "Backup mode"}</button>
+      <button class="btn sm" data-act="flag" data-flag="away" data-on="${this.live.away ? 0 : 1}" title="Use the away schedules">${this.live.away ? "Away: ON" : "Away mode"}</button>
       <button class="btn sm" data-act="pause" title="Stop HomePower sending any commands">${paused ? "Resume control" : "Pause control"}</button></header>
       ${paused ? `<div style="background:#b45309;color:#fff;padding:10px 20px;font-weight:500">HomePower is paused: it is only reading your batteries and will not send any commands. Batteries keep whatever they were last told to do.</div>` : ""}
       <nav>${tabs.map(([k, i, l]) => `<button class="${this.tab === k ? "on" : ""}" data-tab="${k}"><ha-icon icon="${i}"></ha-icon>${l}</button>`).join("")}</nav>
@@ -276,10 +301,12 @@ class HomePowerPanel extends HTMLElement {
       ${tile("Battery flow", fmtW(Math.abs(net)), netTxt + (s.total_charge_limit_w && net > 0 ? ` · cap ${fmtW(s.total_charge_limit_w)}` : "") + (s.total_discharge_limit_w && net < 0 ? ` · cap ${fmtW(s.total_discharge_limit_w)}` : ""), net > 20 ? MODES.charge.color : net < -20 ? MODES.discharge.color : "")}
       ${tile("Stored energy", fmtKwh(stored), `${cap ? Math.round((stored / cap) * 100) : 0}% of ${fmtKwh(cap)}`)}
       ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid sensor set (Settings)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? "#dc2626" : grid < -20 ? MODES.charge.color : "")}
-      ${tile("Batteries online", `${online} / ${ds.length}`, "Reading from Home Assistant")}
+      ${tile("Batteries online", `${online} / ${ds.length}`, "Reading directly from the batteries")}
+      ${this.live.savings ? tile("Saved today", `${this.live.currency || "£"}${(this.live.savings.today).toFixed(2)}`, `This month ${this.live.currency || "£"}${this.live.savings.month.toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? MODES.charge.color : "#dc2626") : ""}
+      ${this.live.price_now != null ? tile("Price now", `${this.live.currency || "£"}${this.live.price_now.toFixed(3)}/kWh`, "From your rates") : ""}
     </div>`;
     const cards = ds.map((d, i) => this._batCard(d, rd[i], i)).join("");
-    return `${tiles}
+    return `${this._alertsBanner()}${tiles}
       <h2 style="margin:22px 0 10px;font-size:18px">Batteries</h2>
       <div class="grid g-cards">${cards}</div>
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-areaspline"></ha-icon>Power, last 30 minutes</h2>${this._flowChart()}</div>
@@ -308,6 +335,7 @@ class HomePowerPanel extends HTMLElement {
     else if (r.online) chips.push(`<span class="chip">Device's own control</span>`);
     if (mode) chips.push(`<span class="chip"><span class="dot" style="background:${mode.color}"></span>Mode: ${mode.label}</span>`);
     if (lv.protected) chips.push(`<span class="chip warn"><ha-icon icon="mdi:shield-alert" style="--mdc-icon-size:14px"></ha-icon>Protection active</span>`);
+    if (lv.reason) chips.push(`<span class="chip" title="Why HomePower is doing this">${esc(lv.reason)}</span>`);
     if (lv.override) chips.push(`<span class="chip m" style="background:#7c3aed">Manual: ${(MODES[lv.override.mode] || {}).label} until ${new Date(lv.override.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>`);
     if (d.control_enabled === false) chips.push(`<span class="chip warn" title="HomePower reads this battery but never sends it commands">Monitor only</span>`);
     if (lv.guard_held) chips.push(`<span class="chip" title="Held by the SOC limit">SOC limit reached</span>`);
@@ -463,7 +491,9 @@ class HomePowerPanel extends HTMLElement {
         <div class="two"><div class="f"><label>Season starts (MM-DD)</label><input type="text" id="s-ss" value="${esc(s.season_start || "")}" placeholder="10-01" pattern="\\d\\d-\\d\\d"></div>
           <div class="f"><label>Season ends (MM-DD)</label><input type="text" id="s-se" value="${esc(s.season_end || "")}" placeholder="03-31" pattern="\\d\\d-\\d\\d"></div></div>
         <div class="two"><div class="f"><label>Only on this date</label><input type="date" id="s-date" value="${esc(s.on_date || "")}"></div>
-          <div class="f"><label>Priority (higher wins)</label><input type="number" id="s-prio" value="${s.priority || 0}" min="-100" max="100"></div></div></details>
+          <div class="f"><label>Priority (higher wins)</label><input type="number" id="s-prio" value="${s.priority || 0}" min="-100" max="100"></div></div>
+        <div class="two"><div class="f"><label>Applies when</label><select id="s-presence">${[["any", "Always"], ["home", "Home only"], ["away", "Away mode only"]].map(([v, l]) => `<option value="${v}" ${(s.presence || "any") === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+          <div class="f"><label>Share one total across batteries (W)</label><input type="number" id="s-total" min="0" step="100" value="${s.total_power_w ?? ""}" placeholder="off: each battery uses the power above"></div></div></details>
       <div class="err" id="m-err"></div>
       <div class="foot">${isNew ? "<span></span>" : `<button class="btn danger" data-act="del-schedule" data-id="${esc(s.id)}"><ha-icon icon="mdi:delete" style="--mdc-icon-size:16px"></ha-icon>Delete</button>`}
         <div class="r"><button class="btn" data-act="close">Cancel</button><button class="btn pri" data-act="save-schedule" data-orig="${isNew ? "" : esc(s.id)}">Save</button></div></div>
@@ -505,6 +535,7 @@ class HomePowerPanel extends HTMLElement {
       days: [...r.querySelectorAll('input[name="s-day"]:checked')].map((x) => +x.value),
       season_start: v("s-ss").trim() || null, season_end: v("s-se").trim() || null,
       on_date: v("s-date") || null, priority: +v("s-prio") || 0, enabled: true,
+      presence: v("s-presence") || "any", total_power_w: n("s-total"),
       all_day: r.getElementById("s-allday").checked, condition_entity: v("s-cond").trim() || null,
     };
   }
@@ -612,6 +643,15 @@ class HomePowerPanel extends HTMLElement {
         <div class="f"><button class="btn" data-act="find-eco"><ha-icon icon="mdi:magnify" style="--mdc-icon-size:16px"></ha-icon>Find my batteries</button></div>
         <div class="f"><label>Battery *</label><select id="c-sn">${conn.sn ? `<option value="${esc(conn.sn)}" selected>${esc(conn.sn)}</option>` : `<option value="">Press "Find my batteries" first</option>`}</select></div>
         <button class="btn" data-act="test-battery"><ha-icon icon="mdi:lan-check" style="--mdc-icon-size:16px"></ha-icon>Test connection</button>`;
+    } else if (prof.driver === "modbus_generic") {
+      const mp = conn.map || prof.preset_map || {};
+      box.innerHTML = `${help}
+        <div class="three"><div class="f" style="grid-column:span 2"><label>Device IP address *</label><input type="text" id="c-host" value="${esc(conn.host || "")}" placeholder="192.168.1.60"></div>
+          <div class="f"><label>Port</label><input type="number" id="c-port" value="${conn.port || 502}"></div></div>
+        <div class="f"><label>Modbus unit ID</label><input type="number" id="c-unit_id" value="${conn.unit_id || prof.default_unit || 1}"></div>
+        <div class="f"><label>Register map (JSON)</label><textarea id="c-map" rows="9" style="font-family:monospace;font-size:12px;width:100%;padding:8px;border-radius:8px;border:1px solid var(--divider-color);background:var(--secondary-background-color);color:var(--primary-text-color)">${esc(JSON.stringify(mp, null, 2))}</textarea>
+          <span class="hint">Needs at least "soc" and "power". Add "setpoint" and "mode" only if you want HomePower to control it.</span></div>
+        <button class="btn" data-act="test-battery"><ha-icon icon="mdi:lan-check" style="--mdc-icon-size:16px"></ha-icon>Test connection</button>`;
     } else {
       const ent = (keepValues && d.entities) || {};
       const en = this._hass.entities || {}, dv = this._hass.devices || {};
@@ -676,6 +716,7 @@ class HomePowerPanel extends HTMLElement {
   _collectConnection(prof, spec) {
     const r = this.shadowRoot, v = (k) => (r.getElementById("c-" + k) || {}).value || "";
     const c = Object.fromEntries(spec.connection.map((f) => [f.k, v(f.k).trim()]));
+    if (prof.driver === "modbus_generic") { c.port = +c.port || 502; c.unit_id = +c.unit_id || 1; c.map = v("map"); }
     if (prof.driver === "anker_modbus") { c.port = +c.port || 502; c.unit_id = +c.unit_id || 1; }
     return c;
   }
@@ -718,26 +759,237 @@ class HomePowerPanel extends HTMLElement {
     } catch (e) { box.innerHTML = `<div class="err">Could not read the battery: ${esc(e.message || e)}</div>`; }
   }
 
-  // ---- settings tab ------------------------------------------------------
+  // ---- alerts banner ------------------------------------------------------
+  _alertsBanner() {
+    const out = [];
+    const nameOf = (k) => { const id = k.split(":")[1]; return (this.data.devices.find((d) => d.device_id === id) || {}).name || id; };
+    for (const a of this.live.alerts || []) {
+      const kind = a.split(":")[0];
+      out.push(`<div class="banner warn">${esc(nameOf(a))}: ${{ offline: "offline - HomePower cannot read it", error: "a command failed", unconfirmed: "is not following HomePower's commands", protect: "manufacturer protection is active" }[kind] || esc(kind)}</div>`);
+    }
+    for (const n of this.live.notes || []) out.push(`<div class="banner info">${esc(n)}</div>`);
+    if (this.live.backup) out.push(`<div class="banner info">Backup mode is on: batteries are topped up to the backup reserve and not discharged below it.</div>`);
+    if (this.live.away) out.push(`<div class="banner info">Away mode is on: only schedules for "away" (or "always") apply.</div>`);
+    return out.join("");
+  }
+
+  // ---- plan tab: goals, 24h preview, conflicts ----------------------------------
+  _planView() {
+    const goals = this.data.goals || [];
+    const names = (g) => !g.device_ids.length ? "All batteries" : g.device_ids.map((id) => (this.data.devices.find((d) => d.device_id === id) || {}).name || id).join(", ");
+    const gcards = goals.map((g) => `<div class="card sch ${g.enabled ? "" : "off"}">
+      <label class="switch"><input type="checkbox" data-gtoggle="${esc(g.id)}" ${g.enabled ? "checked" : ""}><i></i></label>
+      <div class="meta"><div class="when">${g.target_soc}% by ${g.by}</div><div style="font-weight:600">${esc(g.id)}</div>
+        <div class="sub">${esc(names(g))}${g.use_forecast ? " · less when solar is forecast" : ""}${g.max_power_w ? " · max " + fmtW(g.max_power_w) : ""}</div>
+        <div class="dayrow">${DAYS.map((d, i) => `<span class="${g.days.includes(i) ? "on" : ""}">${d.slice(0, 2)}</span>`).join("")}</div></div>
+      <div><button class="btn sm" data-act="edit-goal" data-id="${esc(g.id)}">Edit</button></div></div>`).join("");
+    const pv = this._preview;
+    let timeline = `<div class="sub" style="color:var(--secondary-text-color)">Loading…</div>`;
+    if (pv) {
+      const t0 = Date.now(), span = 24 * 3600e3;
+      const rows = this.data.devices.map((d) => {
+        const segs = (pv.segments[d.device_id] || []).map((sg) => {
+          const a = Math.max(0, (Date.parse(sg.start) - t0) / span), b = Math.min(1, (Date.parse(sg.end) - t0) / span);
+          if (b <= a) return "";
+          const m = MODES[sg.mode] || MODES.hold;
+          return `<div class="seg2" title="${esc(sg.source)}: ${esc(m.label)}${sg.power_w ? " " + fmtW(sg.power_w) : ""}" style="left:${a * 100}%;width:${(b - a) * 100}%;background:${m.color}">${b - a > 0.12 ? esc(sg.source) : ""}</div>`;
+        }).join("");
+        return `<div class="row"><div class="nm">${esc(d.name)}</div><div class="bar">${segs}<div class="now" style="left:0"></div></div></div>`;
+      }).join("");
+      const hrs = [0, 6, 12, 18, 24].map((h) => `<span>${new Date(t0 + h * 3600e3).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>`).join("");
+      const conflicts = pv.conflicts.map((c) => `<div class="banner warn">Schedules ${c.schedules.map((x) => `"${esc(x)}"`).join(" and ")} clash on ${esc((this.data.devices.find((d) => d.device_id === c.device_id) || {}).name || c.device_id)} from ${new Date(c.start).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })} to ${new Date(c.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Give one a higher priority.</div>`).join("");
+      const plan = pv.plan.length ? `<details><summary>Planned cheap-rate charging (${pv.plan.length} slots)</summary><table class="tbl"><tr><th>Battery</th><th>From</th><th>To</th><th>Power</th><th>Price</th></tr>${pv.plan.map((x) => `<tr><td>${esc((this.data.devices.find((d) => d.device_id === x.device_id) || {}).name || x.device_id)}</td><td>${new Date(x.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td><td>${new Date(x.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td><td>${fmtW(x.power_w)}</td><td>${x.price}</td></tr>`).join("")}</table></details>` : "";
+      timeline = `${conflicts}<div class="tl">${rows}<div class="axis"><div></div><div>${hrs}</div></div></div>${plan}
+        <div class="legend">${Object.entries(MODES).map(([k, m]) => `<span><i class="sw" style="background:${m.color}"></i>${m.label}</span>`).join("")}<span>Gaps = no instruction (the battery runs itself)</span></div>`;
+    }
+    return `<div class="bar-actions"><h2>Goals</h2><button class="btn pri" data-act="add-goal"><ha-icon icon="mdi:plus"></ha-icon>Add goal</button></div>
+      ${goals.length ? `<div class="grid g-cards">${gcards}</div>` : `<div class="card empty"><ha-icon icon="mdi:target"></ha-icon><h3>No goals yet</h3>"Be at 90% by 07:00": HomePower charges in the cheapest half-hours to get there. It needs prices: set a rates entity or a cheap-rate tariff in Settings.<br><br><button class="btn pri" data-act="add-goal">Add a goal</button></div>`}
+      <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:timeline-clock"></ha-icon>What will happen next (24 hours)</h2>${this._tabError ? `<div class="err">${esc(this._tabError)}</div>` : ""}${timeline}</div>`;
+  }
+
+  _goalModal(g, isNew) {
+    const devs = this.data.devices, sel = new Set(g.device_ids);
+    this._openModal(`<div class="overlay" data-close-bg><div class="modal" role="dialog" aria-label="Goal">
+      <h2>${isNew ? "Add goal" : "Edit goal"}</h2><p class="lead">Be at a charge level by a time, as cheaply as possible.</p>
+      <div class="f"><label>Name</label><input type="text" id="gl-name" value="${esc(g.id)}" placeholder="e.g. Ready for the morning"></div>
+      <h3>Which batteries</h3><div class="checks">${devs.map((d) => `<label><input type="checkbox" name="gl-dev" value="${esc(d.device_id)}" ${sel.has(d.device_id) ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div>
+      <div class="f"><span class="hint">Leave all unticked for every battery. Batteries that cannot charge from the grid are skipped.</span></div>
+      <div class="two"><div class="f"><label>Target charge (%)</label><input type="number" id="gl-target" min="1" max="100" value="${g.target_soc}"></div>
+        <div class="f"><label>Be there by</label><input type="time" id="gl-by" value="${g.by}"></div></div>
+      <div class="daypick">${DAYS.map((d, i) => `<label><input type="checkbox" name="gl-day" value="${i}" ${g.days.includes(i) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div>
+      <div class="f"><span class="hint">The day the deadline falls on.</span></div>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-forecast" ${g.use_forecast ? "checked" : ""}>Charge less when tomorrow's solar forecast is good (set the forecast entity in Settings)</label>
+      <div class="f"><label>Max total charge power for this goal (W, optional)</label><input type="number" id="gl-max" min="0" step="100" value="${g.max_power_w ?? ""}"></div>
+      <div class="err" id="m-err"></div>
+      <div class="foot">${isNew ? "<span></span>" : `<button class="btn danger" data-act="del-goal" data-id="${esc(g.id)}">Delete</button>`}
+        <div class="r"><button class="btn" data-act="close">Cancel</button><button class="btn pri" data-act="save-goal" data-orig="${isNew ? "" : esc(g.id)}">Save</button></div></div>
+    </div></div>`);
+  }
+
+  _collectGoal() {
+    const r = this.shadowRoot, v = (id) => r.getElementById(id).value;
+    return { id: v("gl-name").trim(), device_ids: [...r.querySelectorAll('input[name="gl-dev"]:checked')].map((x) => x.value),
+      target_soc: v("gl-target"), by: v("gl-by"), days: [...r.querySelectorAll('input[name="gl-day"]:checked')].map((x) => +x.value),
+      use_forecast: r.getElementById("gl-forecast").checked, max_power_w: v("gl-max") === "" ? null : +v("gl-max"), enabled: true };
+  }
+
+  // ---- insights tab: savings, energy, long-term history -----------------------------
+  async _loadHistory() {
+    const ids = this.data.entity_ids || {}, list = [];
+    if (ids.battery_power) list.push(ids.battery_power);
+    if (ids.grid_power) list.push(ids.grid_power);
+    for (const d of this.data.devices) { const e = (ids.devices || {})[d.device_id]; if (e && e.soc) list.push(e.soc); }
+    const hours = { "24h": 24, "7d": 168, "30d": 720 }[this._range || "24h"];
+    if (!list.length) { this._hist2 = {}; return; }
+    const end = new Date(), start = new Date(end - hours * 3600e3);
+    this._hist2 = await this._hass.callWS({ type: "recorder/statistics_during_period", start_time: start.toISOString(), end_time: end.toISOString(),
+      statistic_ids: list, period: hours > 48 ? "hour" : "5minute", types: ["mean"] });
+  }
+
+  _lineChart(series, unit) {
+    const all = series.flatMap((s) => s.pts);
+    if (all.length < 2) return `<div class="sub" style="color:var(--secondary-text-color)">No history yet. It fills in as Home Assistant records the sensors.</div>`;
+    const W = 800, H = 200, t0 = Math.min(...all.map((p) => p.t)), t1 = Math.max(...all.map((p) => p.t));
+    let lo = Math.min(0, ...all.map((p) => p.v)), hi = Math.max(1, ...all.map((p) => p.v));
+    if (unit === "%") { lo = 0; hi = 100; }
+    const X = (t) => ((t - t0) / Math.max(1, t1 - t0)) * W, Y = (v) => H - ((v - lo) / (hi - lo)) * (H - 8) - 4;
+    const lines = series.map((s) => `<path d="${s.pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`).join("")}" fill="none" stroke="${s.color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`).join("");
+    const zero = lo < 0 ? `<line x1="0" x2="${W}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--divider-color)"/>` : "";
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:220px" preserveAspectRatio="none" role="img">${zero}${lines}</svg>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--secondary-text-color)"><span>${new Date(t0).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span><span>${unit === "%" ? "0–100%" : fmtW(lo) + " … " + fmtW(hi)}</span><span>now</span></div>
+      <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div>`;
+  }
+
+  _insightsView() {
+    const L = this.live, E = L.energy || {}, cur = L.currency || "£", ids = this.data.entity_ids || {}, H = this._hist2 || {};
+    const pts = (eid) => (H[eid] || []).filter((r) => r.mean != null).map((r) => ({ t: typeof r.start === "number" ? r.start : Date.parse(r.start), v: r.mean }));
+    const powerSeries = [];
+    if (ids.battery_power) powerSeries.push({ name: "Battery power (+ charging)", color: SERIES[0], pts: pts(ids.battery_power) });
+    if (ids.grid_power) powerSeries.push({ name: "Grid (+ importing)", color: SERIES[1], pts: pts(ids.grid_power) });
+    const socSeries = this.data.devices.map((d, i) => ({ name: d.name, color: this._color(i), pts: pts(((ids.devices || {})[d.device_id] || {}).soc) }));
+    const kwh = (k) => (E[k] || 0).toFixed(1);
+    const rows = this.data.devices.map((d) => {
+      const cin = E[`bat:${d.device_id}_in`] || 0, out = E[`bat:${d.device_id}_out`] || 0;
+      return `<tr><td>${esc(d.name)}</td><td>${kwh(`bat:${d.device_id}_in`)} kWh</td><td>${kwh(`bat:${d.device_id}_out`)} kWh</td><td>${cin >= 1 ? Math.round((out / cin) * 100) + "%" : "–"}</td><td>${(out / Math.max(d.capacity_wh / 1000, 0.1)).toFixed(1)}</td></tr>`;
+    }).join("");
+    const rng = ["24h", "7d", "30d"].map((r) => `<button class="btn sm ${((this._range || "24h") === r) ? "pri" : ""}" data-act="range" data-r="${r}">${r}</button>`).join(" ");
+    const tile = (l, v, sub) => `<div class="card tile"><div class="lbl">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`;
+    return `<div class="bar-actions"><h2>Insights</h2></div>
+      <div class="grid g-tiles">
+        ${tile("Saved today", `${cur}${(L.savings ? L.savings.today : 0).toFixed(2)}`, "Estimate: avoided import minus grid-charging cost")}
+        ${tile("Saved this month", `${cur}${(L.savings ? L.savings.month : 0).toFixed(2)}`, "Needs prices set in Settings")}
+        ${tile("Grid imported", `${kwh("grid_in")} kWh`, `Exported ${kwh("grid_out")} kWh`)}
+        ${tile("Solar", `${kwh("pv_in")} kWh`, "As reported by your batteries")}
+      </div>
+      <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:battery-sync"></ha-icon>Batteries (since HomePower started recording)</h2>
+        <table class="tbl"><tr><th>Battery</th><th>Charged</th><th>Discharged</th><th>Round-trip</th><th>Cycles</th></tr>${rows || ""}</table>
+        <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">These are also Home Assistant sensors, so you can add them to the Energy dashboard.</p></div>
+      <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-areaspline"></ha-icon>History ${rng}</h2>${this._tabError ? `<div class="err">${esc(this._tabError)}</div>` : ""}
+        ${this._lineChart(powerSeries, "W")}<h2 style="margin-top:16px">Charge level</h2>${this._lineChart(socSeries, "%")}</div>`;
+  }
+
+  // ---- diagnostics tab -----------------------------------------------------------
+  _diagView() {
+    const dg = this._diag;
+    if (!dg) return `<div class="bar-actions"><h2>Diagnostics</h2></div><div class="card">Loading…</div>`;
+    const rows = Object.entries(dg.devices).map(([id, x]) => `<div class="card" style="margin-bottom:12px"><h2>${esc(x.name)} <span class="chip ${x.online ? "" : "bad"}">${x.online ? "Online" : "Offline"}</span> <span class="chip">${esc(x.driver || "")}</span> ${x.control_enabled ? "" : '<span class="chip warn">Monitor only</span>'}</h2>
+      <table class="tbl"><tr><th>Connection</th><td>${esc(Object.entries(x.connection || {}).filter(([k]) => k !== "map").map(([k, v]) => `${k}=${v}`).join("  "))}</td></tr>
+      <tr><th>Last good read</th><td>${x.last_read_ok ? new Date(x.last_read_ok).toLocaleString() : "never"}</td></tr>
+      <tr><th>Battery reports</th><td>${esc(x.actual_mode || "?")}${x.word_order ? ` · 32-bit word order: ${esc(x.word_order)}` : ""}</td></tr>
+      <tr><th>HomePower wants</th><td>${x.desired ? esc(x.desired.mode) + (x.desired.power_w ? " " + fmtW(x.desired.power_w) : "") : "nothing (battery runs itself)"} ${x.reason ? "· " + esc(x.reason) : ""}</td></tr>
+      <tr><th>Last command</th><td>${x.last_command ? `${esc(x.last_command.mode)} ${x.last_command.power_w ? fmtW(x.last_command.power_w) : ""} at ${new Date(x.last_command.at).toLocaleTimeString()} - ${esc(x.last_command.result)}` : "none yet"}</td></tr>
+      <tr><th>Problems</th><td>${x.last_error ? `<span class="bad">${esc(x.last_error)}</span>` : "none"}${x.unconfirmed ? ` · ${x.unconfirmed} unconfirmed` : ""}${x.release_pending ? " · holding control" : ""}</td></tr></table>
+      <div style="margin-top:10px"><button class="btn sm" data-act="test-control" data-id="${esc(id)}"><ha-icon icon="mdi:flask-outline" style="--mdc-icon-size:16px"></ha-icon>Test control</button></div>
+      <div class="steps" id="test-${esc(id)}" style="margin-top:8px">${this._tests && this._tests[id] ? this._tests[id] : ""}</div></div>`).join("");
+    const ev = (dg.events || []).slice().reverse().slice(0, 40).map(([t, id, m]) => `<div><span class="t">${esc(new Date(t).toLocaleTimeString())}</span> <b>${esc(id)}</b> ${esc(m)}</div>`).join("");
+    return `<div class="bar-actions"><h2>Diagnostics</h2><button class="btn" data-act="copy-debug"><ha-icon icon="mdi:content-copy" style="--mdc-icon-size:16px"></ha-icon>Copy debug info</button></div>
+      ${(dg.alerts || []).length ? `<div class="banner warn">Active alerts: ${esc(dg.alerts.join(", "))}</div>` : ""}${rows || '<div class="card empty">No batteries yet.</div>'}
+      <div class="card"><h2>Recent activity</h2><div class="log">${ev || "Nothing yet."}</div></div>`;
+  }
+
+  async _runTest(id) {
+    const el = this.shadowRoot.getElementById("test-" + id);
+    if (el) el.innerHTML = `<div class="sub">Testing… this takes about 10 seconds. HomePower sends a tiny safe command, checks it, and hands the battery back.</div>`;
+    let html;
+    try {
+      const r = await this._hass.callWS({ type: "homepower/device/test", device_id: id });
+      html = `<div><b class="${r.ok ? "ok" : "bad"}">${r.ok ? "Passed: the battery follows HomePower's commands." : "Failed"}</b></div>` + r.steps.map((x) => `<div class="${x.ok ? "ok" : "bad"}">${x.ok ? "✔" : "✘"} ${esc(x.name)}${x.detail ? ` <span class="sub" style="color:var(--secondary-text-color)">- ${esc(x.detail)}</span>` : ""}</div>`).join("");
+    } catch (e) { html = `<div class="bad">${esc(e.message || e)}</div>`; }
+    (this._tests ||= {})[id] = html;
+    const el2 = this.shadowRoot.getElementById("test-" + id);
+    if (el2) el2.innerHTML = html;
+  }
+
+  // ---- settings tab (data driven) ---------------------------------------------------
   _settingsView() {
     const s = this.data.settings || {};
-    const gridOpts = this._entityOptions(["sensor"]);
-    return `<div class="bar-actions"><h2>Settings</h2></div><div class="card" style="max-width:640px">
-      <h2><ha-icon icon="mdi:transmission-tower"></ha-icon>Grid meter</h2>
-      <div class="f"><label>Grid power sensor (W)</label><input type="text" id="g-ent" list="dl-grid" value="${esc(s.grid_import_entity || "")}" placeholder="sensor.…" autocomplete="off"><datalist id="dl-grid">${gridOpts}</datalist>
-        <span class="hint">Needed for zero-import and the Grid tile.</span></div>
-      <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="g-inv" ${s.grid_invert ? "checked" : ""}>Sensor is positive when exporting</label>
-      <h2 style="margin-top:22px"><ha-icon icon="mdi:shield-check"></ha-icon>Safety limits</h2>
-      <div class="two"><div class="f"><label>Max total charge (W, 0 = none)</label><input type="number" id="g-cc" min="0" step="100" value="${s.total_charge_limit_w || 0}"></div>
-        <div class="f"><label>Max total discharge (W, 0 = none)</label><input type="number" id="g-dc" min="0" step="100" value="${s.total_discharge_limit_w || 0}"></div></div>
-      <div class="two"><div class="f"><label>House import limit (W)</label><input type="number" id="g-il" min="0" step="100" value="${s.import_limit_w ?? 7000}"></div>
-        <div class="f"><label>Re-apply cooldown (s)</label><input type="number" id="g-cd" min="0" value="${s.cooldown_s ?? 120}"></div></div>
-      <span class="hint" style="font-size:12px;color:var(--secondary-text-color)">Charge/discharge limits apply to all batteries and schedules combined.</span>
-      <h2 style="margin-top:22px"><ha-icon icon="mdi:scale-balance"></ha-icon>Zero-import battery</h2>
-      <div class="f"><label>Keeps grid import at 0 W when no schedule applies</label><select id="g-zi"><option value="">None</option>${this.data.devices.map((d) => `<option value="${esc(d.device_id)}" ${s.zero_import_device === d.device_id ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>
-      <div class="err" id="g-msg"></div>
-      <div class="foot"><span></span><div class="r"><button class="btn pri" data-act="save-settings">Save settings</button></div></div></div>`;
+    const num = (k, label, hint, step = 1) => ({ k, t: "num", label, hint, step });
+    const SEC = [
+      ["Grid meter", "mdi:transmission-tower", [
+        { k: "grid_import_entity", t: "entity", dom: ["sensor"], label: "Grid power sensor (W) - optional", hint: "Leave empty to use the grid reading your batteries report." },
+        { k: "grid_invert", t: "bool", label: "Sensor is positive when exporting" }]],
+      ["Limits", "mdi:shield-check", [
+        num("import_limit_w", "House import limit (W)", "Caps total charging; with peak shaving on, batteries also discharge to stay under it."),
+        { k: "peak_shaving", t: "bool", label: "Peak shaving: discharge to keep import under the limit" },
+        num("export_limit_w", "Export limit (W, 0 = none)", "For grid connection rules (G98/G99): charge or trim discharge to stay under it."),
+        num("total_charge_limit_w", "Max total charge (W, 0 = none)"), num("total_discharge_limit_w", "Max total discharge (W, 0 = none)"),
+        num("cooldown_s", "Re-apply cooldown (s)", "Stops the same command being re-sent too often.")]],
+      ["Zero-import battery", "mdi:scale-balance", [{ k: "zero_import_device", t: "device", label: "Keeps grid import at 0 W when nothing else applies" }]],
+      ["Tariff & prices", "mdi:cash", [
+        { k: "rates_entity", t: "entity", dom: ["sensor", "event"], label: "Rates entity (Octopus, Agile, Nord Pool...)", hint: "Anything with a list of {start, end, value} in its attributes." },
+        { k: "rates_unit", t: "select", label: "Rates are in", options: [["auto", "Detect automatically"], ["pence", "Pence (or cents)"], ["main", "Pounds (or euros)"]] },
+        num("price_peak", "Standard rate", "Used when there is no rates entity, or to fill gaps.", "any"), num("price_offpeak", "Cheap rate", "", "any"),
+        { k: "offpeak_start", t: "time", label: "Cheap rate starts" }, { k: "offpeak_end", t: "time", label: "Cheap rate ends" },
+        { k: "currency", t: "text", label: "Currency symbol" }]],
+      ["Solar forecast", "mdi:weather-sunny", [
+        { k: "forecast_entity", t: "entity", dom: ["sensor"], label: "Tomorrow's solar forecast (kWh)", hint: "Solcast or Forecast.Solar 'tomorrow' sensor." },
+        num("forecast_share", "Share of forecast solar that reaches the battery (0-1)", "", "0.05")]],
+      ["Backup & away", "mdi:shield-home", [
+        num("backup_reserve_pct", "Backup reserve (%)", "Backup mode tops up to this and never discharges below it."),
+        { k: "storm_entity", t: "entity", dom: ["binary_sensor", "input_boolean", "switch"], label: "Turn backup mode on automatically while this is on (e.g. a weather alert)" },
+        { k: "away_entity", t: "entity", dom: ["binary_sensor", "input_boolean", "person", "device_tracker"], label: "Away entity (on / away / not_home turns away mode on)" }]],
+      ["Protect loads", "mdi:ev-station", [{ k: "load_rules", t: "rules", label: "Don't charge/discharge the battery while these are busy (EV charger, heat pump...)" }]],
+      ["Alerts", "mdi:bell", [{ k: "notify_service", t: "text", label: "Also send alerts to (e.g. notify.mobile_app_phone)", hint: "Alerts always appear as Home Assistant notifications." }]],
+    ];
+    const field = (f) => {
+      const v = s[f.k] ?? "";
+      if (f.t === "bool") return `<label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="st-${f.k}" ${s[f.k] ? "checked" : ""}>${esc(f.label)}</label>`;
+      if (f.t === "select") return `<div class="f"><label>${esc(f.label)}</label><select id="st-${f.k}">${f.options.map(([val, l]) => `<option value="${val}" ${(v || "auto") === val ? "selected" : ""}>${l}</option>`).join("")}</select></div>`;
+      if (f.t === "device") return `<div class="f"><label>${esc(f.label)}</label><select id="st-${f.k}"><option value="">None</option>${this.data.devices.map((d) => `<option value="${esc(d.device_id)}" ${v === d.device_id ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>`;
+      if (f.t === "rules") {
+        const rows = (s.load_rules || []).map((r) => this._ruleRow(r)).join("");
+        return `<div class="f"><label>${esc(f.label)}</label><div id="st-rules">${rows}</div><div><button class="btn sm" data-act="add-rule">+ Add rule</button></div></div>`;
+      }
+      const dl = f.t === "entity" ? `list="dl-st-${f.k}"` : "", opts = f.t === "entity" ? `<datalist id="dl-st-${f.k}">${this._entityOptions(f.dom)}</datalist>` : "";
+      const type = f.t === "num" ? "number" : f.t === "time" ? "time" : "text";
+      return `<div class="f"><label>${esc(f.label)}</label><input type="${type}" id="st-${f.k}" ${dl} value="${esc(v ?? "")}" ${f.t === "num" ? `step="${f.step || 1}"` : ""} autocomplete="off">${opts}${f.hint ? `<span class="hint">${esc(f.hint)}</span>` : ""}</div>`;
+    };
+    this._settingKeys = SEC.flatMap(([, , fs]) => fs);
+    return `<div class="bar-actions"><h2>Settings</h2></div><div style="max-width:720px">${SEC.map(([h, icon, fs]) => `<div class="card" style="margin-bottom:16px"><h2><ha-icon icon="${icon}"></ha-icon>${h}</h2>${fs.map(field).join("")}</div>`).join("")}
+      <div class="err" id="g-msg"></div><div class="foot"><span></span><div class="r"><button class="btn pri" data-act="save-settings">Save settings</button></div></div></div>`;
   }
+
+  _ruleRow(r) {
+    return `<div class="rule"><div class="f"><label>Entity</label><input type="text" class="r-ent" list="dl-rule" value="${esc(r.entity || "")}" placeholder="sensor.ev_charger_power"><datalist id="dl-rule">${this._entityOptions(["sensor", "binary_sensor", "switch", "input_boolean"])}</datalist></div>
+      <div class="f"><label>Busy above (W, blank = on/off)</label><input type="number" class="r-above" value="${r.above_w ?? ""}"></div>
+      <div class="f"><label>Block</label><select class="r-block">${["discharge", "charge", "both"].map((b) => `<option ${r.block === b ? "selected" : ""}>${b}</option>`).join("")}</select></div>
+      <button class="btn sm" data-act="del-rule">✕</button></div>`;
+  }
+
+  _collectSettings() {
+    const r = this.shadowRoot, out = {};
+    for (const f of this._settingKeys || []) {
+      if (f.t === "rules") {
+        out[f.k] = [...r.querySelectorAll("#st-rules .rule")].map((row) => ({ entity: row.querySelector(".r-ent").value.trim(), above_w: row.querySelector(".r-above").value, block: row.querySelector(".r-block").value })).filter((x) => x.entity);
+        continue;
+      }
+      const el = r.getElementById("st-" + f.k);
+      if (!el) continue;
+      out[f.k] = f.t === "bool" ? el.checked : el.value.trim ? el.value.trim() : el.value;
+    }
+    return out;
+  }
+
 
   // ---- events --------------------------------------------------------------
   _openModal(html) { this._modal = true; this.shadowRoot.getElementById("modal").innerHTML = html; }
@@ -761,7 +1013,7 @@ class HomePowerPanel extends HTMLElement {
     if (bg && e.target === bg) return this._closeModal();
     const t = e.target.closest("[data-tab],[data-act]");
     if (!t) return;
-    if (t.dataset.tab) { this.tab = t.dataset.tab; return this._render(); }
+    if (t.dataset.tab) { this.tab = t.dataset.tab; this._render(); return this._tabLoad(); }
     const { act, id } = t.dataset;
     const dev = () => this.data.devices.find((d) => d.device_id === id);
     switch (act) {
@@ -832,20 +1084,49 @@ class HomePowerPanel extends HTMLElement {
         await this._call({ type: "homepower/device/delete", device_id: id });
         await this._reload(); return this._closeModal();
       case "save-settings": {
-        const g = (i) => this.shadowRoot.getElementById(i);
-        const msg = g("g-msg");
-        const ok = await this._call({ type: "homepower/settings/save", settings: {
-          grid_import_entity: g("g-ent").value.trim(), grid_invert: g("g-inv").checked,
-          total_charge_limit_w: g("g-cc").value, total_discharge_limit_w: g("g-dc").value,
-          import_limit_w: g("g-il").value, cooldown_s: g("g-cd").value, zero_import_device: g("g-zi").value,
-        } }, (m) => (msg.textContent = m));
-        if (ok) { msg.style.color = "#16a34a"; msg.textContent = "Saved."; setTimeout(async () => { await this._reload(); this._subscribe(); }, 2000); }
+        const msg = this.shadowRoot.getElementById("g-msg");
+        const ok = await this._call({ type: "homepower/settings/save", settings: this._collectSettings() }, (m) => { msg.style.color = ""; msg.textContent = m; });
+        if (ok) { msg.style.color = "#16a34a"; msg.textContent = "Saved."; await this._reload(); }
+        return;
+      }
+      case "add-rule": { this.shadowRoot.getElementById("st-rules").insertAdjacentHTML("beforeend", this._ruleRow({ block: "discharge" })); return; }
+      case "del-rule": { t.closest(".rule").remove(); return; }
+      case "flag":
+        if (await this._call({ type: "homepower/flag", flag: t.dataset.flag, enabled: t.dataset.on === "1" }, (m) => alert(m))) { this.live[t.dataset.flag] = t.dataset.on === "1"; this._render(); }
+        return;
+      case "add-goal": return this._goalModal({ id: "", device_ids: [], target_soc: 90, by: "07:00", days: [0, 1, 2, 3, 4, 5, 6], use_forecast: false, max_power_w: null, enabled: true }, true);
+      case "edit-goal": return this._goalModal((this.data.goals || []).find((x) => x.id === id), false);
+      case "save-goal": {
+        const g = this._collectGoal(), orig = t.dataset.orig;
+        if (!g.id) return this._err("Give the goal a name.");
+        if (!orig && (this.data.goals || []).some((x) => x.id === g.id)) return this._err("A goal with that name already exists.");
+        if (orig) g.enabled = ((this.data.goals || []).find((x) => x.id === orig) || {}).enabled !== false;
+        if (!(await this._call({ type: "homepower/goal/save", goal: g }))) return;
+        if (orig && orig !== g.id) await this._call({ type: "homepower/goal/delete", goal_id: orig });
+        await this._reload(); this._closeModal(); return this._tabLoad();
+      }
+      case "del-goal":
+        if (!confirm(`Delete goal "${id}"?`)) return;
+        await this._call({ type: "homepower/goal/delete", goal_id: id });
+        await this._reload(); this._closeModal(); return this._tabLoad();
+      case "range": this._range = t.dataset.r; return this._tabLoad();
+      case "test-control": return this._runTest(id);
+      case "copy-debug": {
+        const txt = JSON.stringify(this._diag, null, 2);
+        try { await navigator.clipboard.writeText(txt); alert("Debug info copied (secrets are hidden)."); }
+        catch (e) { prompt("Copy this debug info:", txt); }
+        return;
       }
     }
   }
 
   async _change(e) {
     const t = e.target;
+    if (t.dataset && t.dataset.gtoggle) {
+      const g = (this.data.goals || []).find((x) => x.id === t.dataset.gtoggle);
+      if (g) { await this._call({ type: "homepower/goal/save", goal: { ...g, enabled: t.checked } }, (m) => alert(m)); await this._reload(); this._tabLoad(); }
+      return;
+    }
     if (t.dataset && t.dataset.toggle) {
       const s = this.data.schedules.find((x) => x.id === t.dataset.toggle);
       if (s) { await this._call({ type: "homepower/schedule/save", schedule: { ...s, enabled: t.checked } }, (m) => alert(m)); await this._reload(); }

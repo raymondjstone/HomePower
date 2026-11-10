@@ -22,16 +22,22 @@ def _info(entry: ConfigEntry) -> DeviceInfo:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     coord: HomePowerCoordinator = hass.data[DOMAIN][entry.entry_id]
-    add([BatteryFlow(coord, entry), StoredEnergy(coord, entry), GridPower(coord, entry)])
+    add([BatteryFlow(coord, entry), StoredEnergy(coord, entry), GridPower(coord, entry),
+         EnergyTotal(coord, entry, "grid_in", "Grid energy imported"), EnergyTotal(coord, entry, "grid_out", "Grid energy exported"),
+         EnergyTotal(coord, entry, "pv_in", "Solar energy"), Savings(coord, entry, "today"), Savings(coord, entry, "month"), PriceNow(coord, entry)])
     known: set[str] = set()
 
     def _sync() -> None:
+        known.intersection_update({a.config.device_id for a in coord.adapters})   # a re-added battery gets fresh sensors
         new = [a.config for a in coord.adapters if a.config.device_id not in known]
         known.update(c.device_id for c in new)
         ents = []
         for c in new:
             ents += [BatterySoc(coord, entry, c.device_id, c.name), BatteryDevicePower(coord, entry, c.device_id, c.name),
-                     BatteryTarget(coord, entry, c.device_id, c.name)]
+                     BatteryTarget(coord, entry, c.device_id, c.name),
+                     EnergyTotal(coord, entry, f"bat:{c.device_id}_in", f"{c.name} energy charged"),
+                     EnergyTotal(coord, entry, f"bat:{c.device_id}_out", f"{c.name} energy discharged"),
+                     Efficiency(coord, entry, c.device_id, c.name), Cycles(coord, entry, c.device_id, c.name, c.caps.capacity_wh)]
         add(ents)
 
     _sync()
@@ -109,7 +115,7 @@ class BatteryTarget(_Base):
     def extra_state_attributes(self):
         v = self.coordinator.view()["devices"].get(self._did, {})
         return {k: v.get(k) for k in ("decision", "desired_power_w", "mode", "soc", "power_w", "online",
-                                     "active_schedules", "override", "last_error")}
+                                     "active_schedules", "override", "last_error", "reason")}
 
 
 class GridPower(_Base):
@@ -126,7 +132,7 @@ class GridPower(_Base):
 
     @property
     def native_value(self):
-        v = self.coordinator.view().get("grid_w")
+        v = self.coordinator.last_grid
         return None if v is None else round(v)
 
 
@@ -170,3 +176,99 @@ class BatteryDevicePower(_BatteryBase):
     def native_value(self):
         a = self._actual()
         return None if a is None or a.power_w is None else round(a.power_w)
+
+
+class EnergyTotal(_Base):
+    """Lifetime kWh. Add these to the HA Energy dashboard (battery charged / discharged, grid, solar)."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coord, entry, key: str, name: str) -> None:
+        super().__init__(coord, entry)
+        self._key = key
+        self._attr_name = name
+        self._attr_unique_id = f"{entry.entry_id}_energy_{key.replace(':', '_')}"
+
+    @property
+    def native_value(self):
+        return round(self.coordinator.meter.get(self._key), 3)
+
+
+class Savings(_Base):
+    """Estimated money saved (avoided import minus the cost of grid charging). See the README for how."""
+
+    _attr_icon = "mdi:piggy-bank"
+    _attr_state_class = None
+
+    def __init__(self, coord, entry, period: str) -> None:
+        super().__init__(coord, entry)
+        self._period = period
+        self._attr_name = f"Savings {'today' if period == 'today' else 'this month'}"
+        self._attr_unique_id = f"{entry.entry_id}_savings_{period}"
+
+    @property
+    def native_unit_of_measurement(self):
+        return self.coordinator.settings.currency
+
+    @property
+    def native_value(self):
+        from homeassistant.util import dt as dt_util
+
+        now = dt_util.now()
+        key = now.strftime("%Y-%m-%d") if self._period == "today" else now.strftime("%Y-%m")
+        return round(self.coordinator.ledger.saved(key), 2) + 0.0   # + 0.0 turns -0.0 into 0.0
+
+
+class PriceNow(_Base):
+    _attr_name = "Electricity price now"
+    _attr_icon = "mdi:cash-clock"
+
+    def __init__(self, coord, entry) -> None:
+        super().__init__(coord, entry)
+        self._attr_unique_id = f"{entry.entry_id}_price_now"
+
+    @property
+    def native_unit_of_measurement(self):
+        return f"{self.coordinator.settings.currency}/kWh"
+
+    @property
+    def native_value(self):
+        from homeassistant.util import dt as dt_util
+
+        p = self.coordinator._price_now(self.coordinator._rates(), dt_util.now())
+        return None if p is None else round(p, 4)
+
+
+class Efficiency(_BatteryBase):
+    """Round-trip efficiency: energy discharged / energy charged over the battery's recorded life."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_icon = "mdi:percent"
+
+    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+        super().__init__(coord, entry, device_id, name, "efficiency", "round-trip efficiency")
+
+    @property
+    def native_value(self):
+        m = self.coordinator.meter
+        cin = m.get(f"bat:{self._did}_in")
+        return round(100 * m.get(f"bat:{self._did}_out") / cin, 1) if cin >= 1.0 else None   # needs >= 1 kWh of history
+
+
+class Cycles(_BatteryBase):
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_icon = "mdi:battery-sync"
+    _attr_native_unit_of_measurement = "cycles"
+
+    def __init__(self, coord, entry, device_id: str, name: str, capacity_wh: int) -> None:
+        super().__init__(coord, entry, device_id, name, "cycles", "cycles")
+
+    @property
+    def native_value(self):
+        a = next((x for x in self.coordinator.adapters if x.config.device_id == self._did), None)
+        cap_kwh = max(a.config.caps.capacity_wh if a else 1, 1) / 1000   # follows edits to the capacity
+        return round(self.coordinator.meter.get(f"bat:{self._did}_out") / cap_kwh, 1)

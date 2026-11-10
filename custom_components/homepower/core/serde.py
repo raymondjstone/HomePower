@@ -1,10 +1,12 @@
 """JSON <-> model conversion for persisted batteries and schedules (HA-free)."""
 from __future__ import annotations
 
+import json
 from datetime import date, time
 from typing import Any
 
 from .models import Capabilities, Desired, DeviceConfig, Mode
+from .modbus_map import MapError, has_control, parse_map
 from .profiles import DRIVERS, PROFILE_BY_ID
 from .schedule import ALL_DAYS, ScheduleEntry
 
@@ -39,8 +41,20 @@ def _time(s: Any, name: str) -> time:
         raise ValidationError(f"{name} must be HH:MM") from e
 
 
-def _connection(driver: str, raw: dict) -> dict:
+def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
     raw = raw or {}
+    profile = profile or {}
+    if driver == "modbus_generic":
+        host = str(raw.get("host") or "").strip()
+        if not host:
+            raise ValidationError("the device's IP address is required")
+        try:
+            parsed = parse_map(raw.get("map") or profile.get("preset_map"))
+        except MapError as err:
+            raise ValidationError(str(err)) from err
+        return {"host": host, "port": _int(raw.get("port"), "port", 1, 65535, 502),
+                "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, int(profile.get("default_unit", 1))),
+                "map": raw.get("map") or profile.get("preset_map"), "_parsed": parsed}
     if driver == "anker_modbus":
         host = str(raw.get("host") or "").strip()
         if not host:
@@ -80,6 +94,15 @@ def device_from_dict(d: dict) -> DeviceConfig:
     driver = profile["driver"]
     spec = DRIVERS[driver]
     modes = frozenset(Mode(m) for m in spec["modes"])
+    connection = _connection(driver, d.get("connection"), profile) if driver != "entities" else {}
+    if driver == "modbus_generic":
+        parsed = connection.pop("_parsed")
+        if not has_control(parsed):
+            modes = frozenset({Mode.AUTO})   # read-only map: monitored, never controlled
+        elif not (_int(d.get("max_charge_w"), "max charge", 0, 50000, 0) and _int(d.get("max_discharge_w"), "max discharge", 0, 50000, 0)):
+            raise ValidationError("a controllable register map needs the battery's max charge and max discharge power")
+        if isinstance(connection["map"], str):
+            connection["map"] = json.loads(connection["map"])
     caps = Capabilities(
         capacity_wh=_int(d.get("capacity_wh"), "capacity", 100, 200000),
         max_charge_w=_int(d.get("max_charge_w"), "max charge", 0, 50000),
@@ -102,7 +125,7 @@ def device_from_dict(d: dict) -> DeviceConfig:
         extra.update(strategy="generic", entities=ents, mode_map=mode_map,
                      invert_power=bool(d.get("invert_power", False)), control_enabled=bool(d.get("control_enabled", True)))
     else:
-        extra.update(connection=_connection(driver, d.get("connection")),
+        extra.update(connection=connection,
                      restore_mode=int(profile.get("restore_mode", 0)), watchdog=bool(profile.get("watchdog", False)),
                      control_enabled=bool(d.get("control_enabled", False)))  # monitor-only until the user opts in
     return DeviceConfig(
@@ -154,6 +177,9 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
     if (season[0] is None) != (season[1] is None):
         raise ValidationError("season needs both start and end")
     all_day = bool(d.get("all_day", False))
+    presence = str(d.get("presence") or "any")
+    if presence not in ("any", "home", "away"):
+        raise ValidationError("presence must be any, home or away")
     cond = str(d.get("condition_entity") or "").strip() or None
     if all_day and not cond:
         raise ValidationError("an all-day schedule needs a condition entity (otherwise it never stops)")
@@ -172,6 +198,8 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
         days=days, priority=_int(d.get("priority"), "priority", -100, 100, 0),
         season_start=season[0], season_end=season[1], on_date=on_date,
         enabled=bool(d.get("enabled", True)), all_day=all_day, condition_entity=cond,
+        total_power_w=_opt_int(d.get("total_power_w"), "total power", 0, 200000),
+        presence=presence,
     )
 
 
@@ -186,4 +214,37 @@ def schedule_to_dict(e: ScheduleEntry) -> dict:
         "season_end": f"{e.season_end[0]:02d}-{e.season_end[1]:02d}" if e.season_end else None,
         "on_date": e.on_date.isoformat() if e.on_date else None, "enabled": e.enabled,
         "all_day": e.all_day, "condition_entity": e.condition_entity,
+        "total_power_w": e.total_power_w, "presence": e.presence,
+    }
+
+
+# ---------------------------------------------------------------- goals ("be at X% by HH:MM")
+from .goals import Goal  # noqa: E402
+
+
+def goal_from_dict(d: dict) -> Goal:
+    gid = str(d.get("id") or "").strip()
+    if not gid:
+        raise ValidationError("id is required")
+    try:
+        days = frozenset(int(x) for x in d.get("days", ALL_DAYS))
+    except (TypeError, ValueError) as e:
+        raise ValidationError("invalid weekdays") from e
+    if not days or not days <= ALL_DAYS:
+        raise ValidationError("pick at least one weekday")
+    return Goal(
+        id=gid, device_ids=frozenset(d.get("device_ids") or []),
+        target_soc=_int(d.get("target_soc"), "target SOC", 1, 100),
+        by=_time(d.get("by"), "deadline"), days=days,
+        use_forecast=bool(d.get("use_forecast", False)),
+        max_power_w=_opt_int(d.get("max_power_w"), "max power", 0, 200000),
+        enabled=bool(d.get("enabled", True)),
+    )
+
+
+def goal_to_dict(g: Goal) -> dict:
+    return {
+        "id": g.id, "device_ids": sorted(g.device_ids), "target_soc": g.target_soc,
+        "by": g.by.strftime("%H:%M"), "days": sorted(g.days), "use_forecast": g.use_forecast,
+        "max_power_w": g.max_power_w, "enabled": g.enabled,
     }

@@ -5,29 +5,17 @@ from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
 from ._schema import vol
-from .const import (
-    CONF_CHARGE_CAP_W,
-    CONF_COOLDOWN_S,
-    CONF_DISCHARGE_CAP_W,
-    CONF_GRID_ENTITY,
-    CONF_GRID_INVERT,
-    CONF_IMPORT_LIMIT_W,
-    CONF_ZERO_IMPORT_DEVICE,
-    DEFAULT_COOLDOWN_S,
-    DEFAULT_IMPORT_LIMIT_W,
-    DOMAIN,
-)
+from .const import DOMAIN
 from .core.profiles import catalogue
 from .core.serde import ValidationError
-
-SETTING_KEYS = (
-    CONF_IMPORT_LIMIT_W, CONF_COOLDOWN_S, CONF_CHARGE_CAP_W, CONF_DISCHARGE_CAP_W,
-    CONF_GRID_ENTITY, CONF_GRID_INVERT, CONF_ZERO_IMPORT_DEVICE,
-)
+from .core.settings import DEFAULTS, SettingsError, clean
 
 
 def _mgr(hass: HomeAssistant):
-    return hass.data.get(DOMAIN, {}).get("manager")
+    mgr = hass.data.get(DOMAIN, {}).get("manager")
+    if mgr is None:
+        raise ValidationError("HomePower is still starting; try again in a moment")
+    return mgr
 
 
 def _entry(hass: HomeAssistant):
@@ -37,15 +25,7 @@ def _entry(hass: HomeAssistant):
 
 def _settings(entry) -> dict:
     cfg = {**entry.data, **entry.options}
-    return {
-        CONF_IMPORT_LIMIT_W: cfg.get(CONF_IMPORT_LIMIT_W, DEFAULT_IMPORT_LIMIT_W),
-        CONF_COOLDOWN_S: cfg.get(CONF_COOLDOWN_S, DEFAULT_COOLDOWN_S),
-        CONF_CHARGE_CAP_W: cfg.get(CONF_CHARGE_CAP_W) or 0,
-        CONF_DISCHARGE_CAP_W: cfg.get(CONF_DISCHARGE_CAP_W) or 0,
-        CONF_GRID_ENTITY: cfg.get(CONF_GRID_ENTITY) or "",
-        CONF_GRID_INVERT: bool(cfg.get(CONF_GRID_INVERT, False)),
-        CONF_ZERO_IMPORT_DEVICE: cfg.get(CONF_ZERO_IMPORT_DEVICE) or "",
-    }
+    return {k: cfg.get(k, d) for k, d in DEFAULTS.items()}
 
 
 def _payload(hass: HomeAssistant) -> dict:
@@ -53,9 +33,11 @@ def _payload(hass: HomeAssistant) -> dict:
     return {
         "devices": mgr.public_devices(),
         "schedules": list(mgr.schedules.values()),
+        "goals": list(mgr.goals.values()),
         "settings": _settings(entry) if entry else {},
         "catalogue": catalogue(),
-        "paused": mgr.paused,
+        "paused": mgr.paused, "backup": mgr.backup, "away": mgr.away,
+        "entity_ids": mgr.entity_ids(),
         "live": mgr.coordinator.view() if mgr.coordinator else {"devices": {}, "events": []},
     }
 
@@ -65,7 +47,8 @@ def async_register(hass: HomeAssistant) -> None:
     for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device,
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
                 ws_override, ws_clear_override,
-                ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control):
+                ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control,
+                ws_save_goal, ws_delete_goal, ws_flag, ws_preview, ws_diagnostics, ws_test):
         websocket_api.async_register_command(hass, cmd)
 
 
@@ -73,7 +56,10 @@ def async_register(hass: HomeAssistant) -> None:
 @websocket_api.require_admin
 @callback
 def ws_get(hass, connection, msg):
-    connection.send_result(msg["id"], _payload(hass))
+    try:
+        connection.send_result(msg["id"], _payload(hass))
+    except ValidationError as err:   # e.g. still starting
+        connection.send_error(msg["id"], "invalid", str(err))
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/subscribe"})
@@ -81,7 +67,7 @@ def ws_get(hass, connection, msg):
 @websocket_api.async_response
 async def ws_subscribe(hass, connection, msg):
     """Push the live view whenever the control loop finishes a cycle."""
-    mgr = _mgr(hass)
+    mgr = hass.data.get(DOMAIN, {}).get("manager")
     coord = mgr.coordinator if mgr else None
 
     @callback
@@ -157,15 +143,11 @@ async def ws_delete_schedule(hass, msg):
 @_guard
 async def ws_save_settings(hass, msg):
     entry = _entry(hass)
-    new = {k: v for k, v in msg["settings"].items() if k in SETTING_KEYS}
-    for k in (CONF_IMPORT_LIMIT_W, CONF_COOLDOWN_S, CONF_CHARGE_CAP_W, CONF_DISCHARGE_CAP_W):
-        if k not in new:
-            continue  # partial update: leave the stored value alone
-        try:
-            new[k] = max(0, int(float(new.get(k) or 0)))
-        except (TypeError, ValueError) as err:
-            raise ValidationError(f"{k} must be a number") from err
-    # Saving options reloads the entry (update listener), which rebuilds the coordinator.
+    try:
+        new = clean(msg["settings"])
+    except SettingsError as err:
+        raise ValidationError(str(err)) from err
+    # The options update listener applies these in place (no reload).
     hass.config_entries.async_update_entry(entry, options={**entry.options, **new})
     return new
 
@@ -255,3 +237,58 @@ async def ws_control(hass, msg):
         raise ValidationError("unknown battery")
     await mgr.save_device({**dev, "control_enabled": msg["enabled"]})
     return {}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/goal/save", vol.Required("goal"): dict})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_save_goal(hass, msg):
+    return await _mgr(hass).save_goal(msg["goal"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/goal/delete", vol.Required("goal_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_delete_goal(hass, msg):
+    await _mgr(hass).delete_goal(msg["goal_id"])
+    return {}
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "homepower/flag", vol.Required("flag"): vol.In(["backup", "away"]), vol.Required("enabled"): bool,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_flag(hass, msg):
+    mgr = _mgr(hass)
+    await (mgr.set_backup if msg["flag"] == "backup" else mgr.set_away)(msg["enabled"])
+    return {}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/preview", vol.Optional("hours", default=24): vol.All(int, vol.Range(min=1, max=72))})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_preview(hass, msg):
+    return _mgr(hass).coordinator.preview_view(msg["hours"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/diagnostics"})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_diagnostics(hass, msg):
+    c = _mgr(hass).coordinator
+    return {"devices": c.diagnostics(), "events": [list(e) for e in list(c._snap.events)[-100:]],
+            "alerts": sorted(c.alerts.active()), "notes": c.last_result.notes}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/device/test", vol.Required("device_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_test(hass, msg):
+    return await _mgr(hass).coordinator.test_control(msg["device_id"])

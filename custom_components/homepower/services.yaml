@@ -39,3 +39,30 @@ clear_override:
       name: Battery IDs (empty = all)
       selector:
         object:
+backup:
+  name: Backup mode
+  description: Keep a reserve for power cuts (top up to the backup reserve and never discharge below it).
+  fields:
+    enabled:
+      name: Enabled
+      required: true
+      selector:
+        boolean:
+away:
+  name: Away mode
+  description: Use only schedules marked for "away" while you are out.
+  fields:
+    enabled:
+      name: Enabled
+      required: true
+      selector:
+        boolean:
+test_control:
+  name: Test control
+  description: Send a tiny safe command to a battery, check it follows, then hand it back.
+  fields:
+    device_id:
+      name: Battery ID
+      required: true
+      selector:
+        text:

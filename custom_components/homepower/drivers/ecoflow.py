@@ -61,10 +61,12 @@ class EcoFlowApi:
                 "sign": sign(params, self._ak, self._sk, nonce, ts), "Content-Type": "application/json;charset=UTF-8"}
 
     async def _call(self, method: str, path: str, params: dict | None = None, body: dict | None = None) -> Any:
+        from aiohttp import ClientTimeout
+
         signed = body if body is not None else params
         try:
             async with self._s.request(method, self._base + path, params=params if body is None else None,
-                                       json=body, headers=self._headers(signed), timeout=15) as resp:
+                                       json=body, headers=self._headers(signed), timeout=ClientTimeout(total=15)) as resp:
                 data = await resp.json(content_type=None)
         except Exception as err:  # noqa: BLE001 - network / JSON problems all mean "can't reach"
             raise EcoFlowError(f"cannot reach EcoFlow: {err!r}") from err

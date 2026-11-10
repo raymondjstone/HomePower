@@ -15,6 +15,7 @@ from ._schema import vol
 from .const import DOMAIN
 from .core.profiles import DRIVERS, PROFILE_BY_ID, PROFILES
 from .core.serde import ValidationError, fill_from_probe
+from .core.settings import DEFAULTS, SettingsError, clean
 
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 MODE_OPTIONS = [
@@ -78,11 +79,13 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         mgr = self._mgr()
         if mgr is None:
             return self.async_abort(reason="not_loaded")
-        menu = ["add_battery", "add_schedule"]
+        menu = ["add_battery", "add_schedule", "add_goal", "settings"]
         if mgr.devices:
             menu += ["control_battery", "remove_battery"]
         if mgr.schedules:
             menu.append("remove_schedule")
+        if mgr.goals:
+            menu.append("remove_goal")
         return self.async_show_menu(step_id="init", menu_options=menu)
 
     # ---------------------------------------------------------------- add battery
@@ -94,6 +97,8 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                 return await self.async_step_anker_find()
             if driver == "ecoflow_stream":
                 return await self.async_step_ecoflow_account()
+            if driver == "modbus_generic":
+                return await self.async_step_modbus_map()
             return await self.async_step_entity_details()
         options = [{"value": p["id"], "label": p["label"]} for p in PROFILES]
         return self.async_show_form(step_id="add_battery", data_schema=vol.Schema({
@@ -124,6 +129,27 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                                     vol.Optional("port", default=502): _num(1, 65535)}),
             description_placeholders={"found": f"{len(self._found)} found on your network" if self._found else "none found automatically - enter its IP address",
                                       "error": detail})
+
+    # ---- Generic Modbus device described by a register map
+    async def async_step_modbus_map(self, user_input=None):
+        errors, detail = {}, ""
+        prof = PROFILE_BY_ID[self._d["kind"]]
+        if user_input is not None:
+            conn = {"host": user_input["host"].strip(), "port": int(user_input.get("port", 502)),
+                    "unit_id": int(user_input.get("unit_id", prof.get("default_unit", 1)))}
+            if user_input.get("map"):
+                conn["map"] = user_input["map"]
+            try:
+                self._info = await self._mgr().probe({"kind": self._d["kind"], "connection": conn})
+                self._d["connection"] = conn
+                return await self.async_step_battery_details()
+            except ValidationError as err:
+                errors, detail = {"base": "cannot_connect"}, str(err)
+        fields: dict = {vol.Required("host"): str, vol.Optional("port", default=502): _num(1, 65535),
+                        vol.Optional("unit_id", default=int(prof.get("default_unit", 1))): _num(0, 255)}
+        fields[vol.Optional("map") if prof.get("preset_map") else vol.Required("map")] = sel.TextSelector(sel.TextSelectorConfig(multiline=True))
+        return self.async_show_form(step_id="modbus_map", errors=errors, data_schema=vol.Schema(fields),
+                                    description_placeholders={"error": detail, "preset": "built in" if prof.get("preset_map") else "required"})
 
     # ---- EcoFlow: account keys -> list devices -> pick one
     async def async_step_ecoflow_account(self, user_input=None):
@@ -161,13 +187,14 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
 
     # ---- direct batteries: everything the battery can report is read from it; ask only for the rest
     async def async_step_battery_details(self, user_input=None):
-        wanted = ("capacity_wh", "max_charge_w", "max_discharge_w") if self._driver() == "anker_modbus" else ("capacity_wh",)
+        sized = self._driver() == "anker_modbus" or (self._driver() == "modbus_generic" and self._info.get("control"))
+        wanted = ("capacity_wh", "max_charge_w", "max_discharge_w") if sized else ("capacity_wh",)
         missing = [k for k in wanted if not self._info.get(k)]
         if user_input is not None:
             self._d.update({k: user_input[k] for k in missing if k in user_input})
             self._d["control_enabled"] = bool(user_input.get("control_enabled", False))
             self._d = fill_from_probe(self._d, self._info)
-            if self._driver() == "ecoflow_stream":
+            if not sized:
                 self._d.setdefault("max_charge_w", 0)
                 self._d.setdefault("max_discharge_w", 0)
             self._d.setdefault("min_soc", 10)  # safe floor when the battery reports none
@@ -215,9 +242,14 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="battery_modes", data_schema=vol.Schema(fields))
 
     async def _save_battery(self):
-        raw = {**self._d, "device_id": _slug(self._d["name"])}
+        mgr = self._mgr()
+        base = _slug(self._d["name"])
+        did, n = base, 2
+        while did in mgr.devices:   # two batteries with the same name must not overwrite each other
+            did, n = f"{base}_{n}", n + 1
+        raw = {**self._d, "device_id": did}
         try:
-            await self._mgr().save_device(raw)
+            await mgr.save_device(raw)
         except ValidationError as err:
             return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
         return self._done()
@@ -245,6 +277,8 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                 "days": [DAYS.index(d) for d in user_input.get("days", DAYS)],
                 "condition_entity": user_input.get("condition_entity"), "all_day": bool(user_input.get("all_day", False)),
             }
+            if raw["id"] in mgr.schedules:
+                return self.async_abort(reason="invalid", description_placeholders={"error": f"a schedule called '{raw['id']}' already exists"})
             try:
                 await mgr.save_schedule(raw)
             except ValidationError as err:
@@ -264,6 +298,76 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             vol.Optional("all_day", default=False): bool,
         }
         return self.async_show_form(step_id="add_schedule", data_schema=vol.Schema(fields))
+
+    # ---------------------------------------------------------------- goals
+    async def async_step_add_goal(self, user_input=None):
+        mgr = self._mgr()
+        if user_input is not None:
+            raw = {"id": user_input["name"].strip(), "device_ids": user_input.get("devices", []),
+                   "target_soc": user_input["target_soc"], "by": str(user_input["by"])[:5],
+                   "days": [DAYS.index(d) for d in user_input.get("days", DAYS)],
+                   "use_forecast": bool(user_input.get("use_forecast", False))}
+            if raw["id"] in mgr.goals:
+                return self.async_abort(reason="invalid", description_placeholders={"error": f"a goal called '{raw['id']}' already exists"})
+            try:
+                await mgr.save_goal(raw)
+            except ValidationError as err:
+                return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
+            return self._done()
+        devices = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
+        return self.async_show_form(step_id="add_goal", data_schema=vol.Schema({
+            vol.Required("name"): str,
+            vol.Optional("devices", default=[]): sel.SelectSelector(sel.SelectSelectorConfig(options=devices, multiple=True, mode=sel.SelectSelectorMode.DROPDOWN)),
+            vol.Required("target_soc", default=90): _num(1, 100, "%"),
+            vol.Required("by", default="07:00:00"): sel.TimeSelector(),
+            vol.Optional("days", default=DAYS): sel.SelectSelector(sel.SelectSelectorConfig(options=DAYS, multiple=True, translation_key="days")),
+            vol.Optional("use_forecast", default=False): bool,
+        }))
+
+    async def async_step_remove_goal(self, user_input=None):
+        mgr = self._mgr()
+        if user_input is not None:
+            await mgr.delete_goal(user_input["goal"])
+            return self._done()
+        opts = [{"value": g["id"], "label": g["id"]} for g in mgr.goals.values()]
+        return self.async_show_form(step_id="remove_goal", data_schema=vol.Schema({vol.Required("goal"): _dropdown(opts)}))
+
+    # ---------------------------------------------------------------- settings (the common ones; the panel has all of them)
+    async def async_step_settings(self, user_input=None):
+        cur = {**{k: v for k, v in DEFAULTS.items()}, **self.config_entry.options}
+        if user_input is not None:
+            try:
+                new = clean({k: ("" if v is None else v) for k, v in user_input.items()})
+                for k in ("offpeak_start", "offpeak_end"):
+                    if new.get(k):
+                        new[k] = new[k][:5]
+            except SettingsError as err:
+                return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
+            return self.async_create_entry(data={**self.config_entry.options, **new})
+
+        def ent(domains):
+            return sel.EntitySelector(sel.EntitySelectorConfig(domain=domains))
+
+        def opt(key, selector, default=None):
+            d = cur.get(key)
+            return vol.Optional(key, description={"suggested_value": d if d not in (None, "") else default})
+
+        return self.async_show_form(step_id="settings", data_schema=vol.Schema({
+            opt("import_limit_w", _num(0, 100000, "W", 100)): _num(0, 100000, "W", 100),
+            opt("peak_shaving", bool): bool,
+            opt("export_limit_w", _num(0, 100000, "W", 100)): _num(0, 100000, "W", 100),
+            opt("grid_import_entity", ent(["sensor"])): ent(["sensor"]),
+            opt("rates_entity", ent(["sensor", "event"])): ent(["sensor", "event"]),
+            opt("price_peak", _num(0, 1000, None, 0.01)): _num(0, 1000, None, 0.01),
+            opt("price_offpeak", _num(0, 1000, None, 0.01)): _num(0, 1000, None, 0.01),
+            opt("offpeak_start", sel.TimeSelector()): sel.TimeSelector(),
+            opt("offpeak_end", sel.TimeSelector()): sel.TimeSelector(),
+            opt("forecast_entity", ent(["sensor"])): ent(["sensor"]),
+            opt("backup_reserve_pct", _num(0, 100, "%")): _num(0, 100, "%"),
+            opt("storm_entity", ent(["binary_sensor", "input_boolean", "switch"])): ent(["binary_sensor", "input_boolean", "switch"]),
+            opt("away_entity", ent(["binary_sensor", "input_boolean", "person", "device_tracker"])): ent(["binary_sensor", "input_boolean", "person", "device_tracker"]),
+            opt("notify_service", str): str,
+        }))
 
     # ---------------------------------------------------------------- remove
     async def async_step_remove_battery(self, user_input=None):
