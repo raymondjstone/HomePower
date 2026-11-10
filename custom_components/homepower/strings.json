@@ -3,35 +3,30 @@
     "step": {
       "user": {
         "title": "HomePower Battery Manager",
-        "description": "Global limits. Caps apply to the SUM across all batteries and schedules (0 = no cap).",
-        "data": {
-          "import_limit_w": "Whole-house import limit (W)",
-          "cooldown_s": "Re-apply cooldown (s)",
-          "total_charge_limit_w": "Overall charge limit, all batteries combined (W)",
-          "total_discharge_limit_w": "Overall discharge limit, all batteries combined (W)",
-          "grid_import_entity": "Grid power sensor (W)",
-          "grid_invert": "Sensor is positive when exporting"
-        }
+        "description": "After adding, open HomePower in the sidebar to add batteries, schedules and settings."
       }
     },
     "abort": {
-      "single_instance_allowed": "Only one HomePower instance is supported."
+      "single_instance_allowed": "Only one HomePower instance is supported.",
+      "already_configured": "HomePower is already set up."
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "title": "HomePower settings",
-        "data": {
-          "import_limit_w": "Whole-house import limit (W)",
-          "cooldown_s": "Re-apply cooldown (s)",
-          "total_charge_limit_w": "Overall charge limit, all batteries combined (W)",
-          "total_discharge_limit_w": "Overall discharge limit, all batteries combined (W)",
-          "grid_import_entity": "Grid power sensor (W)",
-          "grid_invert": "Sensor is positive when exporting",
-          "zero_import_device": "Zero-import battery (keeps grid import at 0)"
-        }
-      }
+  "services": {
+    "pause": {
+      "name": "Pause control",
+      "description": "Stop HomePower sending any commands."
+    },
+    "resume": {
+      "name": "Resume control",
+      "description": "Resume normal scheduling."
+    },
+    "override": {
+      "name": "Manual override",
+      "description": "Force a mode for a while, taking priority over schedules."
+    },
+    "clear_override": {
+      "name": "Clear manual override",
+      "description": "Go back to schedules."
     }
   }
 }

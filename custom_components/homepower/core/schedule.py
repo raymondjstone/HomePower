@@ -24,6 +24,8 @@ class ScheduleEntry:
     season_end: tuple[int, int] | None = None
     on_date: date | None = None      # date-specific override (start date)
     enabled: bool = True
+    all_day: bool = False               # ignore start/end (use with a condition entity)
+    condition_entity: str | None = None  # only active while this HA entity is 'on' (tariff window etc.)
 
     def _in_season(self, d: date) -> bool:
         if not (self.season_start and self.season_end):
@@ -39,6 +41,8 @@ class ScheduleEntry:
     def applies(self, device_id: str, now: datetime) -> bool:
         if not self.enabled or (self.device_ids and device_id not in self.device_ids):
             return False
+        if self.all_day:
+            return self._day_ok(now.date())
         t = now.time()
         if self.end > self.start:
             return self._day_ok(now.date()) and self.start <= t < self.end
@@ -50,9 +54,13 @@ class ScheduleEntry:
         return False
 
 
-def resolve(entries: list[ScheduleEntry], device_id: str, now: datetime) -> Desired | None:
+def resolve(entries: list[ScheduleEntry], device_id: str, now: datetime, condition_ok=None) -> Desired | None:
     """Highest-priority matching entry wins; a date-specific entry beats recurring on ties."""
-    hits = [e for e in entries if e.applies(device_id, now)]
+    hits = [
+        e for e in entries
+        if e.applies(device_id, now)
+        and (not e.condition_entity or condition_ok is None or condition_ok(e.condition_entity))
+    ]
     if not hits:
         return None
     return max(hits, key=lambda e: (e.priority, e.on_date is not None)).desired

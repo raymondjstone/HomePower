@@ -82,3 +82,52 @@ def test_desired_for_charge_and_full():
     assert d.mode is Mode.CHARGE and d.power_w == 1500 and d.target_soc == 100
     assert desired_for(-1500, X1, 100).mode is Mode.HOLD
     assert desired_for(-1500, X1, 90, target_soc=90).mode is Mode.HOLD
+
+
+# ---- soc_guard: software SOC limits for batteries with no target/reserve entity
+from core.limits import soc_guard
+from core.models import Capabilities, Desired, Mode
+
+_CAPS = Capabilities(capacity_wh=5000, max_charge_w=3000, max_discharge_w=3000, min_soc=10)
+
+
+def test_soc_guard_stops_charge_at_target():
+    d = Desired(Mode.CHARGE, 2000, target_soc=80)
+    assert soc_guard(d, 79.0, _CAPS) == d
+    assert soc_guard(d, 80.0, _CAPS).mode is Mode.HOLD
+
+
+def test_soc_guard_stops_discharge_at_reserve_or_min():
+    assert soc_guard(Desired(Mode.DISCHARGE, 1000, reserve_soc=30), 30, _CAPS).mode is Mode.HOLD
+    assert soc_guard(Desired(Mode.DISCHARGE, 1000), 10, _CAPS).mode is Mode.HOLD   # device min_soc
+    assert soc_guard(Desired(Mode.DISCHARGE, 1000), 11, _CAPS).mode is Mode.DISCHARGE
+
+
+def test_soc_guard_ignores_unknown_soc_and_other_modes():
+    d = Desired(Mode.CHARGE, 2000, target_soc=80)
+    assert soc_guard(d, None, _CAPS) == d
+    assert soc_guard(Desired(Mode.AUTO), 100, _CAPS).mode is Mode.AUTO
+
+
+def test_soc_guard_hysteresis():
+    d = Desired(Mode.CHARGE, 2000, target_soc=80)
+    assert soc_guard(d, 79.0, _CAPS, held=True).mode is Mode.HOLD   # not yet 2 points inside
+    assert soc_guard(d, 77.5, _CAPS, held=True).mode is Mode.CHARGE
+    dd = Desired(Mode.DISCHARGE, 1000)
+    assert soc_guard(dd, 11.0, _CAPS, held=True).mode is Mode.HOLD
+    assert soc_guard(dd, 12.5, _CAPS, held=True).mode is Mode.DISCHARGE
+
+
+def test_charge_ceiling_import_headroom():
+    from core.limits import charge_ceiling
+    # limit 7000, house base import 2000 W (grid 2000 + 0 charging) -> 5000 W headroom
+    assert charge_ceiling(None, 7000, 2000.0, 0.0) == 5000
+    # already charging 3000: grid 5000 -> base 2000 -> still 5000
+    assert charge_ceiling(None, 7000, 5000.0, 3000.0) == 5000
+    # user cap is lower
+    assert charge_ceiling(3000, 7000, 2000.0, 0.0) == 3000
+    # solar export: negative grid gives more headroom, never negative cap
+    assert charge_ceiling(None, 7000, 9000.0, 0.0) == 0
+    # no grid sensor: use the limit itself; nothing configured: no ceiling
+    assert charge_ceiling(None, 7000, None, 0.0) == 7000
+    assert charge_ceiling(None, None, None, 0.0) is None

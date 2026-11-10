@@ -3,10 +3,10 @@
   "name": "HomePower Battery Manager",
   "codeowners": [],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["http", "frontend", "panel_custom", "websocket_api"],
   "documentation": "https://example.invalid/homepower",
   "integration_type": "service",
   "iot_class": "calculated",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }

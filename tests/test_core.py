@@ -77,3 +77,17 @@ def test_allocator_just_in_time_and_import_limit():
     # at target -> 0
     done = [ChargeRequest("a", 100, 100, 5000, 2500)]
     assert allocate(done, 5, 7000) == {"a": 0}
+
+
+def test_condition_entity_and_all_day():
+    from core.schedule import ScheduleEntry
+    e = ScheduleEntry("tariff", frozenset(), time(0, 0), time(23, 59), CHARGE, all_day=True, condition_entity="binary_sensor.cheap")
+    on = lambda ent: ent == "binary_sensor.cheap"
+    off = lambda ent: False
+    assert resolve([e], "d", dt(2026, 11, 10, 14), on) == CHARGE
+    assert resolve([e], "d", dt(2026, 11, 10, 14), off) is None
+    # windowed schedule + condition: both must hold
+    w = ScheduleEntry("w", frozenset(), time(1, 0), time(2, 0), CHARGE, condition_entity="binary_sensor.cheap")
+    assert resolve([w], "d", dt(2026, 11, 10, 3), on) is None
+    assert resolve([w], "d", dt(2026, 11, 10, 1, 30), on) == CHARGE
+    assert resolve([w], "d", dt(2026, 11, 10, 1, 30), off) is None

@@ -1,0 +1,41 @@
+pause:
+  name: Pause control
+  description: Stop HomePower sending any commands (it keeps reading).
+resume:
+  name: Resume control
+  description: Resume normal scheduling.
+override:
+  name: Manual override
+  description: Force a mode on some or all batteries for a while, taking priority over schedules.
+  fields:
+    mode:
+      name: Mode
+      required: true
+      selector:
+        select:
+          options: [auto, charge, discharge, hold]
+    power_w:
+      name: Power (W)
+      selector:
+        number: {min: 0, max: 50000, unit_of_measurement: W}
+    target_soc:
+      name: Stop charging at SOC (%)
+      selector:
+        number: {min: 0, max: 100, unit_of_measurement: "%"}
+    minutes:
+      name: Duration (minutes)
+      default: 60
+      selector:
+        number: {min: 1, max: 1440, unit_of_measurement: min}
+    device_ids:
+      name: Battery IDs (empty = all)
+      selector:
+        object:
+clear_override:
+  name: Clear manual override
+  description: Go back to schedules.
+  fields:
+    device_ids:
+      name: Battery IDs (empty = all)
+      selector:
+        object:
