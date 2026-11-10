@@ -14,7 +14,7 @@ from homeassistant.util import dt as dt_util
 from .adapters.base import DeviceAdapter
 from .const import DOMAIN, UPDATE_INTERVAL_S
 from .core.limits import apply_totals
-from .core.models import Actual, Desired
+from .core.models import Actual, Desired, Mode
 from .core.reconcile import Decision, clamp, decide
 from .core.schedule import ScheduleEntry, resolve
 from .core.zero_import import desired_for, setpoint
@@ -87,12 +87,15 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         other_charge = sum(
             max(0.0, o.power_w or 0.0) for k, o in actuals.items() if k != zid and o.online
         )
+        cur = act.set_power_w or 0
+        signed_cur = cur if act.mode is Mode.DISCHARGE else -cur if act.mode is Mode.CHARGE else 0
         sp = setpoint(
             grid,
-            own_discharge_w=max(0.0, -(act.power_w or 0.0)),
+            own_net_discharge_w=-(act.power_w or 0.0),  # power_w: + charging, - discharging
             other_charge_w=other_charge,
             max_discharge_w=a.config.caps.max_discharge_w,
-            current_set_w=act.set_power_w,
+            max_charge_w=a.config.caps.max_charge_w,
+            current_set_w=signed_cur,
         )
         return desired_for(sp, a.config.caps, act.soc)
 
