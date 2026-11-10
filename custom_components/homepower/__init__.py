@@ -80,6 +80,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
+def _notify(hass: HomeAssistant, key: str, message: str) -> None:
+    try:
+        from homeassistant.components import persistent_notification
+
+        persistent_notification.async_create(hass, message, title="HomePower", notification_id=f"homepower_{key}")
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("could not create notification", exc_info=True)
+
+
 async def _async_setup_ui_api(hass: HomeAssistant, domain_data: dict) -> None:
     if domain_data.get("ui_api"):
         return
@@ -93,8 +102,10 @@ async def _async_setup_ui_api(hass: HomeAssistant, domain_data: dict) -> None:
             [StaticPathConfig(STATIC_URL, str(Path(__file__).parent / "frontend"), cache_headers=False)]
         )
         domain_data["ui_api"] = True
-    except Exception:  # noqa: BLE001 - UI is optional
+    except Exception as err:  # noqa: BLE001 - UI is optional
         _LOGGER.warning("HomePower UI API unavailable; scheduling still works", exc_info=True)
+        _notify(hass, "ui_api", f"HomePower's panel API could not start: {err!r}. Use Settings > Devices & Services > "
+                "HomePower > Configure to add batteries and schedules.")
 
 
 async def _async_register_panel(hass: HomeAssistant) -> None:
@@ -106,14 +117,17 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
             hass,
             webcomponent_name="homepower-panel",
             frontend_url_path=PANEL_URL,
-            module_url=f"{STATIC_URL}/homepower-panel.js?v=0.3.1",
+            module_url=f"{STATIC_URL}/homepower-panel.js?v=0.4.0",
             sidebar_title="HomePower",
             sidebar_icon="mdi:home-battery",
             require_admin=True,
             config={},
         )
-    except Exception:  # noqa: BLE001 - UI is optional
+        _LOGGER.info("HomePower panel registered at /%s", PANEL_URL)
+    except Exception as err:  # noqa: BLE001 - UI is optional
         _LOGGER.warning("HomePower sidebar panel could not be registered", exc_info=True)
+        _notify(hass, "panel", f"HomePower's sidebar panel could not be registered: {err!r}. Use Settings > Devices & "
+                "Services > HomePower > Configure to add batteries and schedules.")
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

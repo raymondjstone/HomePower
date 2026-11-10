@@ -1,10 +1,10 @@
 """Websocket API used by the HomePower sidebar panel."""
 from __future__ import annotations
 
-import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 
+from ._schema import vol
 from .const import (
     CONF_CHARGE_CAP_W,
     CONF_COOLDOWN_S,

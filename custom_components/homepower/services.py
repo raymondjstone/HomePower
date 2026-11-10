@@ -1,9 +1,9 @@
 """homepower.* services: pause/resume and manual overrides, usable from automations."""
 from __future__ import annotations
 
-import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 
+from ._schema import vol
 from .const import DOMAIN
 from .core.models import Desired, Mode
 

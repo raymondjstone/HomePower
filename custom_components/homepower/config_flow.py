@@ -3,11 +3,19 @@ from __future__ import annotations
 
 from homeassistant import config_entries
 
+from homeassistant.core import callback
+
 from .const import DOMAIN
+from .options_flow import HomePowerOptionsFlow
 
 
 class HomePowerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        return HomePowerOptionsFlow()
 
     async def async_step_user(self, user_input=None):
         await self.async_set_unique_id(DOMAIN)

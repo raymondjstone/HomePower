@@ -3,12 +3,143 @@
     "step": {
       "user": {
         "title": "HomePower Battery Manager",
-        "description": "After adding, open HomePower in the sidebar to add batteries, schedules and settings."
+        "description": "After adding, open HomePower in the sidebar, or use Configure on this integration, to add batteries and schedules."
       }
     },
     "abort": {
       "single_instance_allowed": "Only one HomePower instance is supported.",
       "already_configured": "HomePower is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HomePower",
+        "description": "Manage batteries and schedules here, or in the HomePower sidebar panel (/homepower) for the graphical view.",
+        "menu_options": {
+          "add_battery": "Add a battery",
+          "add_schedule": "Add a schedule",
+          "remove_battery": "Remove a battery",
+          "remove_schedule": "Remove a schedule"
+        }
+      },
+      "add_battery": {
+        "title": "Add a battery",
+        "description": "HomePower controls any Home Assistant entities you choose; the model just pre-selects the right fields.",
+        "data": {
+          "name": "Name",
+          "kind": "Model"
+        }
+      },
+      "battery_details": {
+        "title": "{model}",
+        "description": "Capacity and power limits are on the battery's spec sheet. Pick the entities from your battery's integration.",
+        "data": {
+          "capacity_wh": "Capacity (Wh)",
+          "max_charge_w": "Max charge (W)",
+          "max_discharge_w": "Max discharge (W)",
+          "min_soc": "Minimum SOC (%)",
+          "invert_power": "Power sensor reports discharging as positive (flip sign)",
+          "e_soc": "Battery SOC sensor (%)",
+          "e_power": "Battery power sensor (W)",
+          "e_charge_power": "Charging power sensor (W)",
+          "e_discharge_power": "Discharging power sensor (W)",
+          "e_work_mode": "Operating mode select",
+          "e_direction": "Power direction select",
+          "e_setpoint": "Power setpoint number (W)",
+          "e_target_soc": "Charging limit SOC number (optional)",
+          "e_reserve_soc": "Discharge limit SOC number (optional)",
+          "e_engage": "Modbus Control switch (optional)",
+          "e_mode": "Operating mode select",
+          "e_set_power": "Power setpoint number (W)",
+          "e_protected": "Protection flag (optional)",
+          "e_backup_reserve": "Backup reserve level number",
+          "e_self_powered": "Self-powered switch (optional)",
+          "e_operating_mode": "Operating mode select (optional)",
+          "mm_auto": "Option that hands control back to the battery",
+          "mm_control": "Option that lets HomePower control it",
+          "mm_charge": "Option for charging",
+          "mm_discharge": "Option for discharging",
+          "mm_hold": "Option for hold / idle"
+        }
+      },
+      "battery_modes": {
+        "title": "Mode names",
+        "description": "Which option of the mode select does each role use?",
+        "data": {
+          "capacity_wh": "Capacity (Wh)",
+          "max_charge_w": "Max charge (W)",
+          "max_discharge_w": "Max discharge (W)",
+          "min_soc": "Minimum SOC (%)",
+          "invert_power": "Power sensor reports discharging as positive (flip sign)",
+          "e_soc": "Battery SOC sensor (%)",
+          "e_power": "Battery power sensor (W)",
+          "e_charge_power": "Charging power sensor (W)",
+          "e_discharge_power": "Discharging power sensor (W)",
+          "e_work_mode": "Operating mode select",
+          "e_direction": "Power direction select",
+          "e_setpoint": "Power setpoint number (W)",
+          "e_target_soc": "Charging limit SOC number (optional)",
+          "e_reserve_soc": "Discharge limit SOC number (optional)",
+          "e_engage": "Modbus Control switch (optional)",
+          "e_mode": "Operating mode select",
+          "e_set_power": "Power setpoint number (W)",
+          "e_protected": "Protection flag (optional)",
+          "e_backup_reserve": "Backup reserve level number",
+          "e_self_powered": "Self-powered switch (optional)",
+          "e_operating_mode": "Operating mode select (optional)",
+          "mm_auto": "Option that hands control back to the battery",
+          "mm_control": "Option that lets HomePower control it",
+          "mm_charge": "Option for charging",
+          "mm_discharge": "Option for discharging",
+          "mm_hold": "Option for hold / idle"
+        }
+      },
+      "add_schedule": {
+        "title": "Add a schedule",
+        "description": "Leave batteries empty to apply to all. An end time earlier than the start runs overnight. Optionally only run while an entity (e.g. a cheap-rate sensor) is on.",
+        "data": {
+          "name": "Name",
+          "devices": "Batteries",
+          "mode": "What to do",
+          "start": "Start",
+          "end": "End",
+          "power_w": "Power (W)",
+          "target_soc": "Stop charging at SOC (%)",
+          "days": "Days",
+          "condition_entity": "Only while this entity is on",
+          "all_day": "Ignore times; follow the entity only"
+        }
+      },
+      "remove_battery": {
+        "title": "Remove a battery",
+        "data": {
+          "device": "Battery"
+        }
+      },
+      "remove_schedule": {
+        "title": "Remove a schedule",
+        "data": {
+          "schedule": "Schedule"
+        }
+      }
+    },
+    "abort": {
+      "not_loaded": "HomePower is not loaded yet; restart Home Assistant or check the log.",
+      "invalid": "Could not save: {error}"
+    }
+  },
+  "selector": {
+    "days": {
+      "options": {
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday"
+      }
     }
   },
   "services": {

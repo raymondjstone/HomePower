@@ -14,7 +14,10 @@ from .coordinator import HomePowerCoordinator
 
 
 def _info(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name="HomePower", manufacturer="HomePower")
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)}, name="HomePower", manufacturer="HomePower",
+        configuration_url="homeassistant://homepower",  # "Visit" button on the device page
+    )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
