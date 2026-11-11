@@ -139,6 +139,15 @@ pence/cents or pounds/euros are detected automatically. It is an estimate, not a
 
 MIT, see [LICENSE](LICENSE).
 
+## Releases
+
+- Work goes to the **`develop`** branch. Every push there runs the tests and publishes a **pre-release** named
+  `v<version>-beta.<n>` (in HACS: *Redownload > Show beta versions*). Only the newest five pre-releases are kept.
+- Merging `develop` into **`master`** (a pull request) publishes the real release `v<version>` and removes that version's
+  pre-releases.
+- `<version>` is `"version"` in `custom_components/homepower/manifest.json`. Bump it on `develop` when starting a new
+  version; the pre-release build fails with a clear message if it is not newer than the latest release.
+
 ## Development
 
 ```
