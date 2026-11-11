@@ -208,7 +208,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         inf = self._tariff if s.offpeak_auto and ent else None
         if inf is not None:   # anything the user typed in wins; history only fills the blanks
             if a is None or b is None:
-                a, b = inf.start, inf.end
+                # The window is read from when the sensor's value changed, and such sensors (smart-meter/DCC data in
+                # particular) lag the real switch by up to an hour. A late *start* only wastes cheap time, but a late
+                # *end* would plan charging into peak-rate time, so the end is pulled back one half-hour.
+                a = inf.start
+                b = (datetime.combine(dt_util.now().date(), inf.end) - SLOT).time()
             peak = inf.peak if peak is None else peak
             off = inf.offpeak if off is None else off
         if not slots and peak is None and off is None:

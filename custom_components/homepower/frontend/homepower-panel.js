@@ -1018,7 +1018,7 @@ class HomePowerPanel extends HTMLElement {
         { k: "rates_entity", t: "entity", dom: ["sensor", "event"], label: "Tariff sensor (Octopus, Agile, Nord Pool, Glow rate...)", hint: (this.live.rates_entity && !s.rates_entity ? `Using ${this.live.rates_entity} automatically. ` : "") + "A list of {start, end, value} in its attributes, or a plain price sensor." },
         { k: "rates_unit", t: "select", label: "Rates are in", options: [["auto", "Detect automatically"], ["pence", "Pence (or cents)"], ["main", "Pounds (or euros)"]] },
         num("price_peak", "Standard rate", "Used when there is no rates entity, or to fill gaps.", "any"), num("price_offpeak", "Cheap rate", "", "any"),
-        { k: "offpeak_auto", t: "bool", label: "Work out the night/cheap period from the tariff's price history" + (this.live.tariff_inferred ? ` (found ${this.live.tariff_inferred.start}-${this.live.tariff_inferred.end} from ${this.live.tariff_inferred.days} days)` : "") },
+        { k: "offpeak_auto", t: "bool", label: "Work out the night/cheap period from the tariff's price history" + (this.live.tariff_inferred ? ` (estimated ${this.live.tariff_inferred.start}-${this.live.tariff_inferred.end} from ${this.live.tariff_inferred.days} days of readings, which can run up to an hour late: type your exact times below to be sure)` : "") },
         { k: "offpeak_start", t: "time", label: "Cheap rate starts", hint: "Leave both times empty to use the period found from history." }, { k: "offpeak_end", t: "time", label: "Cheap rate ends" },
         { k: "currency", t: "text", label: "Currency symbol" }]],
       ["Solar forecast", "mdi:weather-sunny", [
