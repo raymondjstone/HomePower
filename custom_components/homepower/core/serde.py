@@ -63,8 +63,8 @@ def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
                 "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, 1)}
     if driver == "ecoflow_stream":
         region = str(raw.get("region") or "eu")
-        if region not in ("eu", "global"):
-            raise ValidationError("region must be eu or global")
+        if region not in ("eu", "america", "global"):
+            raise ValidationError("region must be eu, america or global")
         out = {"region": region}
         for k, label in (("access_key", "Access Key"), ("secret_key", "Secret Key"), ("sn", "device")):
             v = str(raw.get(k) or "").strip()

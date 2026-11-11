@@ -20,7 +20,7 @@ from typing import Any
 from ..core.models import Actual, Desired, DeviceConfig, Mode
 
 _LOGGER = logging.getLogger(__name__)
-HOSTS = {"eu": "api-e.ecoflow.com", "global": "api.ecoflow.com"}
+HOSTS = {"eu": "api-e.ecoflow.com", "america": "api-a.ecoflow.com", "global": "api.ecoflow.com"}
 SIGN_ERRORS = ("8521", "7000")
 QUOTAS = ("backupReverseSoc", "f32ShowSoc", "soc", "cmsBattSoc", "powGetBpCms", "powGetSysGrid", "gridConnectionPower",
           "powGetPvSum", "powGetSysLoad", "cmsBattFullEnergy", "productName")
@@ -62,7 +62,7 @@ class EcoFlowApi:
     def _headers(self, params: dict | None) -> dict[str, str]:
         nonce, ts = str(secrets.randbelow(900000) + 100000), str(int(time.time() * 1000))
         return {"accessKey": self._ak, "nonce": nonce, "timestamp": ts,
-                "sign": sign(params, self._ak, self._sk, nonce, ts), "Content-Type": "application/json;charset=UTF-8"}
+                "sign": sign(params, self._ak, self._sk, nonce, ts)}
 
     async def _call(self, method: str, path: str, params: dict | None = None, body: dict | None = None) -> Any:
         from aiohttp import ClientTimeout

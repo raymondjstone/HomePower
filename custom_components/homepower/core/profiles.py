@@ -47,7 +47,7 @@ DRIVERS: dict[str, dict] = {
         "modes": [A, H],
         "connection": [
             {"k": "region", "label": "Region", "type": "select", "req": True, "default": "eu",
-             "options": [{"value": "eu", "label": "Europe (api-e.ecoflow.com)"}, {"value": "global", "label": "Global / US (api.ecoflow.com)"}]},
+             "options": [{"value": "eu", "label": "Europe (api-e.ecoflow.com)"}, {"value": "america", "label": "Americas (api-a.ecoflow.com)"}, {"value": "global", "label": "Other / global (api.ecoflow.com)"}]},
             {"k": "access_key", "label": "Access Key", "type": "text", "req": True},
             {"k": "secret_key", "label": "Secret Key", "type": "password", "req": True},
             {"k": "sn", "label": "Device", "type": "device", "req": True},
@@ -101,7 +101,7 @@ VENDORS: dict[str, dict] = {
         "export/zero-import behaviour. The Anker app's Backup SOC, SOC calibration, Fast Charging and Storm Guard "
         "override commands sent by HomePower.")},
     "EcoFlow": {"regions": (
-        "Pick the region of your EcoFlow account: Europe uses api-e.ecoflow.com, global/US uses api.ecoflow.com. "
+        "Pick the region of your EcoFlow account: Europe uses api-e.ecoflow.com, the Americas use api-a.ecoflow.com, anywhere else api.ecoflow.com. "
         "STREAM batteries cannot be force-charged or force-discharged through EcoFlow's API, so HomePower offers "
         "Auto and Hold only for them.")},
     "Other": {"regions": "Any battery that exposes a mode select and a power number in Home Assistant."},
