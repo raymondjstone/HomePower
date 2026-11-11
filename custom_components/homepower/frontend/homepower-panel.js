@@ -599,6 +599,8 @@ class HomePowerPanel extends HTMLElement {
       const m = MODES[s.mode];
       const bits = [];
       if (s.power_w) bits.push(fmtW(s.power_w));
+      if (s.mode === "charge" && s.source === "solar") bits.push("solar only");
+      if (s.mode === "charge" && s.source === "both") bits.push("grid + solar");
       if (s.mode === "charge" && s.target_soc != null) bits.push(`up to ${s.target_soc}%`);
       if (s.mode === "discharge" && s.reserve_soc != null) bits.push(`keep ${s.reserve_soc}%`);
       if (s.condition_entity) bits.push(`while ${s.condition_entity} is on`);
@@ -631,6 +633,8 @@ class HomePowerPanel extends HTMLElement {
       <div class="seg-pick">${Object.entries(MODES).map(([k, m]) => `<label style="--c:${m.color}"><input type="radio" name="s-mode" value="${k}" ${s.mode === k ? "checked" : ""}><ha-icon icon="${m.icon}" style="color:${m.color}"></ha-icon><span>${m.label}</span></label>`).join("")}</div>
       <div class="f"><span class="hint" id="s-modehelp"></span><span class="hint" id="s-unsup" style="color:#ef4444"></span></div>
       <div id="s-power" class="f"><label>Power</label><div class="rng"><input type="range" id="s-pw" min="0" max="${maxP}" step="100" value="${s.power_w ?? Math.min(3000, maxP)}"><output id="s-pwo"></output></div></div>
+      <div class="f" id="s-srcwrap"><label>Charge from</label><select id="s-source">${[["grid", "Grid: charge at the power above, whatever the sun is doing"], ["solar", "Solar only: use spare solar, never import to charge"], ["both", "Grid + solar: the power above, plus any spare solar on top"]].map(([v, l]) => `<option value="${v}" ${(s.source || "grid") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+        <span class="hint" id="s-srchelp"></span></div>
       <div class="two"><div class="f" id="s-tgt"><label>Stop charging at SOC (%)</label><input type="number" id="s-target" min="0" max="100" value="${s.target_soc ?? ""}" placeholder="100"></div>
         <div class="f" id="s-res"><label>Don't discharge below SOC (%)</label><input type="number" id="s-reserve" min="0" max="100" value="${s.reserve_soc ?? ""}" placeholder="device minimum"></div></div>
       <h3>When</h3>
@@ -665,11 +669,15 @@ class HomePowerPanel extends HTMLElement {
     q("s-overnight").style.display = allDay ? "none" : "";
     q("s-power").style.display = mode === "charge" || mode === "discharge" ? "" : "none";
     q("s-tgt").style.display = mode === "charge" ? "" : "none";
+    q("s-srcwrap").style.display = mode === "charge" ? "" : "none";
+    const src = mode === "charge" ? (q("s-source").value || "grid") : "grid";
+    q("s-srchelp").textContent = src === "solar" ? "Follows your grid meter: charges with whatever would otherwise be exported (the power above is the most it will take) and waits when there is none. Needs a grid reading. Batteries that only support Hold (EcoFlow) are held so their own panels charge them."
+      : src === "both" ? "Charges at the power above from the grid, and takes any extra solar that would otherwise be exported." : "";
     q("s-res").style.display = mode === "discharge" ? "" : "none";
     q("s-modehelp").textContent = MODES[mode].help;
     const picked = [...r.querySelectorAll('input[name="s-dev"]:checked')].map((x) => x.value);
     const targets = this.data.devices.filter((d) => !picked.length || picked.includes(d.device_id));
-    const bad = targets.filter((d) => d.supported_modes && !d.supported_modes.includes(mode)).map((d) => d.name);
+    const bad = targets.filter((d) => d.supported_modes && !d.supported_modes.includes(mode) && !(src === "solar" && d.supported_modes.includes("hold"))).map((d) => d.name);
     q("s-unsup").textContent = bad.length ? `${MODES[mode].label} isn't available on: ${bad.join(", ")}. Those batteries will be left to their own control.` : "";
     q("s-pwo").textContent = fmtW(+q("s-pw").value);
   }
@@ -689,7 +697,7 @@ class HomePowerPanel extends HTMLElement {
       days: [...r.querySelectorAll('input[name="s-day"]:checked')].map((x) => +x.value),
       season_start: v("s-ss").trim() || null, season_end: v("s-se").trim() || null,
       on_date: v("s-date") || null, priority: +v("s-prio") || 0, enabled: true,
-      presence: v("s-presence") || "any", total_power_w: n("s-total"),
+      presence: v("s-presence") || "any", total_power_w: n("s-total"), source: mode === "charge" ? (v("s-source") || "grid") : "grid",
       all_day: r.getElementById("s-allday").checked, condition_entity: v("s-cond").trim() || null,
     };
   }

@@ -624,7 +624,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.health.update(now.strftime("%G-W%V"), {did: (self.meter.get(f"bat:{did}_in"), self.meter.get(f"bat:{did}_out"))
                                                      for did in actuals})
         charging_w = sum(max(0.0, a.power_w or 0.0) for a in actuals.values() if a.online)
-        forced = any(st.reason.startswith(FORCING_REASONS) and st.desired is not None and st.desired.mode is Mode.CHARGE
+        forced = any(st.reason.startswith(FORCING_REASONS) and "(solar only)" not in st.reason   # solar-only charging costs nothing
+                     and st.desired is not None and st.desired.mode is Mode.CHARGE
                      for st in self._snap.devices.values())
         share = 1.0 if forced else (min(1.0, max(0.0, grid) / charging_w) if grid is not None and charging_w > 0 else 0.0)
         self.ledger.add(now.strftime("%Y-%m-%d"), charged, share, discharged, self._price_now(rates, now))

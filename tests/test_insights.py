@@ -186,3 +186,73 @@ def test_diverter_waits_then_switches_and_releases():
     d2 = Diverter()
     d2.on = True
     assert d2.decide(0, None, None, 500, 95) is None and d2.decide(130, None, None, 500, 95) == "off"   # no data: release the load
+
+
+# ---------------------------------------------------------------- charge source: grid / solar only / grid + solar
+def _src_world(devs, source, grid, power=2000, **kw):
+    from test_engine import sched
+    return World(now=TUE_22, devices=devs, settings=Settings(import_limit_w=None), grid_w=grid,
+                 schedules=[sched(power=power, source=source)], **kw)
+
+
+def test_grid_source_is_the_fixed_power_whatever_the_meter_says():
+    for grid in (None, -3000, 0, 4000):
+        r = compute(_src_world([dev("a")], "grid", grid))
+        assert r.wants["a"].mode is Mode.CHARGE and r.wants["a"].power_w == 2000 and r.reasons["a"] == "schedule 's'"
+
+
+def test_solar_only_follows_the_surplus_and_never_imports():
+    r = compute(_src_world([dev("a", power=0)], "solar", -1500))
+    assert r.wants["a"].mode is Mode.CHARGE and r.wants["a"].power_w == 1500 and "(solar only)" in r.reasons["a"]
+    r = compute(_src_world([dev("a", power=1500)], "solar", 0))               # already taking the surplus, meter balanced: keep going
+    assert r.wants["a"].power_w == 1500
+    r = compute(_src_world([dev("a", power=1500)], "solar", 600))             # a cloud: charging now imports 600 W -> back off
+    assert r.wants["a"].power_w == 900
+    r = compute(_src_world([dev("a", power=0)], "solar", 800))                # importing, no surplus: wait, do not discharge either
+    assert r.wants["a"].mode is Mode.HOLD
+    r = compute(_src_world([dev("a", power=0)], "solar", -5000))              # the schedule's power is the ceiling
+    assert r.wants["a"].power_w == 2000
+    r = compute(_src_world([dev("a", power=0)], "solar", None))               # no meter: cannot know the surplus -> wait
+    assert r.wants["a"].mode is Mode.HOLD and any("grid meter" in n for n in r.notes)
+
+
+def test_grid_plus_solar_takes_the_fixed_power_and_any_extra_surplus():
+    r = compute(_src_world([dev("a", power=2000)], "both", 0))
+    assert r.wants["a"].power_w == 2000 and "(grid + solar)" in r.reasons["a"]
+    r = compute(_src_world([dev("a", power=2000)], "both", -800))             # exporting 800 W while charging: soak it up too
+    assert r.wants["a"].power_w == 2800
+    r = compute(_src_world([dev("a", power=2000)], "both", -9000))            # never above the battery's own limit
+    assert r.wants["a"].power_w == 3000
+    r = compute(_src_world([dev("a", power=0)], "both", None))                # no meter: plain fixed power
+    assert r.wants["a"].power_w == 2000
+
+
+def test_solar_surplus_is_shared_and_ignores_deliberate_charging_elsewhere():
+    r = compute(_src_world([dev("a", power=0), dev("b", power=0)], "solar", -2000))
+    assert r.wants["a"].power_w == 1000 and r.wants["b"].power_w == 1000      # two batteries split the surplus, no overshoot
+    from test_engine import sched
+    w = World(now=TUE_22, devices=[dev("a", power=0), dev("g", power=2000)], settings=Settings(import_limit_w=None), grid_w=1500,
+              schedules=[sched("sol", devs=("a",), power=3000, source="solar"), sched("grd", devs=("g",), power=2000)])
+    r = compute(w)                                                             # 'g' charges 2000 W on purpose; import is only 1500 W
+    assert r.wants["a"].power_w == 500 and r.wants["g"].power_w == 2000       # so 500 W of real surplus is left for 'a'
+
+
+def test_solar_only_on_a_hold_only_battery_becomes_hold():
+    eco = dev("e", soc=50, modes=[Mode.AUTO, Mode.HOLD], mc=0, md=0)
+    r = compute(_src_world([eco], "solar", -1000))
+    assert r.wants["e"].mode is Mode.HOLD and "(solar only)" in r.reasons["e"]
+    r = compute(_src_world([eco], "grid", -1000))                             # a grid charge it cannot do: left alone, with a note
+    assert "e" not in r.wants and any("not supported" in n for n in r.notes)
+
+
+def test_schedule_source_round_trips_and_validates():
+    from core.serde import ValidationError, schedule_from_dict, schedule_to_dict
+    base = {"id": "s", "start": "10:00", "end": "15:00", "mode": "charge", "power_w": 2000}
+    assert schedule_to_dict(schedule_from_dict(base))["source"] == "grid"                      # old schedules behave as before
+    assert schedule_to_dict(schedule_from_dict({**base, "source": "solar"}))["source"] == "solar"
+    assert schedule_to_dict(schedule_from_dict({**base, "mode": "discharge", "source": "solar"}))["source"] == "grid"
+    try:
+        schedule_from_dict({**base, "source": "wind"})
+        assert False
+    except ValidationError:
+        pass

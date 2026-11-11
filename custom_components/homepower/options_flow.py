@@ -279,6 +279,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                 "start": str(user_input["start"])[:5], "end": str(user_input["end"])[:5],
                 "days": [DAYS.index(d) for d in user_input.get("days", DAYS)],
                 "condition_entity": user_input.get("condition_entity"), "all_day": bool(user_input.get("all_day", False)),
+                "source": user_input.get("source", "grid"),
             }
             if raw["id"] in mgr.schedules:
                 return self.async_abort(reason="invalid", description_placeholders={"error": f"a schedule called '{raw['id']}' already exists"})
@@ -295,6 +296,10 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             vol.Required("start", default="23:30:00"): sel.TimeSelector(),
             vol.Required("end", default="07:30:00"): sel.TimeSelector(),
             vol.Optional("power_w", default=3000): _num(0, 50000, "W", 100),
+            vol.Optional("source", default="grid"): _dropdown([
+                {"value": "grid", "label": "Grid: charge at the set power"},
+                {"value": "solar", "label": "Solar only: spare solar, never import to charge"},
+                {"value": "both", "label": "Grid + solar: the set power plus any spare solar"}]),
             vol.Optional("target_soc"): _num(0, 100, "%"),
             vol.Optional("days", default=DAYS): sel.SelectSelector(sel.SelectSelectorConfig(options=DAYS, multiple=True, translation_key="days")),
             vol.Optional("condition_entity"): sel.EntitySelector(sel.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])),

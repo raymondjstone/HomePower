@@ -181,6 +181,10 @@ def compute(w: World) -> Result:
             want, reason = _zero_import(w, d), "zero-import"
         if want is None:
             continue
+        if (did in entries and want.mode is Mode.CHARGE and entries[did].source == "solar" and Mode.CHARGE not in caps.supported_modes
+                and Mode.HOLD in caps.supported_modes):
+            # No charge command on this battery, but Hold stops it discharging while its own panels keep charging it.
+            want, reason = Desired(Mode.HOLD, reserve_soc=want.reserve_soc), reason + " (solar only)"
         if want.mode not in caps.supported_modes:
             res.notes.append(f"{did}: {want.mode.value} is not supported by this battery; left alone")
             continue
@@ -202,6 +206,39 @@ def compute(w: World) -> Result:
         for did, p in split_power(e.total_power_w, items).items():
             old = res.wants[did]
             res.wants[did] = replace(old, power_w=p) if p > 0 else Desired(Mode.HOLD)
+
+    # ---- 2b. where the charging energy may come from: the grid (fixed power), solar surplus only, or both
+    trackers = [did for did, e in entries.items() if did in res.wants and res.wants[did].mode is Mode.CHARGE and e.source in ("solar", "both")]
+    if trackers:
+        fixed = sum(max(0.0, o.actual.power_w or 0.0) for o in w.devices
+                    if o.actual.online and o.config.device_id not in trackers)   # deliberate charging elsewhere: not surplus
+        for did in trackers:
+            e, d, old = entries[did], by_id[did], res.wants[did]
+            caps = d.config.caps
+            label = " (solar only)" if e.source == "solar" else " (grid + solar)"
+            if w.grid_w is None or not d.actual.online:
+                # Without a grid reading the surplus is unknown: solar-only waits (never imports), grid+solar uses its fixed power.
+                if e.source == "solar":
+                    res.wants[did] = Desired(Mode.HOLD, reserve_soc=old.reserve_soc)
+                    res.notes.append(f"{did}: solar-only charging needs a grid meter reading; holding until there is one")
+                res.reasons[did] += label
+                continue
+            own = max(0.0, d.actual.power_w or 0.0)
+            export = -(w.grid_w - fixed)                       # what the house is sending out, ignoring deliberate charging
+            surplus = max(0.0, min(own + export / len(trackers), float(caps.max_charge_w)))
+            cur = d.actual.set_power_w if d.actual.mode is Mode.CHARGE and d.actual.set_power_w else 0
+            if surplus < 30:
+                surplus = 0.0
+            elif cur and abs(surplus - cur) < 50:
+                surplus = float(cur)                           # small changes do not re-send the command
+            if e.source == "solar":
+                cap = old.power_w if old.power_w is not None else caps.max_charge_w
+                p = int(min(surplus, cap))
+                res.wants[did] = replace(old, power_w=p) if p > 0 else Desired(Mode.HOLD, reserve_soc=old.reserve_soc)
+            else:
+                base = old.power_w if old.power_w is not None else caps.max_charge_w
+                res.wants[did] = replace(old, power_w=int(max(base, surplus)))
+            res.reasons[did] += label
 
     # ---- 3. clamps: device limits, SOC limits (with hysteresis), load rules
     for did in list(res.wants):

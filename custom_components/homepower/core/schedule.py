@@ -28,6 +28,7 @@ class ScheduleEntry:
     condition_entity: str | None = None  # only active while this HA entity is 'on' (tariff window etc.)
     total_power_w: int | None = None     # share this total across the batteries (balanced by capacity / charge)
     presence: str = "any"                # "any" | "home" | "away"
+    source: str = "grid"                 # charge schedules: "grid" (fixed power) | "solar" (surplus only) | "both" (fixed + surplus)
 
     def _in_season(self, d: date) -> bool:
         if not (self.season_start and self.season_end):

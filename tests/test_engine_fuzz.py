@@ -37,7 +37,8 @@ def rand_world(rng: random.Random) -> World:
                                     Desired(mode, rng.choice([None, 500, 2000, 9000]), target_soc=rng.choice([None, 60, 100]),
                                             reserve_soc=rng.choice([None, 30])),
                                     priority=rng.randint(0, 2), total_power_w=rng.choice([None, None, 4000]),
-                                    presence=rng.choice(["any", "any", "home", "away"])))
+                                    presence=rng.choice(["any", "any", "home", "away"]),
+                                    source=rng.choice(["grid", "grid", "solar", "both"]) if mode is Mode.CHARGE else "grid"))
     goals = [Goal(f"g{k}", frozenset(), rng.choice([60, 90, 100]), time(rng.randrange(24)), use_forecast=rng.random() < 0.5)
              for k in range(rng.randint(0, 2))]
     st = Settings(charge_cap_w=rng.choice([None, 2000, 6000]), discharge_cap_w=rng.choice([None, 2500]),

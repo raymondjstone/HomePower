@@ -49,6 +49,10 @@ Every decision has a visible reason ("Why" chip on each battery).
 
 - **Schedules:** time windows (overnight, weekdays, seasons, one-off dates), priority, follow a tariff/on-off entity,
   *presence* (home/away), and **share one total across several batteries** (split by capacity and charge level).
+- **Where a charge schedule takes its energy from:** *Grid* (charge at the set power), *Solar only* (follow the grid meter and
+  charge only with what would otherwise be exported, never importing to charge) or *Grid + solar* (the set power plus any
+  spare solar on top). Solar-only needs a grid reading; on batteries that only support Hold (EcoFlow) it holds the battery so
+  its own panels charge it.
 - **Goals ("be at 90% by 07:00"):** HomePower charges in the cheapest half-hours to get there. Prices come from a rates
   entity (Octopus, Agile, Nord Pool: anything with a list of `{start, end, value}` attributes) or a simple cheap-rate
   tariff. Optionally charge less when tomorrow's **solar forecast** (Solcast / Forecast.Solar) is good.

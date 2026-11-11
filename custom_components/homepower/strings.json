@@ -118,7 +118,8 @@
           "target_soc": "Stop charging at SOC (%)",
           "days": "Days",
           "condition_entity": "Only while this entity is on",
-          "all_day": "Ignore times; follow the entity only"
+          "all_day": "Ignore times; follow the entity only",
+          "source": "Charge from (charge schedules only)"
         }
       },
       "remove_battery": {

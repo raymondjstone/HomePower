@@ -184,6 +184,9 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
     presence = str(d.get("presence") or "any")
     if presence not in ("any", "home", "away"):
         raise ValidationError("presence must be any, home or away")
+    source = str(d.get("source") or "grid")
+    if source not in ("grid", "solar", "both"):
+        raise ValidationError("charge source must be grid, solar or both")
     cond = str(d.get("condition_entity") or "").strip() or None
     if all_day and not cond:
         raise ValidationError("an all-day schedule needs a condition entity (otherwise it never stops)")
@@ -203,7 +206,7 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
         season_start=season[0], season_end=season[1], on_date=on_date,
         enabled=bool(d.get("enabled", True)), all_day=all_day, condition_entity=cond,
         total_power_w=_opt_int(d.get("total_power_w"), "total power", 0, 200000),
-        presence=presence,
+        presence=presence, source=source if mode is Mode.CHARGE else "grid",
     )
 
 
@@ -218,7 +221,7 @@ def schedule_to_dict(e: ScheduleEntry) -> dict:
         "season_end": f"{e.season_end[0]:02d}-{e.season_end[1]:02d}" if e.season_end else None,
         "on_date": e.on_date.isoformat() if e.on_date else None, "enabled": e.enabled,
         "all_day": e.all_day, "condition_entity": e.condition_entity,
-        "total_power_w": e.total_power_w, "presence": e.presence,
+        "total_power_w": e.total_power_w, "presence": e.presence, "source": e.source,
     }
 
 

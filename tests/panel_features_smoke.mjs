@@ -1,6 +1,6 @@
 // Renders the newer panel pieces with fake data and checks they produce sensible HTML (run: node tests/panel_features_smoke.mjs)
 const els = {};
-globalThis.HTMLElement = class { attachShadow(){ this.shadowRoot = { innerHTML:"", addEventListener(){}, getElementById:(i)=>(els[i] ||= { innerHTML:"" }), querySelector(){return null}, querySelectorAll(){return []} }; } };
+globalThis.HTMLElement = class { attachShadow(){ this.shadowRoot = { innerHTML:"", addEventListener(){}, getElementById:(i)=>(els[i] ||= { innerHTML:"", style:{}, value:"", checked:false, textContent:"" }), querySelector(){return {value:"charge"}}, querySelectorAll(){return []} }; } };
 globalThis.localStorage = { getItem:()=>null, setItem(){} };
 let cls; globalThis.customElements = { define:(n,c)=>cls=c };
 await import("../custom_components/homepower/frontend/homepower-panel.js");
@@ -55,3 +55,9 @@ must("price chart: 48 bars, 1 planned, axes", (pc.match(/<rect/g) || []).length 
 p._preview.prices = []; must("price chart hidden without prices", p._priceChart() === "");
 const st2 = p._settingsView();
 must("settings: more windows, save for peak, summary, diverter, Cosy", ["st-offpeak_extra", "st-save_for_peak", "st-daily_summary_time", "st-divert_entity", "Cosy Octopus"].every((k) => st2.includes(k)));
+
+// ---- charge source on schedules
+p._scheduleModal({ ...p._blankSchedule("night"), source: "solar" }, true);
+must("schedule modal offers the charge source", els.modal.innerHTML.includes('id="s-source"') && els.modal.innerHTML.includes('value="solar" selected'));
+p.data.schedules = [{ id: "Sun", device_ids: [], start: "10:00", end: "15:00", mode: "charge", power_w: 2000, source: "solar", days: [0,1,2,3,4,5,6], enabled: true, priority: 0 }];
+must("schedule card says solar only", p._schedules().includes("solar only"));
