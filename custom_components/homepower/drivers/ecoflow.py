@@ -20,6 +20,9 @@ from ..core.models import Actual, Desired, DeviceConfig, Mode
 
 _LOGGER = logging.getLogger(__name__)
 HOSTS = {"eu": "api-e.ecoflow.com", "global": "api.ecoflow.com"}
+SIGN_ERRORS = ("8521", "7000")
+QUOTAS = ("backupReverseSoc", "f32ShowSoc", "soc", "cmsBattSoc", "powGetBpCms", "powGetSysGrid", "gridConnectionPower",
+          "powGetPvSum", "powGetSysLoad", "cmsBattFullEnergy", "productName")
 HOLD_RESERVE = 95  # STREAM accepts a backup reserve of 3-95 %
 
 
@@ -71,14 +74,23 @@ class EcoFlowApi:
         except Exception as err:  # noqa: BLE001 - network / JSON problems all mean "can't reach"
             raise EcoFlowError(f"cannot reach EcoFlow: {err!r}") from err
         if str(data.get("code")) != "0":
-            raise EcoFlowError(f"EcoFlow error {data.get('code')}: {data.get('message')}")
+            err = EcoFlowError(f"EcoFlow error {data.get('code')}: {data.get('message')}")
+            err.code = str(data.get("code"))
+            raise err
         return data.get("data")
 
     async def devices(self) -> list[dict]:
         return await self._call("GET", "/iot-open/sign/device/list") or []
 
     async def quota(self, sn: str) -> dict:
-        return await self._call("GET", "/iot-open/sign/device/quota/all", {"sn": sn}) or {}
+        try:
+            return await self._call("GET", "/iot-open/sign/device/quota/all", {"sn": sn}) or {}
+        except EcoFlowError as err:
+            if getattr(err, "code", "") not in SIGN_ERRORS:
+                raise
+        # Some accounts/regions reject the GET form's signature: ask for the readings with the signed POST form instead.
+        got = await self._call("POST", "/iot-open/sign/device/quota", body={"sn": sn, "params": {"quotas": list(QUOTAS)}})
+        return got if isinstance(got, dict) else {}
 
     async def command(self, sn: str, params: dict) -> None:
         await self._call("PUT", "/iot-open/sign/device/quota", body={
