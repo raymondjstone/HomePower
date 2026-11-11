@@ -4,12 +4,20 @@ A Home Assistant custom integration that is a **central battery manager** for ho
 batteries **directly** (it does not need, use or depend on any other Anker or EcoFlow integration), shows them in a
 sidebar panel, and schedules and optimises how they charge and discharge.
 
+## Install
+
+**HACS (recommended):** HACS > three-dot menu > *Custom repositories* > add `https://github.com/raymondjstone/HomePower`
+as an *Integration*, download **HomePower Battery Manager**, restart Home Assistant, then *Settings > Devices & Services >
+Add integration > HomePower*. Add batteries from the **HomePower** sidebar panel or the integration's **Configure** menu.
+
+**Manual:** copy `custom_components/homepower` into your Home Assistant `custom_components` folder and restart.
+
 ## Supported batteries
 
 | Battery | How HomePower connects | Modes |
 |---|---|---|
 | Anker SOLIX Solarbank Max AC / Max, XE AC / XE, Solarbank 4 E5000 Pro, X1 | Local **Modbus TCP** on your network (switch it on in the Anker app: device > Settings > Three-Party Control). HomePower scans your network and finds the battery. | Auto, Charge, Discharge, Hold |
-| EcoFlow STREAM AC / Pro / Ultra / Ultra X / Max (and AC 5000, model to confirm) | EcoFlow's own **developer API**: create an Access Key and Secret Key at developer.ecoflow.com; HomePower lists the batteries on your account. | Auto, Hold only |
+| EcoFlow STREAM AC / Pro / Ultra / Ultra X / Max (read and Auto/Hold verified on an Ultra X; the AC 5000 / ES5000 is read-only for now) | EcoFlow's own **developer API**: create an Access Key and Secret Key at developer.ecoflow.com; HomePower lists the batteries on your account. | Auto, Hold only |
 | Victron GX (read-only) | Modbus TCP, register map built in | Monitor only |
 | Any Modbus TCP battery | You describe its registers as a small JSON map (see below) | Auto, plus Charge/Discharge/Hold if the map has a setpoint and mode register |
 | Anything else | Advanced: choose Home Assistant entities that read and control it | Auto, Charge, Discharge, Hold |
@@ -22,7 +30,9 @@ minimum charge are read from the battery itself where it reports them.
 raised to 95% (no discharge; solar still charges).
 
 **Regions:** Anker control is local (works in any region); grid feed-in is off by default in IT/ES/TH/VN/PH. For EcoFlow
-pick your account's region (`api-e.ecoflow.com` Europe, `api.ecoflow.com` global/US).
+pick your account's region (`api-e.ecoflow.com` Europe, `api-a.ecoflow.com` Americas, `api.ecoflow.com` elsewhere).
+Charge, power, grid, solar and load are read for both field layouts EcoFlow uses; the *Diagnostics* tab shows the raw readings
+received, which helps when adding a model that is not listed.
 
 **One controller per battery:** an Anker battery accepts one controlling Modbus client. Switch off any other integration
 or tool that talks to it over Modbus.
@@ -97,6 +107,10 @@ pence/cents or pounds/euros are detected automatically. It is an estimate, not a
 - If Home Assistant is hard-killed (power cut) while a battery is being forced, it stays in that mode until HomePower
   next starts and hands it back (X1 also has its own watchdog).
 - Goals plan with the prices known at the time; they re-plan every cycle as prices and charge level change.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
 
 ## Development
 
