@@ -377,9 +377,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             del self._event_state[k]            # yesterday's "cheap rate soon" markers
         if soc is None:
             return
-        await edge("full", s.notify_full and soc >= 98, soc < 90, f"The home battery is full ({soc:g}%).")
-        if s.notify_low_pct:
-            await edge("low", soc <= s.notify_low_pct, soc > s.notify_low_pct + 5, f"The home battery is low ({soc:g}%).")
+        # "Full" is 95%: many batteries stop at their own charge ceiling below 100. Switching a heads-up off clears it.
+        await edge("full", s.notify_full and soc >= 95, not s.notify_full or soc < 88, f"The home battery is full ({soc:g}%).")
+        await edge("low", bool(s.notify_low_pct) and soc <= s.notify_low_pct, not s.notify_low_pct or soc > s.notify_low_pct + 5,
+                   f"The home battery is low ({soc:g}%).")
         if s.notify_cheap_soon and rates is not None and rates.offpeak_start is not None:
             mins = (rates.offpeak_start.hour * 60 + rates.offpeak_start.minute - now.hour * 60 - now.minute) % 1440
             await edge(f"cheap_{now:%Y%m%d}", 0 < mins <= 30 and soc < s.cheap_soon_below_pct, False,

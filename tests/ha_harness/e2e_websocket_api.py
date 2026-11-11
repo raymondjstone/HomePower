@@ -99,6 +99,10 @@ async def main():
     t = await must("homepower/device/test", device_id="a")
     print("test     :", t["ok"], [x["name"] for x in t["steps"]])
     assert t["ok"]
+    # Never scan the real network from a test: a real battery there accepts only one Modbus client.
+    from custom_components.homepower.drivers import discovery as _disc
+    _real_scan = _disc.scan
+    _disc.scan = lambda hosts, **kw: _real_scan(["127.0.0.1"], port=port)
     r = await call("homepower/discover/anker")
     print("discover :", r[0], r[1])
     assert r[0] == "ok"
@@ -127,6 +131,21 @@ async def main():
         asyncio.open_connection = orig
     print("probe reuse: new connections opened for the live battery =", n_live, "(new battery:", len(opened) - n_live, ")")
     assert again["soc"] == 62 and n_live <= 1 and len(opened) - n_live == 1
+    # scenes, backup and restore through the websocket (results must be JSON-safe)
+    g = await must("homepower/get")
+    assert any(x["name"] == "Holiday" for x in g["scenes"]) and "combined" in g["live"] and "health" in g["live"]
+    await must("homepower/scene/save", scene={"name": "WS scene", "away": True, "settings": {"import_limit_w": 5000}})
+    await must("homepower/scene/apply", name="WS scene")
+    assert mgr.away and coord.settings.engine.import_limit_w == 5000
+    r = await call("homepower/scene/apply", name="missing"); assert r[0] == "err", r
+    r = await call("homepower/scene/save", scene={"name": ""}); assert r[0] == "err", r
+    await must("homepower/scene/apply", name="Normal"); assert not mgr.away
+    dump = await must("homepower/export")
+    assert dump["homepower_export"] == 1 and dump["devices"] and not dump["includes_secrets"]
+    await must("homepower/scene/delete", name="WS scene")
+    res = await must("homepower/import", data=dump)
+    assert "WS scene" in mgr.scenes and res["skipped"] == [], res
+    r = await call("homepower/import", data={"nope": 1}); assert r[0] == "err", r
     await must("homepower/device/delete", device_id="a")
     assert not mgr.devices
     await coord.async_close(); srv.close(); await srv.wait_closed()
