@@ -33,7 +33,7 @@ async def main():
     mgr.coordinator = coord
     hass.data["homepower"] = {"manager": mgr}
     hass.config_entries = SimpleNamespace(async_get_known_entry=lambda i: entry)
-    await mgr.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": True})
+    await mgr.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "grid_meter": "yes", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": True})
 
     def flow():
         f = HomePowerOptionsFlow(); f.hass = hass; f.flow_id, f.handler = "x", "e1"; return f

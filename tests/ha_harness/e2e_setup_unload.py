@@ -30,7 +30,7 @@ async def main():
     from custom_components.homepower.manager import HomePowerManager
     m0 = HomePowerManager(hass); await m0.async_load()
     m0.coordinator = None
-    await m0.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": True})
+    await m0.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "grid_meter": "yes", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": True})
 
     entry._async_set_state(hass, ConfigEntryState.SETUP_IN_PROGRESS, None)
     ok = await HP.async_setup_entry(hass, entry)          # no hass.http, no frontend, no panel_custom

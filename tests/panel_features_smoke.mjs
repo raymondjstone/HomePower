@@ -70,3 +70,12 @@ must("goal card says solar only", p._planView().includes("solar only"));
 p.live.devices.a = { online: true, soc: 60, power_w: 500, pv_w: 820, has_solar: true };
 must("battery card shows its solar", p._overview().includes("Solar 820 W"));
 must("settings has the export price", p._settingsView().includes("st-export_price"));
+
+// ---- configurable grid reading order
+p.data.settings = { grid_order: "glow,sensor" }; p.live.grid_source = "sensor.glow_power";
+const go = p._settingsView();
+must("grid order list: saved order first, unused ones unticked", go.indexOf('data-key="glow"') < go.indexOf('data-key="sensor"') && go.indexOf('data-key="sensor"') < go.indexOf('data-key="battery"')
+  && /data-key="glow"><input type="checkbox" class="o-on" checked/.test(go) && /data-key="battery"><input type="checkbox" class="o-on" {2}aria/.test(go) && go.includes("Using now: sensor.glow_power"));
+const mkRow = (k, on) => ({ dataset: { key: k }, querySelector: () => ({ checked: on }) });
+els["st-grid_order"] = { querySelectorAll: () => [mkRow("battery", true), mkRow("glow", false), mkRow("sensor", true)] };
+must("grid order collects ticked rows in order", p._collectSettings().grid_order === "battery,sensor");

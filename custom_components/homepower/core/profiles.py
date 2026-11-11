@@ -125,7 +125,7 @@ PROFILES: list[dict] = [
     _p("anker_e5000_pro", "Anker", "Anker SOLIX Solarbank 4 E5000 Pro", "anker_modbus", _ANKER, restore_mode=0, watchdog=False),
     _p("anker_x1", "Anker", "Anker SOLIX X1", "anker_modbus",
        _ANKER + " X1 also gets a comms watchdog so it reverts to the app's mode if HomePower stops talking to it.",
-       restore_mode=20, watchdog=True),
+       restore_mode=20, watchdog=True, house_meter=True),   # installed at the grid connection: its meter sees the whole house
     _p("ecoflow_stream_ac", "EcoFlow", "EcoFlow STREAM AC", "ecoflow_stream", _EF),
     _p("ecoflow_stream_pro", "EcoFlow", "EcoFlow STREAM Pro", "ecoflow_stream", _EF),
     _p("ecoflow_stream_ultra", "EcoFlow", "EcoFlow STREAM Ultra", "ecoflow_stream", _EF),

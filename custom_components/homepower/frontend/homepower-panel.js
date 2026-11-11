@@ -58,6 +58,7 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .banner .t{flex:1;min-width:200px}
 .scenes{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .presets{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}
+.ordlist{display:grid;gap:6px;margin:4px 0}.ord{display:grid;grid-template-columns:24px 1fr auto auto;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--divider-color);border-radius:8px}
 .chk{display:grid;gap:6px}.chk .it{display:grid;grid-template-columns:24px 1fr auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--divider-color)}
 .chk .it:last-child{border-bottom:0}.chk .ok{color:#16a34a}.chk .no{color:#d97706}.chk small{display:block;color:var(--secondary-text-color)}
 @media(max-width:700px){header{flex-wrap:wrap;padding:10px 12px;gap:8px}header h1{flex-basis:100%;order:-1;font-size:18px}header .btn{padding:6px 10px;font-size:12px}
@@ -767,6 +768,8 @@ class HomePowerPanel extends HTMLElement {
           <div class="f"><label>Max discharge (W)</label><input type="number" id="b-md" value="${d.max_discharge_w ?? ""}" placeholder="from the battery"></div></div>
         <div class="two"><div class="f"><label>Minimum SOC (%)</label><input type="number" id="b-min" min="0" max="100" value="${d.min_soc ?? ""}" placeholder="from the battery"></div>
           <div class="f"><label>Priority (lower = discharges first)</label><input type="number" id="b-prio" value="${d.priority ?? 0}"></div></div>
+        <div class="f"><label>Does this battery's meter measure the whole house?</label><select id="b-gridmeter">${[["auto", "Usual for this model"], ["yes", "Yes: it sits at the grid connection, so its grid reading is the house's"], ["no", "No: it only measures itself"]].map(([v, l]) => `<option value="${v}" ${(d.grid_meter || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+          <span class="hint">Only a battery that measures the whole house can supply HomePower's grid reading. Plug-in batteries usually measure only themselves; an Anker X1 measures the house.</span></div>
         <div class="f"><label>Solar panels attached to this battery</label><select id="b-solar">${[["auto", "Detect automatically"], ["yes", "Yes"], ["no", "No"]].map(([v, l]) => `<option value="${v}" ${(d.solar || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
         <div class="f"><label>Role</label><select id="b-role"><option value="normal" ${d.role !== "reserve" ? "selected" : ""}>Everyday: used whenever the house needs it</option><option value="reserve" ${d.role === "reserve" ? "selected" : ""}>Reserve: held back until the other batteries have run down</option></select>
           <span class="hint">A reserve battery needs control allowed and a battery that supports Hold. Solar still charges it.</span></div></details>
@@ -866,7 +869,7 @@ class HomePowerPanel extends HTMLElement {
     const out = {
       device_id: origId || slug(name) || "battery_" + Date.now().toString(36),
       name, kind: pid,
-      capacity_wh: v("b-cap"), max_charge_w: v("b-mc"), max_discharge_w: v("b-md"), min_soc: v("b-min"), priority: v("b-prio"), role: (r.getElementById("b-role") || {}).value || "normal", solar: (r.getElementById("b-solar") || {}).value || "auto",
+      capacity_wh: v("b-cap"), max_charge_w: v("b-mc"), max_discharge_w: v("b-md"), min_soc: v("b-min"), priority: v("b-prio"), role: (r.getElementById("b-role") || {}).value || "normal", solar: (r.getElementById("b-solar") || {}).value || "auto", grid_meter: (r.getElementById("b-gridmeter") || {}).value || "auto",
       control_enabled: !!(r.getElementById("b-control") || {}).checked,
     };
     if (prof.driver === "entities") {
@@ -1141,7 +1144,9 @@ class HomePowerPanel extends HTMLElement {
       ["Grid meter", "mdi:transmission-tower", [
         { k: "grid_import_entity", t: "entity", dom: ["sensor"], label: "Smart meter import sensor - optional", hint: (this.live.meter_entity && !s.grid_import_entity ? `Using ${this.live.meter_entity} automatically. ` : "") + "Power (W/kW) or a cumulative energy counter (kWh). Leave empty to use Hildebrand Glow (if set up) or the grid reading your batteries report." },
         { k: "grid_export_entity", t: "entity", dom: ["sensor"], label: "Smart meter export sensor - optional", hint: "Subtracted from import. Power or energy counter." },
-        { k: "grid_invert", t: "bool", label: "Sensor is positive when exporting" }]],
+        { k: "grid_invert", t: "bool", label: "Sensor is positive when exporting" },
+        { k: "grid_order", t: "order", label: "Where the grid reading comes from, most trusted first", hint: (this.live.grid_source ? `Using now: ${this.live.grid_source}. ` : "No grid reading right now. ") + "The first one with a reading is used. Untick one to never use it.",
+          items: [["sensor", "The sensor chosen above"], ["battery", "A battery that measures the whole house (set per battery)"], ["glow", "Hildebrand Glow smart-meter sensor, found automatically"], ["cloud", "EcoFlow's cloud figure"]] }]],
       ["Limits", "mdi:shield-check", [
         num("import_limit_w", "House import limit (W)", "Caps total charging; with peak shaving on, batteries also discharge to stay under it."),
         { k: "peak_shaving", t: "bool", label: "Peak shaving: discharge to keep import under the limit" },
@@ -1187,6 +1192,12 @@ class HomePowerPanel extends HTMLElement {
       if (f.t === "bool") return `<label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="st-${f.k}" ${s[f.k] ? "checked" : ""}>${esc(f.label)}</label>`;
       if (f.t === "select") return `<div class="f"><label>${esc(f.label)}</label><select id="st-${f.k}">${f.options.map(([val, l]) => `<option value="${val}" ${(v || "auto") === val ? "selected" : ""}>${l}</option>`).join("")}</select></div>`;
       if (f.t === "device") return `<div class="f"><label>${esc(f.label)}</label><select id="st-${f.k}"><option value="">None</option>${this.data.devices.map((d) => `<option value="${esc(d.device_id)}" ${v === d.device_id ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>`;
+      if (f.t === "order") {
+        const cur = String(s[f.k] || f.items.map(([k]) => k).join(",")).split(",").map((x) => x.trim()).filter(Boolean);
+        const all = [...cur.filter((k) => f.items.some(([i]) => i === k)), ...f.items.map(([k]) => k).filter((k) => !cur.includes(k))];
+        const label = Object.fromEntries(f.items);
+        return `<div class="f"><label>${esc(f.label)}</label><div id="st-${f.k}" class="ordlist">${all.map((k) => `<div class="ord" data-key="${k}"><input type="checkbox" class="o-on" ${cur.includes(k) ? "checked" : ""} aria-label="Use ${esc(label[k])}"><span>${esc(label[k])}</span><button class="btn sm" data-act="ord-up" title="Move up" aria-label="Move up">▲</button><button class="btn sm" data-act="ord-down" title="Move down" aria-label="Move down">▼</button></div>`).join("")}</div>${f.hint ? `<span class="hint">${esc(f.hint)}</span>` : ""}</div>`;
+      }
       if (f.t === "note") return `<p class="hint" style="margin:0 0 8px">${esc(f.label)}</p>`;
       if (f.t === "presets") return `<div class="presets">${[["Octopus Go", "00:30", "05:30", ""], ["Intelligent Octopus Go", "23:30", "05:30", ""], ["Economy 7 (check your bill)", "00:30", "07:30", ""], ["23:30 - 07:30", "23:30", "07:30", ""], ["Cosy Octopus (3 periods)", "04:00", "07:00", "13:00-16:00, 22:00-00:00"]]
         .map(([n, a, b, x]) => `<button class="btn sm" data-act="tariff-preset" data-a="${a}" data-b="${b}" data-x="${x}">${esc(n)}${x ? "" : ` ${a}-${b}`}</button>`).join("")}</div><span class="hint">Fills the two time boxes below. Prices differ by tariff, so also enter the standard and cheap rate (or a rates sensor).</span>`;
@@ -1224,6 +1235,7 @@ class HomePowerPanel extends HTMLElement {
       }
       const el = r.getElementById("st-" + f.k);
       if (!el) continue;
+      if (f.t === "order") { out[f.k] = [...(el.querySelectorAll ? el.querySelectorAll(".ord") : [])].filter((row) => row.querySelector(".o-on").checked).map((row) => row.dataset.key).join(","); continue; }
       out[f.k] = f.t === "bool" ? el.checked : el.value.trim ? el.value.trim() : el.value;
     }
     return out;
@@ -1332,6 +1344,8 @@ class HomePowerPanel extends HTMLElement {
         }
         return;
       }
+      case "ord-up": { const row = t.closest(".ord"); if (row.previousElementSibling) row.parentNode.insertBefore(row, row.previousElementSibling); return; }
+      case "ord-down": { const row = t.closest(".ord"); if (row.nextElementSibling) row.parentNode.insertBefore(row.nextElementSibling, row); return; }
       case "add-rule": { this.shadowRoot.getElementById("st-rules").insertAdjacentHTML("beforeend", this._ruleRow({ block: "discharge" })); return; }
       case "del-rule": { t.closest(".rule").remove(); return; }
       case "flag":

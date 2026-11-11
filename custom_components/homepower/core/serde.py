@@ -128,6 +128,11 @@ def device_from_dict(d: dict) -> DeviceConfig:
         extra.update(connection=connection,
                      restore_mode=int(profile.get("restore_mode", 0)), watchdog=bool(profile.get("watchdog", False)),
                      control_enabled=bool(d.get("control_enabled", False)))  # monitor-only until the user opts in
+    grid_meter = str(d.get("grid_meter") or "auto")
+    if grid_meter not in ("auto", "yes", "no"):
+        raise ValidationError("grid meter must be auto, yes or no")
+    extra["grid_meter"] = grid_meter
+    extra["house_meter"] = bool(profile.get("house_meter", False))   # what 'auto' means for this model
     solar = str(d.get("solar") or "auto")
     if solar not in ("auto", "yes", "no"):
         raise ValidationError("solar must be auto, yes or no")
@@ -152,7 +157,7 @@ def device_to_dict(c: DeviceConfig) -> dict:
         "driver": e.get("driver", "entities"), "connection": e.get("connection", {}),
         "control_enabled": bool(e.get("control_enabled", True)),
         "entities": e.get("entities", {}), "mode_map": e.get("mode_map", {}),
-        "invert_power": bool(e.get("invert_power", False)), "role": e.get("role", "normal"), "solar": e.get("solar", "auto"),
+        "invert_power": bool(e.get("invert_power", False)), "role": e.get("role", "normal"), "solar": e.get("solar", "auto"), "grid_meter": e.get("grid_meter", "auto"),
     }
 
 

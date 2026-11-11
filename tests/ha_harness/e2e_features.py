@@ -36,7 +36,7 @@ async def main():
     hass.services.async_register("persistent_notification", "create", lambda call: sent.append(("create", call.data["notification_id"])))
     hass.services.async_register("persistent_notification", "dismiss", lambda call: sent.append(("dismiss", call.data["notification_id"])))
     sp = lambda: to_i32(dev.hold[10071], dev.hold[10072], "big")
-    await mgr.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": True})
+    await mgr.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "grid_meter": "yes", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": True})
     now = dt_util.now()
     hhmm = lambda d: d.strftime("%H:%M")
 

@@ -35,7 +35,7 @@ async def main():
     hass.services.async_register("persistent_notification", "create", lambda call: sent.append(("create", call.data["notification_id"])))
     hass.services.async_register("persistent_notification", "dismiss", lambda call: sent.append(("dismiss", call.data["notification_id"])))
 
-    await mgr.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": False})
+    await mgr.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "grid_meter": "yes", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": False})
     await coord._async_update_data()
 
     # --- combined battery + daily + health in the live view
@@ -118,6 +118,20 @@ async def main():
     print("grid     :", coord.grid_source, coord.grid_age_s, "|", item["detail"][:60])
     assert not item["ok"] and "15 min old" in item["detail"]
     del coord._entity_age
+    # the order is the user's: battery first beats the chosen sensor; a source left out is never used
+    coord.apply_settings({"grid_import_entity": "sensor.my_grid", "grid_order": "battery,sensor"})
+    await coord._async_update_data()
+    assert coord.grid_source == "A (its own meter reading)", coord.grid_source
+    coord.apply_settings({"grid_import_entity": "sensor.my_grid", "grid_order": "glow,cloud"})
+    await coord._async_update_data()
+    assert coord.last_grid is None and coord.grid_source == ""
+    # a battery that only measures itself never supplies the house reading (the default for this plug-in model)
+    await mgr.save_device({**mgr.devices["a"], "grid_meter": "auto"})
+    coord.apply_settings({})
+    await coord._async_update_data()
+    print("grid auto:", repr(coord.grid_source), coord.last_grid)
+    assert coord.last_grid is None and not {i["key"]: i for i in coord.view()["setup"]}["grid"]["ok"]
+    await mgr.save_device({**mgr.devices["a"], "grid_meter": "yes"})
     coord.apply_settings({})
 
     # --- setup check, price slots, several cheap windows

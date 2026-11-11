@@ -67,8 +67,9 @@ Every decision has a visible reason ("Why" chip on each battery).
   solar goals leave the surplus to export.
 - **Panels per battery:** each battery can be marked as having solar panels (detected automatically when it reports solar
   power); its card shows the solar power.
-- **Grid reading:** the sensor you pick wins; otherwise a battery's own meter reading on the local network, then Hildebrand
-  Glow, then a cloud figure. The setup check warns when the reading is not live, and a reading more than five minutes old is
+- **Grid reading:** you choose the order of sources in Settings > Grid meter (your own sensor, a battery that measures the
+  whole house, Hildebrand Glow, EcoFlow's cloud figure) and can switch any of them off. Each battery says whether its meter
+  measures the whole house: an Anker X1 does, plug-in batteries normally only measure themselves. The setup check warns when the reading is not live, and a reading more than five minutes old is
   not used to steer solar charging.
 - **Auto goal target:** tick *Work the target out from my usual use* on a goal and HomePower learns your house's load by
   time of day (weekday / weekend), then charges only what tomorrow is expected to need (never above the target you set).

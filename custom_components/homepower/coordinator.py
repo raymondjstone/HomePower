@@ -293,17 +293,20 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         return blocks
 
     def _grid_w(self, actuals: dict[str, Actual]) -> float | None:
-        """House grid power (+ importing). In order of trust: the sensor the user picked; a battery that measures the
-        meter itself on the local network (fresh every cycle); Hildebrand Glow found automatically (smart-meter data, which
-        can run late); and last a cloud-reported figure (EcoFlow)."""
+        """House grid power (+ importing), from the first source in the user's order (Settings > Grid meter) that has a
+        reading. Sources: "sensor" = the sensor the user picked; "battery" = a battery on the local network whose meter
+        measures the whole house (many only measure themselves: see _measures_house); "glow" = Hildebrand Glow found
+        automatically (smart-meter data, which can run late); "cloud" = a cloud-reported figure (EcoFlow)."""
         s = self.settings
-        names = {x.config.device_id: x.config.name for x in self.adapters}
-        cloud = {x.config.device_id for x in self.adapters if x.config.extra.get("driver") == "ecoflow_stream"}
+        cfgs = {x.config.device_id: x.config for x in self.adapters}
 
         def from_battery(local: bool) -> float | None:
             for did, a in actuals.items():
-                if (did not in cloud) == local and a.online and a.grid_w is not None:
-                    self.grid_source = f"{names.get(did, did)} ({'its own meter reading' if local else 'cloud reading'})"
+                cfg = cfgs.get(did)
+                if cfg is None or (cfg.extra.get("driver") != "ecoflow_stream") != local or not self._measures_house(cfg):
+                    continue
+                if a.online and a.grid_w is not None:
+                    self.grid_source = f"{cfg.name} ({'its own meter reading' if local else 'cloud reading'})"
                     self.grid_age_s = None if local else 30.0
                     return a.grid_w
             return None
@@ -315,23 +318,31 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             self.grid_source, self.grid_age_s = ent or s.grid_export_entity, self._entity_age(ent or s.grid_export_entity)
             return -v if s.grid_invert else v
 
-        if s.grid_entity or s.grid_export_entity:
-            v = from_sensor(s.grid_entity)
+        def glow() -> float | None:
+            g = self._glow()
+            ent = g.get("power", "") or g.get("usage", "")
+            return from_sensor(ent) if ent and not (s.grid_entity or s.grid_export_entity) else None
+
+        sources = {
+            "sensor": lambda: from_sensor(s.grid_entity) if (s.grid_entity or s.grid_export_entity) else None,
+            "battery": lambda: from_battery(True), "glow": glow, "cloud": lambda: from_battery(False),
+        }
+        for name in s.grid_order:
+            v = sources[name]()
             if v is not None:
                 return v
-        v = from_battery(True)
-        if v is not None:
-            return v
-        g = self._glow()
-        glow = g.get("power", "") or g.get("usage", "")
-        if glow and not (s.grid_entity or s.grid_export_entity):
-            v = from_sensor(glow)
-            if v is not None:
-                return v
-        v = from_battery(False)
-        if v is None:
-            self.grid_source, self.grid_age_s = "", None
-        return v
+        self.grid_source, self.grid_age_s = "", None
+        return None
+
+    @staticmethod
+    def _measures_house(cfg) -> bool:
+        """Does this battery's grid figure cover the whole house? What the user said; else what is usual for the model
+        (an X1 sits at the grid connection; plug-in batteries only see their own socket; EcoFlow's cloud figure is kept
+        as a last resort)."""
+        said = cfg.extra.get("grid_meter", "auto")
+        if said != "auto":
+            return said == "yes"
+        return bool(cfg.extra.get("house_meter")) or cfg.extra.get("driver") == "ecoflow_stream"
 
     def _entity_age(self, entity_id: str) -> float | None:
         st = self.hass.states.get(entity_id) if entity_id else None

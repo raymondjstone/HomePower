@@ -327,3 +327,26 @@ def test_goal_and_battery_fields_round_trip():
             assert False
         except ValidationError:
             pass
+
+
+def test_grid_order_setting_and_battery_meter_flag():
+    from core.serde import ValidationError, device_from_dict, device_to_dict
+    from core.settings import SettingsError, build, clean
+    assert build({}).grid_order == ["sensor", "battery", "glow", "cloud"]
+    assert build(clean({"grid_order": " glow , sensor,glow"})).grid_order == ["glow", "sensor"]       # order kept, duplicates dropped
+    for bad in ("", "wind", "sensor,x"):
+        try:
+            clean({"grid_order": bad})
+            assert False, bad
+        except SettingsError:
+            pass
+    base = {"device_id": "a", "connection": {"host": "10.0.0.2"}, "capacity_wh": 10000, "max_charge_w": 3000, "max_discharge_w": 3000}
+    plug = device_from_dict({**base, "kind": "anker_e5000_pro"})
+    x1 = device_from_dict({**base, "kind": "anker_x1"})
+    assert plug.extra["house_meter"] is False and x1.extra["house_meter"] is True                     # what 'auto' means per model
+    assert device_to_dict(device_from_dict({**base, "kind": "anker_e5000_pro", "grid_meter": "yes"}))["grid_meter"] == "yes"
+    try:
+        device_from_dict({**base, "kind": "anker_x1", "grid_meter": "maybe"})
+        assert False
+    except ValidationError:
+        pass
