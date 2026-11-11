@@ -320,6 +320,7 @@ class HomePowerPanel extends HTMLElement {
     const s = this.data.settings || {};
     if (s.offpeak_start && s.offpeak_end) return "";
     const inf = this.live.tariff_inferred;
+    if (!inf && this.live.price_now != null) return "";   // per-slot prices (Agile, Nord Pool...): no fixed cheap hours to enter
     const msg = inf ? `Your cheap-rate hours are being <b>estimated</b> as ${inf.start}-${inf.end} from price history, which can run up to an hour late.`
       : "HomePower does not know your cheap-rate hours yet, so goals cannot pick the cheapest time to charge.";
     return `<div class="banner"><ha-icon icon="mdi:cash-clock"></ha-icon><div class="t">${msg} Enter them once for exact planning.</div>

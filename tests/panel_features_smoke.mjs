@@ -17,6 +17,9 @@ const must = (name, ok) => { console.log(ok ? "ok  " : "FAIL", name); if (!ok) p
 const hb = p._homeBattery();
 must("home battery card", hb.includes("Home battery") && hb.includes("52%") && hb.includes("16.8 h"));
 must("tariff banner (estimated)", p._tariffBanner().includes("estimated") && p._tariffBanner().includes("goto-tariff"));
+p.data.settings = {}; const keep = p.live.tariff_inferred; p.live.tariff_inferred = null; p.live.price_now = 0.2;
+must("no banner for per-slot prices", p._tariffBanner() === "");
+p.live.tariff_inferred = keep; p.live.price_now = null;
 p.data.settings = { offpeak_start: "23:30", offpeak_end: "07:30" };
 must("tariff banner hidden once set", p._tariffBanner() === "");
 const sc = p._scenesCard();
