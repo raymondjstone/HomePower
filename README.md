@@ -159,8 +159,9 @@ MIT, see [LICENSE](LICENSE).
   `v<version>-beta.<n>` (in HACS: *Redownload > Show beta versions*). Only the newest five pre-releases are kept.
 - Merging `develop` into **`master`** (a pull request) publishes the real release `v<version>` and removes that version's
   pre-releases.
-- `<version>` is `"version"` in `custom_components/homepower/manifest.json`. Bump it on `develop` when starting a new
-  version; the pre-release build fails with a clear message if it is not newer than the latest release.
+- `<version>` is `"version"` in `custom_components/homepower/manifest.json`. After each release the workflow moves `develop`
+  on by one patch number by itself (pull before you carry on working); edit the number yourself for a bigger jump. A
+  pre-release build fails with a clear message if the version is not newer than the latest release.
 
 ## Development
 
