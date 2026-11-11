@@ -20,3 +20,18 @@ def test_every_looked_up_element_exists_in_a_template():
 def test_every_button_action_has_a_handler():
     handled = set(re.findall(r'case "([\w-]+)":', JS))
     assert sorted(a for a in set(re.findall(r'data-act="([\w-]+)"', JS)) if a not in handled) == []
+
+
+def test_services_yaml_parses_and_matches_the_translations():
+    """hassfest rejects an unparsable services.yaml (an unquoted ': ' in a description is enough)."""
+    import json
+    import pathlib
+
+    import pytest
+    yaml = pytest.importorskip("yaml")
+    root = pathlib.Path(__file__).parent.parent / "custom_components" / "homepower"
+    services = yaml.safe_load((root / "services.yaml").read_text(encoding="utf8"))
+    strings = json.loads((root / "strings.json").read_text(encoding="utf8"))["services"]
+    assert set(services) == set(strings), set(services) ^ set(strings)
+    for name, spec in services.items():
+        assert isinstance(spec.get("description"), str) and spec["name"], name

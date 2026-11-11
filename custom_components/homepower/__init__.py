@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -16,6 +17,8 @@ from .manager import HomePowerManager
 _LOGGER = logging.getLogger(__name__)
 PANEL_URL = "homepower"
 STATIC_URL = "/homepower_static"
+# The one place the version lives is manifest.json; it is also the cache-buster for the panel and card scripts.
+VERSION = json.loads((Path(__file__).parent / "manifest.json").read_text(encoding="utf8")).get("version", "0")
 PLATFORMS = ["sensor", "switch"]
 
 
@@ -89,13 +92,13 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
             hass,
             webcomponent_name="homepower-panel",
             frontend_url_path=PANEL_URL,
-            module_url=f"{STATIC_URL}/homepower-panel.js?v=0.1.3",
+            module_url=f"{STATIC_URL}/homepower-panel.js?v={VERSION}",
             sidebar_title="HomePower",
             sidebar_icon="mdi:home-battery",
             require_admin=True,
             config={},
         )
-        frontend.add_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v=0.1.3")   # the optional Lovelace card
+        frontend.add_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={VERSION}")   # the optional Lovelace card
         _LOGGER.info("HomePower panel registered at /%s", PANEL_URL)
     except Exception as err:  # noqa: BLE001 - UI is optional
         _LOGGER.warning("HomePower sidebar panel could not be registered", exc_info=True)

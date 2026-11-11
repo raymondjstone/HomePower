@@ -1,26 +1,108 @@
 name: Release
 
-# Push a tag such as v0.1.0 to publish a GitHub release (HACS needs a real release, not only a tag).
+# How releases work
+#   push to develop      -> a PRE-RELEASE  v<version>-beta.<n>   (HACS offers it to people who turned on beta versions)
+#   merge into master    -> the RELEASE    v<version>            (skipped if that version is already released)
+# <version> is "version" in custom_components/homepower/manifest.json: bump it on develop when you start a new version.
 on:
   push:
-    tags:
-      - "v*"
+    branches: [master, develop]
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  release:
+  test:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - name: Check the tag matches the integration version
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m pip install pytest pillow pyyaml
+      - run: python -m pytest -q
+
+  hassfest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: home-assistant/actions/hassfest@master
+
+  release:
+    needs: [test, hassfest]     # nothing is published unless the tests and Home Assistant's own validation pass
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0          # all tags, to compare versions
+
+      - name: Work out the version
+        id: v
         run: |
-          v=$(python3 -c "import json;print(json.load(open('custom_components/homepower/manifest.json'))['version'])")
-          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != manifest version v$v"; exit 1; }
+          ver=$(python3 -c "import json;print(json.load(open('custom_components/homepower/manifest.json'))['version'])")
+          latest=$(git tag -l 'v[0-9]*' | grep -v -- '-' | sed 's/^v//' | sort -V | tail -1)
+          echo "manifest version: $ver   latest release: ${latest:-none}"
+          if [ "${GITHUB_REF_NAME}" = "develop" ]; then
+            newest=$(printf '%s\n%s\n' "$latest" "$ver" | sort -V | tail -1)
+            if [ "$ver" = "$latest" ] || [ "$newest" != "$ver" ]; then
+              echo "::error::Version $ver is not newer than the latest release ($latest). Bump \"version\" in custom_components/homepower/manifest.json."
+              exit 1
+            fi
+            echo "tag=v${ver}-beta.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "pkg=${ver}b${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "pre=true" >> "$GITHUB_OUTPUT"
+          else
+            if git rev-parse -q --verify "refs/tags/v${ver}" >/dev/null; then
+              echo "::notice::v${ver} is already released: nothing to do (bump the version to release again)."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            fi
+            echo "tag=v${ver}" >> "$GITHUB_OUTPUT"
+            echo "pkg=${ver}" >> "$GITHUB_OUTPUT"
+            echo "pre=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "base=${ver}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp the package version
+        if: steps.v.outputs.skip != 'true'
+        run: |
+          python3 - <<'PY'
+          import json, os
+          p = "custom_components/homepower/manifest.json"
+          m = json.load(open(p))
+          m["version"] = "${{ steps.v.outputs.pkg }}"
+          json.dump(m, open(p, "w"), indent=2)
+          PY
+
       - name: Zip the integration
+        if: steps.v.outputs.skip != 'true'
         run: cd custom_components/homepower && zip -r ../../homepower.zip . -x "__pycache__/*" "*/__pycache__/*"
-      - name: Publish the release
+
+      - name: Publish
+        if: steps.v.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${GITHUB_REF_NAME}" homepower.zip --title "HomePower ${GITHUB_REF_NAME}" --generate-notes
+        run: |
+          if [ "${{ steps.v.outputs.pre }}" = "true" ]; then
+            gh release create "${{ steps.v.outputs.tag }}" homepower.zip --target "$GITHUB_SHA" --prerelease --latest=false \
+              --title "HomePower ${{ steps.v.outputs.tag }} (pre-release)" --generate-notes
+          else
+            gh release create "${{ steps.v.outputs.tag }}" homepower.zip --target "$GITHUB_SHA" --latest \
+              --title "HomePower ${{ steps.v.outputs.tag }}" --generate-notes
+          fi
+
+      - name: Tidy old pre-releases
+        if: steps.v.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # after a release: remove that version's betas; on develop: keep only the newest five betas
+          if [ "${{ steps.v.outputs.pre }}" = "true" ]; then
+            old=$(gh release list --limit 200 --json tagName,isPrerelease,createdAt -q '[.[]|select(.isPrerelease)]|sort_by(.createdAt)|reverse|.[5:]|.[].tagName')
+          else
+            old=$(gh release list --limit 200 --json tagName,isPrerelease -q '.[]|select(.isPrerelease)|.tagName' | grep "^v${{ steps.v.outputs.base }}-beta\." || true)
+          fi
+          for t in $old; do gh release delete "$t" --yes --cleanup-tag || true; done
