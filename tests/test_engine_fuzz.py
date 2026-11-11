@@ -24,7 +24,7 @@ def rand_world(rng: random.Random) -> World:
                      set_power_w=rng.choice([None, 0, 500, 2000]), grid_w=None)
         devs.append(DevIn(DeviceConfig(f"d{i}", f"d{i}", "x", caps, priority=rng.randint(-2, 2), extra={"role": rng.choice(["normal", "normal", "reserve"])}), act,
                           release_pending=rng.random() < 0.2, guard_held=rng.random() < 0.3,
-                          controllable=rng.random() > 0.2))
+                          controllable=rng.random() > 0.2, has_solar=rng.choice([None, True, False])))
     ids = [d.config.device_id for d in devs]
     scheds = []
     for k in range(rng.randint(0, 3)):
@@ -39,7 +39,8 @@ def rand_world(rng: random.Random) -> World:
                                     priority=rng.randint(0, 2), total_power_w=rng.choice([None, None, 4000]),
                                     presence=rng.choice(["any", "any", "home", "away"]),
                                     source=rng.choice(["grid", "grid", "solar", "both"]) if mode is Mode.CHARGE else "grid"))
-    goals = [Goal(f"g{k}", frozenset(), rng.choice([60, 90, 100]), time(rng.randrange(24)), use_forecast=rng.random() < 0.5)
+    goals = [Goal(f"g{k}", frozenset(), rng.choice([60, 90, 100]), time(rng.randrange(24)), use_forecast=rng.random() < 0.5,
+                  source=rng.choice(["grid", "grid", "solar", "both"]))
              for k in range(rng.randint(0, 2))]
     st = Settings(charge_cap_w=rng.choice([None, 2000, 6000]), discharge_cap_w=rng.choice([None, 2500]),
                   import_limit_w=rng.choice([None, 7000, 3000]), export_limit_w=rng.choice([None, 2000]),
@@ -50,6 +51,7 @@ def rand_world(rng: random.Random) -> World:
         overrides={rng.choice(ids): Desired(rng.choice(list(Mode)), rng.choice([None, 800]))} if rng.random() < 0.15 else {},
         grid_w=rng.choice([None, -6000, -1500, 0, 800, 4000, 9000]), backup_active=rng.random() < 0.2, away=rng.random() < 0.3,
         cheap_now=rng.choice([None, True, False]),
+        grid_fresh=rng.random() > 0.15, export_better=rng.random() < 0.15,
         load_blocks=set(rng.sample(["charge", "discharge"], rng.randint(0, 2))),
         rates=rng.choice([None, RateTable(peak=30.0, offpeak=7.5, offpeak_start=time(23, 30), offpeak_end=time(5, 30))]),
         forecast_kwh=rng.choice([None, 4.0, 20.0]),

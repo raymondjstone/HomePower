@@ -38,6 +38,8 @@ KEEPALIVE_EVERY_S = 60
 OFFLINE_ALERT_AFTER_S = 180
 PROTECT_ALERT_AFTER_S = 60
 UNCONFIRMED_ALERT_AFTER = 3
+GRID_SLOW_AFTER_S = 120     # setup check: warn that the grid reading is not live
+GRID_STALE_AFTER_S = 300    # control: too old to steer by (solar surplus tracking waits instead)
 FORCING_REASONS = ("schedule", "goal", "manual override", "backup reserve")
 
 
@@ -95,6 +97,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.alerts = AlertTracker()
         self.last_result = Result()
         self.last_grid: float | None = None
+        self.grid_source = ""                  # where the grid reading comes from (shown in Settings / setup check)
+        self.grid_age_s: float | None = None   # how old that reading is; None = read directly just now
         self._forced_ids = set(manager.forced)                     # persisted: devices we put into forced control
         self._last_persist = _time.monotonic()
         self._snap = Snapshot(devices={a.config.device_id: self._new_status(a.config.device_id) for a in adapters})
@@ -193,10 +197,6 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self._glow_cache, self._glow_at = found, _time.monotonic()
         return found
 
-    def _grid_entity(self) -> str:
-        g = self._glow()
-        return self.settings.grid_entity or g.get("power", "") or g.get("usage", "")
-
     def _rates_entity(self) -> str:
         return self.settings.rates_entity or self._glow().get("rate", "")
 
@@ -293,22 +293,57 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         return blocks
 
     def _grid_w(self, actuals: dict[str, Actual]) -> float | None:
-        """House grid power (+ importing): the user's sensor if set, else a battery that sees the meter."""
-        v = self._meter_w()
-        if v is not None:
-            return -v if self.settings.grid_invert else v
-        # Local meter readings first: a cloud-reported "grid" figure (EcoFlow) is a slow, cached value.
+        """House grid power (+ importing). In order of trust: the sensor the user picked; a battery that measures the
+        meter itself on the local network (fresh every cycle); Hildebrand Glow found automatically (smart-meter data, which
+        can run late); and last a cloud-reported figure (EcoFlow)."""
+        s = self.settings
+        names = {x.config.device_id: x.config.name for x in self.adapters}
         cloud = {x.config.device_id for x in self.adapters if x.config.extra.get("driver") == "ecoflow_stream"}
-        for did, a in sorted(actuals.items(), key=lambda kv: kv[0] in cloud):
-            if a.online and a.grid_w is not None:
-                return a.grid_w
-        return None
 
-    def _meter_w(self) -> float | None:
+        def from_battery(local: bool) -> float | None:
+            for did, a in actuals.items():
+                if (did not in cloud) == local and a.online and a.grid_w is not None:
+                    self.grid_source = f"{names.get(did, did)} ({'its own meter reading' if local else 'cloud reading'})"
+                    self.grid_age_s = None if local else 30.0
+                    return a.grid_w
+            return None
+
+        def from_sensor(ent: str) -> float | None:
+            v = self._meter_w(ent)
+            if v is None:
+                return None
+            self.grid_source, self.grid_age_s = ent or s.grid_export_entity, self._entity_age(ent or s.grid_export_entity)
+            return -v if s.grid_invert else v
+
+        if s.grid_entity or s.grid_export_entity:
+            v = from_sensor(s.grid_entity)
+            if v is not None:
+                return v
+        v = from_battery(True)
+        if v is not None:
+            return v
+        g = self._glow()
+        glow = g.get("power", "") or g.get("usage", "")
+        if glow and not (s.grid_entity or s.grid_export_entity):
+            v = from_sensor(glow)
+            if v is not None:
+                return v
+        v = from_battery(False)
+        if v is None:
+            self.grid_source, self.grid_age_s = "", None
+        return v
+
+    def _entity_age(self, entity_id: str) -> float | None:
+        st = self.hass.states.get(entity_id) if entity_id else None
+        if st is None:
+            return None
+        seen = getattr(st, "last_reported", None) or st.last_updated
+        return max(0.0, (dt_util.utcnow() - seen).total_seconds())
+
+    def _meter_w(self, imp_ent: str) -> float | None:
         """Smart-meter reading in W (+ importing): an import sensor, less an optional export sensor. Each may be
         a power sensor (W/kW) or a cumulative energy counter (Wh/kWh)."""
         s, now = self.settings, _time.monotonic()
-        imp_ent = self._grid_entity()
         out = []
         for key, ent in (("imp", imp_ent), ("exp", s.grid_export_entity)):
             st = self.hass.states.get(ent) if ent else None
@@ -327,6 +362,26 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             return None
         bat = sum(a.power_w or 0.0 for a in actuals.values() if a.online)   # + charging
         return max(0.0, grid - bat + pv_w)
+
+    def _has_solar(self, cfg) -> bool | None:
+        """Are panels attached to this battery? What the user said, else whether it has ever reported solar power."""
+        said = cfg.extra.get("solar", "auto")
+        if said != "auto":
+            return said == "yes"
+        return True if cfg.device_id in self.manager.pv_seen else None
+
+    def _export_better(self, rates: RateTable | None, now: datetime) -> bool:
+        """Is spare solar worth more exported than stored? True when the export price beats buying the same energy back at
+        the cheapest upcoming import price (allowing ~10% for what is lost going through the battery)."""
+        exp = self.settings.export_price
+        if not exp or rates is None:
+            return False
+        ahead = [x.price for x in rates.slots_between(now, now + timedelta(hours=24))]
+        cheapest = min(ahead) if ahead else rates.offpeak
+        if cheapest is None:
+            return False
+        unit = self.settings.rates_unit
+        return to_main_units(exp, unit) > to_main_units(cheapest, unit) / 0.9
 
     def _is_cheap(self, rates: RateTable | None, now: datetime, price: float | None) -> bool | None:
         """Is `now` a cheap-rate period? None when there is nothing to compare with (a flat tariff)."""
@@ -471,7 +526,13 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         add("tariff", exact or slots, "Cheap-rate hours confirmed", "" if exact or slots else
             ("They are only estimated from price history." if self._tariff else "Enter when your cheap rate starts and ends."), "tab", "settings")
         add("grid", self.last_grid is not None, "Grid meter reading available", "" if self.last_grid is not None else
-            "Needed for peak shaving, the export limit and savings. Pick a grid sensor in Settings.", "tab", "settings")
+            "Needed for peak shaving, the export limit, solar-only charging and savings. Pick a grid sensor in Settings.", "tab", "settings")
+        if self.last_grid is not None:
+            age = self.grid_age_s
+            fresh = age is None or age <= GRID_SLOW_AFTER_S
+            add("grid_fresh", fresh, "Grid reading is live", "" if fresh else
+                f"The reading from {self.grid_source} is {age / 60:.0f} min old. Solar-only charging, peak shaving and the export "
+                "limit need a live reading: pick a faster grid sensor in Settings.", "tab", "settings")
         return items
 
     def _combined(self, actuals: dict[str, Actual]) -> dict:
@@ -535,11 +596,13 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             now=now, settings=self.settings.engine, schedules=self.schedules, goals=self.goals,
             overrides=self._active_overrides(now), grid_w=grid, condition_ok=self._condition_ok, usage_wh=self.profile.expected_wh,
             backup_active=self.backup_active, away=self.away, load_blocks=self._load_blocks(),
+            grid_fresh=self.grid_age_s is None or self.grid_age_s <= GRID_STALE_AFTER_S,
             rates=rates, forecast_kwh=self._forecast_kwh(), cheap_now=self._is_cheap(rates, now, self._price_now(rates, now)),
             devices=[DevIn(a.config, actuals[a.config.device_id],
                            self._snap.devices[a.config.device_id].release_pending,
                            self._snap.devices[a.config.device_id].guard_held,
-                           bool(a.config.extra.get("control_enabled", True))) for a in adapters],
+                           bool(a.config.extra.get("control_enabled", True)), self._has_solar(a.config)) for a in adapters],
+            export_better=self._export_better(rates, now),
         )
         try:
             res = compute(world)
@@ -616,6 +679,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             d_in, d_out = self.meter.add(f"bat:{did}", wall, act.power_w if act.online else None)
             charged, discharged = charged + d_in, discharged + d_out
         g_in, g_out = self.meter.add("grid", wall, grid)
+        for did, act in actuals.items():
+            if act.online and (act.pv_w or 0) > 50 and did not in self.manager.pv_seen:
+                self.manager.pv_seen.add(did)      # this battery has panels: remembered for 'solar: auto'
         pv = [a.pv_w for a in actuals.values() if a.online and a.pv_w is not None]
         pv_in, _ = self.meter.add("pv", wall, sum(pv) if pv else None)
         price = self._price_now(rates, now)
@@ -782,6 +848,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "online": bool(act and act.online),
                 "soc": act.soc if act else None,
                 "power_w": act.power_w if act else None,
+                "pv_w": act.pv_w if act and act.online else None, "has_solar": self._has_solar(a.config),
                 "mode": act.mode.value if act and act.mode else None,
                 "protected": bool(act and act.protected),
                 "desired_mode": want.mode.value if want else None,
@@ -800,13 +867,13 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         return {
             "devices": out,
             "events": [list(e) for e in list(self._snap.events)[-60:]],
-            "grid_w": self._grid_w(actuals),
+            "grid_w": self.last_grid, "grid_source": self.grid_source, "grid_age_s": None if self.grid_age_s is None else round(self.grid_age_s),
             "now": now.isoformat(),
             "paused": self.paused, "backup": self.backup_active, "away": self.away,
             "alerts": sorted(self.alerts.active()), "notes": self.last_result.notes,
             "price_now": self._price_now(rates, now),
-            "meter_entity": self._grid_entity(), "rates_entity": self._rates_entity(),
-            "combined": self._combined(actuals), "setup": self.setup_check(),
+            "meter_entity": self.grid_source, "rates_entity": self._rates_entity(),
+            "combined": self._combined(actuals), "setup": self.setup_check(), "export_better": self._export_better(rates, now),
             "divert": {"entity": self.settings.divert_entity, "on": self.diverter.on} if self.settings.divert_entity else None,
             "daily": {"self_consumption": self.daily.self_consumption(day_key), "cheap_share": self.daily.cheap_share(day_key)},
             "health": {a.config.device_id: {"efficiency": self.health.efficiency(a.config.device_id)[-8:],

@@ -61,6 +61,15 @@ Every decision has a visible reason ("Why" chip on each battery).
 - **Backup mode:** tops up to a reserve and never discharges below it (manual, or while a weather-alert entity is on).
 - **Away mode:** only schedules marked for "away" (or "always") apply.
 - **Protect loads:** don't charge/discharge while an EV charger or heat pump is busy.
+- **Solar-aware goals:** a goal can charge from the grid (cheapest half-hours), from *solar only*, or *solar first, then the
+  cheapest grid half-hours* for what is still missing.
+- **Export price:** enter what you are paid per kWh exported; when that beats buying the energy back at your cheapest rate,
+  solar goals leave the surplus to export.
+- **Panels per battery:** each battery can be marked as having solar panels (detected automatically when it reports solar
+  power); its card shows the solar power.
+- **Grid reading:** the sensor you pick wins; otherwise a battery's own meter reading on the local network, then Hildebrand
+  Glow, then a cloud figure. The setup check warns when the reading is not live, and a reading more than five minutes old is
+  not used to steer solar charging.
 - **Auto goal target:** tick *Work the target out from my usual use* on a goal and HomePower learns your house's load by
   time of day (weekday / weekend), then charges only what tomorrow is expected to need (never above the target you set).
 - **Home battery view:** with several batteries, one card on Overview (and the optional Lovelace card) shows total charge,
@@ -96,7 +105,7 @@ Every decision has a visible reason ("Why" chip on each battery).
 - **Sidebar > HomePower** (admin): Overview (live), Plan (goals + the next 24 hours + schedule clashes), Schedules,
   Batteries, Insights (savings, energy, long-term history), Settings, Diagnostics (per-battery status, Test control,
   copy debug info).
-- **Settings > Devices & Services > HomePower > Configure:** add batteries, schedules and goals and change the common
+- **Settings > Devices & Services > HomePower > Configure:** add batteries, add or change schedules, add goals and change the common
   settings with native Home Assistant forms (no panel needed).
 
 ## Home Assistant entities and services

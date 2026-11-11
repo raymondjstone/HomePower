@@ -14,7 +14,7 @@ from custom_components.homepower.drivers.anker import AnkerModbusDriver
 class FakeMgr:
     """Same behaviour as HomePowerManager for the parts the flow uses."""
     def __init__(self, port):
-        self.port, self.devices, self.schedules = port, {}, {}
+        self.port, self.devices, self.schedules, self.goals = port, {}, {}, {}
 
     async def discover_anker(self):
         return await discovery.scan(["127.0.0.1"], port=self.port)
@@ -36,6 +36,10 @@ class FakeMgr:
             raise ValidationError(f"could not read the battery: {e}")
         finally:
             await d.close()
+
+    async def save_schedule(self, raw):
+        from custom_components.homepower.core.serde import schedule_from_dict, schedule_to_dict
+        sc = schedule_to_dict(schedule_from_dict(raw)); self.schedules[sc["id"]] = sc
 
     async def save_device(self, raw):
         d = device_to_dict(device_from_dict(raw)); self.devices[d["device_id"]] = d
@@ -88,6 +92,29 @@ async def main():
     assert r["step_id"] == "battery_details"
     r = await f.async_step_battery_details(r["data_schema"]({"capacity_wh": 5000}))
     print("eco saved :", r["type"], mgr.devices["shed"]["connection"]["sn"], mgr.devices["shed"]["supported_modes"])
+
+    # ---- schedules: add, then change one through the edit form (HA's own schema validation on both)
+    f = mkflow(mgr)
+    r = await f.async_step_add_schedule()
+    r = await f.async_step_add_schedule(r["data_schema"]({"name": "Sun", "mode": "charge", "start": "10:00:00", "end": "15:00:00",
+                                                          "power_w": 2000, "source": "solar", "target_soc": 95}))
+    assert mgr.schedules["Sun"]["source"] == "solar" and mgr.schedules["Sun"]["target_soc"] == 95
+    mgr.schedules["Sun"].update(priority=3, total_power_w=4000)            # things only the panel can set
+    f = mkflow(mgr)
+    r = await f.async_step_init()
+    assert "edit_schedule" in r["menu_options"]
+    r = await f.async_step_edit_schedule()
+    r = await f.async_step_edit_schedule(r["data_schema"]({"schedule": "Sun"}))
+    assert r["step_id"] == "edit_schedule_form" and r["description_placeholders"]["name"] == "Sun"
+    shown = {str(k): k.default() if callable(getattr(k, "default", None)) else None for k in r["data_schema"].schema}
+    assert shown["mode"] == "charge" and shown["source"] == "solar" and shown["start"] == "10:00:00", shown
+    r = await f.async_step_edit_schedule_form(r["data_schema"]({"mode": "charge", "start": "11:00:00", "end": "16:00:00",
+                                                               "source": "both", "power_w": 2500, "enabled": False}))
+    sc = mgr.schedules["Sun"]
+    print("sched edit:", r["type"], sc["start"], sc["source"], sc["power_w"], sc["target_soc"], sc["priority"], sc["enabled"])
+    assert (sc["start"], sc["end"], sc["source"], sc["power_w"], sc["enabled"]) == ("11:00", "16:00", "both", 2500, False)
+    assert sc["target_soc"] is None, "a cleared optional field is cleared"
+    assert sc["priority"] == 3 and sc["total_power_w"] == 4000, "fields the form does not show are kept"
 
     srv.close(); await srv.wait_closed()
     print("ALL FLOWS OK")

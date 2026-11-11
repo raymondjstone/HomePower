@@ -104,6 +104,22 @@ async def main():
     notes = coord.last_result.notes
     print("auto goal:", [n for n in notes if "auto" in n or "learning" in n])
     assert any("auto target" in n or "still learning" in n for n in notes)
+    # --- where the grid reading comes from: the battery's own meter wins automatically; a slow sensor is flagged and not steered by
+    await coord._async_update_data()
+    assert coord.grid_source == "A (its own meter reading)" and coord.grid_age_s is None, coord.grid_source
+    assert {i["key"]: i for i in coord.view()["setup"]}["grid_fresh"]["ok"]
+    hass.states.async_set("sensor.my_grid", "450", {"unit_of_measurement": "W"})
+    coord.apply_settings({"grid_import_entity": "sensor.my_grid"})
+    await coord._async_update_data()
+    assert coord.last_grid == 450 and coord.grid_source == "sensor.my_grid" and coord.grid_age_s < 60      # the user's choice wins
+    coord._entity_age = lambda ent: 900.0                                                                   # ...but it has stopped updating
+    await coord._async_update_data()
+    item = {i["key"]: i for i in coord.view()["setup"]}["grid_fresh"]
+    print("grid     :", coord.grid_source, coord.grid_age_s, "|", item["detail"][:60])
+    assert not item["ok"] and "15 min old" in item["detail"]
+    del coord._entity_age
+    coord.apply_settings({})
+
     # --- setup check, price slots, several cheap windows
     coord.apply_settings({"price_peak": 30.0, "price_offpeak": 7.5, "offpeak_start": "04:00", "offpeak_end": "07:00",
                           "offpeak_extra": "13:00-16:00, 22:00-00:00"})

@@ -419,6 +419,7 @@ class HomePowerPanel extends HTMLElement {
     if (want) chips.push(`<span class="chip m" style="background:${want.color}" title="${esc(want.help)}">Target: ${want.label}${lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : ""}</span>`);
     else if (r.online) chips.push(`<span class="chip">Device's own control</span>`);
     if (mode) chips.push(`<span class="chip"><span class="dot" style="background:${mode.color}"></span>Mode: ${mode.label}</span>`);
+    if (lv.has_solar || (lv.pv_w || 0) > 0) chips.push(`<span class="chip" title="Solar panels attached to this battery"><ha-icon icon="mdi:solar-power" style="--mdc-icon-size:14px"></ha-icon>Solar${lv.pv_w != null ? " " + fmtW(lv.pv_w) : ""}</span>`);
     if (lv.protected) chips.push(`<span class="chip warn"><ha-icon icon="mdi:shield-alert" style="--mdc-icon-size:14px"></ha-icon>Protection active</span>`);
     if (lv.reason) chips.push(`<span class="chip" title="Why HomePower is doing this">${esc(lv.reason)}</span>`);
     if (lv.override) chips.push(`<span class="chip m" style="background:#7c3aed">Manual: ${(MODES[lv.override.mode] || {}).label} until ${new Date(lv.override.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>`);
@@ -766,6 +767,7 @@ class HomePowerPanel extends HTMLElement {
           <div class="f"><label>Max discharge (W)</label><input type="number" id="b-md" value="${d.max_discharge_w ?? ""}" placeholder="from the battery"></div></div>
         <div class="two"><div class="f"><label>Minimum SOC (%)</label><input type="number" id="b-min" min="0" max="100" value="${d.min_soc ?? ""}" placeholder="from the battery"></div>
           <div class="f"><label>Priority (lower = discharges first)</label><input type="number" id="b-prio" value="${d.priority ?? 0}"></div></div>
+        <div class="f"><label>Solar panels attached to this battery</label><select id="b-solar">${[["auto", "Detect automatically"], ["yes", "Yes"], ["no", "No"]].map(([v, l]) => `<option value="${v}" ${(d.solar || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}</select></div>
         <div class="f"><label>Role</label><select id="b-role"><option value="normal" ${d.role !== "reserve" ? "selected" : ""}>Everyday: used whenever the house needs it</option><option value="reserve" ${d.role === "reserve" ? "selected" : ""}>Reserve: held back until the other batteries have run down</option></select>
           <span class="hint">A reserve battery needs control allowed and a battery that supports Hold. Solar still charges it.</span></div></details>
       <h3>4 · Control</h3>
@@ -864,7 +866,7 @@ class HomePowerPanel extends HTMLElement {
     const out = {
       device_id: origId || slug(name) || "battery_" + Date.now().toString(36),
       name, kind: pid,
-      capacity_wh: v("b-cap"), max_charge_w: v("b-mc"), max_discharge_w: v("b-md"), min_soc: v("b-min"), priority: v("b-prio"), role: (r.getElementById("b-role") || {}).value || "normal",
+      capacity_wh: v("b-cap"), max_charge_w: v("b-mc"), max_discharge_w: v("b-md"), min_soc: v("b-min"), priority: v("b-prio"), role: (r.getElementById("b-role") || {}).value || "normal", solar: (r.getElementById("b-solar") || {}).value || "auto",
       control_enabled: !!(r.getElementById("b-control") || {}).checked,
     };
     if (prof.driver === "entities") {
@@ -976,7 +978,7 @@ class HomePowerPanel extends HTMLElement {
     const gcards = goals.map((g) => `<div class="card sch ${g.enabled ? "" : "off"}">
       <label class="switch"><input type="checkbox" data-gtoggle="${esc(g.id)}" ${g.enabled ? "checked" : ""}><i></i></label>
       <div class="meta"><div class="when">${g.target_soc}% by ${g.by}</div><div style="font-weight:600">${esc(g.id)}</div>
-        <div class="sub">${esc(names(g))}${g.use_forecast ? " · less when solar is forecast" : ""}${g.max_power_w ? " · max " + fmtW(g.max_power_w) : ""}</div>
+        <div class="sub">${esc(names(g))}${g.source === "solar" ? " · solar only" : g.source === "both" ? " · solar first, then grid" : ""}${g.use_forecast ? " · less when solar is forecast" : ""}${g.max_power_w ? " · max " + fmtW(g.max_power_w) : ""}</div>
         <div class="dayrow">${DAYS.map((d, i) => `<span class="${g.days.includes(i) ? "on" : ""}">${d.slice(0, 2)}</span>`).join("")}</div></div>
       <div><button class="btn sm" data-act="edit-goal" data-id="${esc(g.id)}">Edit</button></div></div>`).join("");
     const pv = this._preview;
@@ -1015,6 +1017,8 @@ class HomePowerPanel extends HTMLElement {
         <div class="f"><label>Be there by</label><input type="time" id="gl-by" value="${g.by}"></div></div>
       <div class="daypick">${DAYS.map((d, i) => `<label><input type="checkbox" name="gl-day" value="${i}" ${g.days.includes(i) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div>
       <div class="f"><span class="hint">The day the deadline falls on.</span></div>
+      <div class="f"><label>Charge from</label><select id="gl-source">${[["grid", "Grid: the cheapest half-hours before the deadline"], ["solar", "Solar only: spare solar, nothing from the grid"], ["both", "Solar first, then the cheapest grid half-hours for what is still missing"]].map(([v, l]) => `<option value="${v}" ${(g.source || "grid") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+        <span class="hint">Solar charging follows your grid meter and takes only what would otherwise be exported. Between times the battery runs itself as usual.</span></div>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-auto" ${g.auto_target ? "checked" : ""}>Work the target out from my usual use (the target above becomes the maximum; it learns for a few days first)</label>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-forecast" ${g.use_forecast ? "checked" : ""}>Charge less when tomorrow's solar forecast is good (set the forecast entity in Settings)</label>
       <div class="f"><label>Max total charge power for this goal (W, optional)</label><input type="number" id="gl-max" min="0" step="100" value="${g.max_power_w ?? ""}"></div>
@@ -1028,7 +1032,7 @@ class HomePowerPanel extends HTMLElement {
     const r = this.shadowRoot, v = (id) => r.getElementById(id).value;
     return { id: v("gl-name").trim(), device_ids: [...r.querySelectorAll('input[name="gl-dev"]:checked')].map((x) => x.value),
       target_soc: v("gl-target"), by: v("gl-by"), days: [...r.querySelectorAll('input[name="gl-day"]:checked')].map((x) => +x.value),
-      use_forecast: r.getElementById("gl-forecast").checked, auto_target: r.getElementById("gl-auto").checked, max_power_w: v("gl-max") === "" ? null : +v("gl-max"), enabled: true };
+      use_forecast: r.getElementById("gl-forecast").checked, auto_target: r.getElementById("gl-auto").checked, source: v("gl-source") || "grid", max_power_w: v("gl-max") === "" ? null : +v("gl-max"), enabled: true };
   }
 
   // ---- insights tab: savings, energy, long-term history -----------------------------
@@ -1150,6 +1154,7 @@ class HomePowerPanel extends HTMLElement {
         { k: "rates_entity", t: "entity", dom: ["sensor", "event"], label: "Tariff sensor (Octopus, Agile, Nord Pool, Glow rate...)", hint: (this.live.rates_entity && !s.rates_entity ? `Using ${this.live.rates_entity} automatically. ` : "") + "A list of {start, end, value} in its attributes, or a plain price sensor." },
         { k: "rates_unit", t: "select", label: "Rates are in", options: [["auto", "Detect automatically"], ["pence", "Pence (or cents)"], ["main", "Pounds (or euros)"]] },
         num("price_peak", "Standard rate", "Used when there is no rates entity, or to fill gaps.", "any"), num("price_offpeak", "Cheap rate", "", "any"),
+        num("export_price", "Export price (what you are paid per kWh, optional)", "Same unit as the prices above. When exporting pays more than buying the energy back at your cheapest rate, solar goals leave the surplus to export." + (this.live.export_better ? " Right now: exporting pays more." : ""), "any"),
         { k: "offpeak_auto", t: "bool", label: "Work out the night/cheap period from the tariff's price history" + (this.live.tariff_inferred ? ` (estimated ${this.live.tariff_inferred.start}-${this.live.tariff_inferred.end} from ${this.live.tariff_inferred.days} days of readings, which can run up to an hour late: type your exact times below to be sure)` : "") },
         { k: "offpeak_start", t: "time", label: "Cheap rate starts", hint: "Leave both times empty to use the period found from history." }, { k: "offpeak_end", t: "time", label: "Cheap rate ends" },
         { k: "offpeak_extra", t: "text", label: "More cheap periods (optional)", hint: "For tariffs with several cheap periods a day, e.g. 13:00-16:00, 22:00-00:00" },

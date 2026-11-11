@@ -61,3 +61,12 @@ p._scheduleModal({ ...p._blankSchedule("night"), source: "solar" }, true);
 must("schedule modal offers the charge source", els.modal.innerHTML.includes('id="s-source"') && els.modal.innerHTML.includes('value="solar" selected'));
 p.data.schedules = [{ id: "Sun", device_ids: [], start: "10:00", end: "15:00", mode: "charge", power_w: 2000, source: "solar", days: [0,1,2,3,4,5,6], enabled: true, priority: 0 }];
 must("schedule card says solar only", p._schedules().includes("solar only"));
+
+// ---- solar-aware goals, panels on a battery, export price
+p._goalModal({ id: "g", device_ids: [], target_soc: 90, by: "16:00", days: [0,1,2,3,4,5,6], use_forecast: false, auto_target: false, source: "both", max_power_w: null, enabled: true }, false);
+must("goal modal offers the charge source", els.modal.innerHTML.includes('id="gl-source"') && els.modal.innerHTML.includes('value="both" selected'));
+p.data.goals = [{ id: "g", device_ids: [], target_soc: 90, by: "16:00", days: [0], use_forecast: false, source: "solar", enabled: true }];
+must("goal card says solar only", p._planView().includes("solar only"));
+p.live.devices.a = { online: true, soc: 60, power_w: 500, pv_w: 820, has_solar: true };
+must("battery card shows its solar", p._overview().includes("Solar 820 W"));
+must("settings has the export price", p._settingsView().includes("st-export_price"));

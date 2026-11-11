@@ -12,7 +12,7 @@ DEFAULTS: dict = {
     "import_limit_w": 7000, "cooldown_s": 120, "total_charge_limit_w": 0, "total_discharge_limit_w": 0,
     "export_limit_w": 0, "peak_shaving": False,
     "grid_import_entity": "", "grid_export_entity": "", "grid_invert": False, "zero_import_device": "",
-    "rates_entity": "", "rates_unit": "auto", "price_peak": None, "price_offpeak": None,
+    "rates_entity": "", "rates_unit": "auto", "price_peak": None, "price_offpeak": None, "export_price": None,
     "offpeak_start": "", "offpeak_end": "", "offpeak_auto": True, "currency": "£",
     "forecast_entity": "", "forecast_share": 0.5,
     "storm_entity": "", "backup_reserve_pct": 50, "away_entity": "", "notify_service": "",
@@ -22,7 +22,7 @@ DEFAULTS: dict = {
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
             "notify_low_pct", "cheap_soon_below_pct", "divert_export_w", "divert_min_soc")
-FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share")
+FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price")
 BOOL_KEYS = ("peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "save_for_peak", "notify_full", "notify_cheap_soon")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
             "forecast_entity", "storm_entity", "away_entity", "notify_service",
@@ -127,6 +127,7 @@ class AppSettings:
     rates_unit: str = "auto"   # auto | pence | main
     price_peak: float | None = None
     price_offpeak: float | None = None
+    export_price: float | None = None   # what you are paid per kWh exported (same unit as the import prices)
     offpeak_start: time | None = None
     offpeak_end: time | None = None
     offpeak_auto: bool = True   # learn the cheap window from the rates entity's price history
@@ -159,7 +160,7 @@ def build(cfg: dict) -> AppSettings:
     return AppSettings(
         engine=eng, cooldown_s=c["cooldown_s"], grid_entity=c["grid_import_entity"], grid_export_entity=c["grid_export_entity"], grid_invert=bool(c["grid_invert"]),
         rates_entity=c["rates_entity"], rates_unit=c["rates_unit"] or "auto", price_peak=c["price_peak"],
-        price_offpeak=c["price_offpeak"], offpeak_start=_t(c["offpeak_start"]), offpeak_end=_t(c["offpeak_end"]), offpeak_auto=bool(c["offpeak_auto"]),
+        price_offpeak=c["price_offpeak"], export_price=c["export_price"], offpeak_start=_t(c["offpeak_start"]), offpeak_end=_t(c["offpeak_end"]), offpeak_auto=bool(c["offpeak_auto"]),
         currency=c["currency"] or "£", forecast_entity=c["forecast_entity"], storm_entity=c["storm_entity"],
         away_entity=c["away_entity"], notify_service=c["notify_service"], load_rules=list(c["load_rules"] or []),
         ecoflow_live=bool(c["ecoflow_live"]), offpeak_extra=parse_windows(c["offpeak_extra"]),

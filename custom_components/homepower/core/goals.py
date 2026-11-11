@@ -17,6 +17,7 @@ class Goal:
     use_forecast: bool = False            # charge less when tomorrow's solar forecast is good
     max_power_w: int | None = None        # cap on total charge power for this goal
     enabled: bool = True
+    source: str = "grid"                  # "grid" (cheapest slots) | "solar" (surplus only) | "both" (solar first, grid tops up)
     auto_target: bool = False             # target_soc becomes a ceiling; the real target follows the household's usual use
 
     def covers(self, device_id: str) -> bool:
