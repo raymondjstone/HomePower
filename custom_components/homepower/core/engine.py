@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Callable
 
 from .goals import Goal, next_deadline
+from .insights import auto_target_soc
 from .grid import apply_load_rules, backup_desired, export_guard, peak_shave, split_power
 from .limits import apply_totals, charge_ceiling, soc_guard
 from .models import Actual, Capabilities, Desired, DeviceConfig, Mode
@@ -63,6 +64,7 @@ class World:
     load_blocks: set[str] = field(default_factory=set)
     rates: RateTable | None = None
     forecast_kwh: float | None = None
+    usage_wh: Callable[[datetime, float], float | None] | None = None   # learned household use: (from, hours) -> Wh
 
 
 @dataclass
@@ -92,6 +94,26 @@ def _zero_import(w: World, dev: DevIn) -> Desired:
     return desired_for(sp, caps, act.soc)
 
 
+def _auto_target(w: World, g: Goal, devs: list[DevIn], deadline: datetime, res: Result) -> int:
+    """The goal's target follows the household's usual use after the deadline (up to the next cheap period),
+    never above the target the user set. Falls back to that target until the usage has been learned."""
+    hours = 16.0
+    start = w.rates.offpeak_start if w.rates is not None else None
+    if start is not None:
+        hours = (start.hour * 60 + start.minute - deadline.hour * 60 - deadline.minute) % 1440 / 60
+        hours = max(4.0, min(24.0, hours or 24.0))
+    use = w.usage_wh(deadline, hours) if w.usage_wh else None
+    cap = sum(d.config.caps.capacity_wh for d in devs)
+    floor = max((_floor(d.config.caps, w) for d in devs), default=0)
+    auto = auto_target_soc(use, cap, floor)
+    if auto is None:
+        res.notes.append(f"goal '{g.id}': still learning your usual use, so it aims for {g.target_soc}% for now")
+        return g.target_soc
+    target = min(g.target_soc, auto)
+    res.notes.append(f"goal '{g.id}': auto target {target}% (about {use / 1000:.1f} kWh of usual use over the {hours:g} h after the deadline)")
+    return target
+
+
 def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
     out: dict[str, tuple[Desired, str]] = {}
     if not w.goals:
@@ -113,6 +135,8 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
                                  "supported: EcoFlow STREAM only offers Auto and Hold)")
             continue
         target = g.target_soc
+        if g.auto_target:
+            target = _auto_target(w, g, devs, deadline, res)
         if g.use_forecast:
             target = adjust_target_for_forecast(
                 target, w.forecast_kwh, sum(d.config.caps.capacity_wh for d in devs) / 1000, w.settings.forecast_share)

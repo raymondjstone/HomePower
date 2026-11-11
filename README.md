@@ -26,7 +26,8 @@ New batteries start in **monitor-only** mode: HomePower reads and shows them but
 control (and **Test control** in Diagnostics checks the battery really follows commands). Capacity, power limits and
 minimum charge are read from the battery itself where it reports them.
 
-**EcoFlow limitation:** EcoFlow's API has no charge/discharge power setpoint. Auto = self-powered; Hold = backup reserve
+**EcoFlow limitation:** EcoFlow's developer API has no charge/discharge power setpoint, and the ES5000's own commands are not
+published there (it is read-only here). Auto = self-powered; Hold = backup reserve
 raised to 95% (no discharge; solar still charges).
 
 **Regions:** Anker control is local (works in any region); grid feed-in is off by default in IT/ES/TH/VN/PH. For EcoFlow
@@ -56,6 +57,21 @@ Every decision has a visible reason ("Why" chip on each battery).
 - **Backup mode:** tops up to a reserve and never discharges below it (manual, or while a weather-alert entity is on).
 - **Away mode:** only schedules marked for "away" (or "always") apply.
 - **Protect loads:** don't charge/discharge while an EV charger or heat pump is busy.
+- **Auto goal target:** tick *Work the target out from my usual use* on a goal and HomePower learns your house's load by
+  time of day (weekday / weekend), then charges only what tomorrow is expected to need (never above the target you set).
+- **Home battery view:** with several batteries, one card on Overview (and the optional Lovelace card) shows total charge,
+  stored and usable energy, flow, and how long it will last or take to fill.
+- **Scenes:** saved combinations of backup / away / pause and limits (Holiday, Storm coming, ...), one tap or the
+  `homepower.apply_scene` service.
+- **Heads-up messages:** battery full, battery low, or "cheap rate starts in 30 minutes and the battery is at X%".
+- **Insights:** solar self-consumption and cheap-rate share per day, weekly round-trip efficiency per battery with an alert
+  when one drops well below its usual.
+- **Backup & restore:** Settings > Backup & restore saves everything to a file and restores it (EcoFlow keys only if you
+  tick the box).
+- **Live EcoFlow updates (opt-in):** Settings > EcoFlow > live feed makes EcoFlow batteries use EcoFlow's MQTT feed with the
+  same keys, so readings are seconds old. It is off by default because it opens a second connection on your EcoFlow account,
+  which could disturb another EcoFlow integration (such as EcoFlow Cloud). If it cannot connect, polling continues unchanged.
+  Untested against a live EcoFlow account.
 - **Manual override:** "charge now for 2 hours", beats everything else.
 - **Safety:** device limits always apply; software SOC limits with hysteresis; overall charge/discharge caps; house import
   limit caps charging; pause switch; batteries we forced are handed back when no longer managed, on shutdown, and after
@@ -77,7 +93,10 @@ Every decision has a visible reason ("Why" chip on each battery).
   battery: charge, power, target ("why"), energy charged / discharged (kWh, usable in the **Energy dashboard**),
   round-trip efficiency, cycles.
 - Switches: **Pause control**, **Backup mode**, **Away mode**.
-- Services: `homepower.override`, `clear_override`, `pause`, `resume`, `backup`, `away`, `test_control`.
+- Services: `homepower.override`, `clear_override`, `pause`, `resume`, `backup`, `away`, `apply_scene`, `test_control`.
+- Sensors also include **Home battery** (all batteries as one), solar self-consumption today and cheap-rate share today.
+- Optional dashboard card: `type: custom:homepower-card` (finds the Home battery sensor by itself; `entity:`, `title:` and
+  `show_batteries:` are optional).
 - Diagnostics download on the integration page (secrets redacted).
 
 ## Generic Modbus register map

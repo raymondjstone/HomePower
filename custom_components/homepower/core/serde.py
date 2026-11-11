@@ -238,7 +238,7 @@ def goal_from_dict(d: dict) -> Goal:
         by=_time(d.get("by"), "deadline"), days=days,
         use_forecast=bool(d.get("use_forecast", False)),
         max_power_w=_opt_int(d.get("max_power_w"), "max power", 0, 200000),
-        enabled=bool(d.get("enabled", True)),
+        enabled=bool(d.get("enabled", True)), auto_target=bool(d.get("auto_target", False)),
     )
 
 
@@ -246,5 +246,5 @@ def goal_to_dict(g: Goal) -> dict:
     return {
         "id": g.id, "device_ids": sorted(g.device_ids), "target_soc": g.target_soc,
         "by": g.by.strftime("%H:%M"), "days": sorted(g.days), "use_forecast": g.use_forecast,
-        "max_power_w": g.max_power_w, "enabled": g.enabled,
+        "max_power_w": g.max_power_w, "enabled": g.enabled, "auto_target": g.auto_target,
     }

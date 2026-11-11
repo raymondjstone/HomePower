@@ -95,6 +95,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
             require_admin=True,
             config={},
         )
+        frontend.add_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v=0.1.3")   # the optional Lovelace card
         _LOGGER.info("HomePower panel registered at /%s", PANEL_URL)
     except Exception as err:  # noqa: BLE001 - UI is optional
         _LOGGER.warning("HomePower sidebar panel could not be registered", exc_info=True)

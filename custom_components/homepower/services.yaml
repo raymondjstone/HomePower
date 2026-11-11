@@ -66,3 +66,12 @@ test_control:
       required: true
       selector:
         text:
+apply_scene:
+  name: Apply scene
+  description: Switch to a saved scene (Holiday, Storm coming, ...): its backup, away and pause settings and any limits it sets.
+  fields:
+    name:
+      name: Scene
+      required: true
+      selector:
+        text:

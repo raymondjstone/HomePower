@@ -51,6 +51,15 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .plot-x span{position:absolute;transform:translateX(-50%);font-size:11px;color:var(--secondary-text-color);white-space:nowrap}
 .plot-x span:first-child{transform:none}.plot-x span:last-child{transform:translateX(-100%)}
 .durs{display:inline-flex;gap:4px;flex-wrap:wrap;margin-left:12px;vertical-align:middle}
+.hb{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center}
+.hb .nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px 18px}
+.hb .nums b{display:block;font-size:20px;font-weight:600}.hb .nums span{font-size:12px;color:var(--secondary-text-color)}
+.banner{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--card-background-color);border:1px solid var(--warning-color,#b45309);border-left-width:5px;border-radius:12px;padding:12px 16px;margin-bottom:16px}
+.banner .t{flex:1;min-width:200px}
+.scenes{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.presets{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}
+@media(max-width:700px){header{flex-wrap:wrap;padding:10px 12px;gap:8px}header h1{flex-basis:100%;order:-1;font-size:18px}header .btn{padding:6px 10px;font-size:12px}
+ main{padding:10px}.hb{grid-template-columns:1fr;justify-items:center;text-align:center}.plot-y{width:46px}.card{padding:14px}nav button{padding:12px 10px}.durs{margin-left:0;margin-top:6px;display:flex}}
 .tl{margin:8px 0 14px}
 .tl .row{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;margin:8px 0}
 .tl .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -288,6 +297,67 @@ class HomePowerPanel extends HTMLElement {
 
   _color(i) { return SERIES[i % SERIES.length]; }
 
+  _hours(h) { return h == null ? "–" : h < 1 ? `${Math.round(h * 60)} min` : h >= 48 ? `${Math.round(h / 24)} days` : `${h.toFixed(1)} h`; }
+
+  // All batteries as one: charge level, stored energy, flow, and how long it will last / take to fill.
+  _homeBattery() {
+    const c = this.live.combined;
+    if (!c || c.soc == null || (this.data.devices || []).length < 2) return "";
+    const flow = c.flow_w || 0, kind = Math.abs(flow) < 20 ? "Idle" : flow > 0 ? "Charging" : "Discharging";
+    const n = (v, l) => `<div><b>${v}</b><span>${l}</span></div>`;
+    return `<div class="card" style="margin-bottom:16px"><h2><ha-icon icon="mdi:home-battery"></ha-icon>Home battery <span class="sub" style="font-weight:400;font-size:13px">all ${c.total} batteries together${c.online < c.total ? ` (${c.online} online)` : ""}</span></h2>
+      <div class="hb">${this._ring(c.soc, 110)}<div class="nums">
+        ${n(fmtKwh(c.stored_kwh * 1000), `stored of ${fmtKwh(c.capacity_kwh * 1000)}`)}
+        ${n(fmtKwh(c.usable_kwh * 1000), "usable above the minimum")}
+        ${n(`${kind} ${fmtW(Math.abs(flow))}`, "right now")}
+        ${c.runtime_h != null ? n(this._hours(c.runtime_h), `lasts at ${fmtW(Math.abs(flow) > 20 ? Math.abs(flow) : c.load_w)}`) : ""}
+        ${c.full_in_h != null ? n(this._hours(c.full_in_h), "until full at this rate") : ""}
+        ${c.load_w != null ? n(fmtW(c.load_w), "house load") : ""}</div></div></div>`;
+  }
+
+  // Cheap-rate hours are the single most important setting for planning: nudge until they are entered.
+  _tariffBanner() {
+    const s = this.data.settings || {};
+    if (s.offpeak_start && s.offpeak_end) return "";
+    const inf = this.live.tariff_inferred;
+    const msg = inf ? `Your cheap-rate hours are being <b>estimated</b> as ${inf.start}-${inf.end} from price history, which can run up to an hour late.`
+      : "HomePower does not know your cheap-rate hours yet, so goals cannot pick the cheapest time to charge.";
+    return `<div class="banner"><ha-icon icon="mdi:cash-clock"></ha-icon><div class="t">${msg} Enter them once for exact planning.</div>
+      <button class="btn pri sm" data-act="goto-tariff">Set my tariff</button></div>`;
+  }
+
+  _scenesCard() {
+    const sc = this.data.scenes || [], L = this.live, paused = !!this.data.paused;
+    const on = (x) => !!x.backup === !!L.backup && !!x.away === !!L.away && !!x.paused === paused;
+    return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:palette-swatch-variant"></ha-icon>Scenes</h2>
+      <div class="scenes">${sc.map((x) => `<span style="display:inline-flex"><button class="btn sm ${on(x) ? "pri" : ""}" data-act="apply-scene" data-id="${esc(x.name)}" title="Switch to this scene">${esc(x.name)}</button><button class="btn sm" data-act="edit-scene" data-id="${esc(x.name)}" title="Edit" aria-label="Edit ${esc(x.name)}">⋯</button></span>`).join("")}
+        <button class="btn sm" data-act="add-scene"><ha-icon icon="mdi:plus"></ha-icon>New scene</button></div>
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin:8px 0 0">A scene is a saved combination of backup / away / pause and optional limits, switched in one tap (or with the homepower.apply_scene service).</p></div>`;
+  }
+
+  _sceneModal(x, isNew) {
+    const st = x.settings || {}, num = (k, l) => `<div class="f"><label>${l}</label><input type="number" id="sc-${k}" min="0" step="100" value="${st[k] ?? ""}" placeholder="unchanged"></div>`;
+    this._openModal(`<div class="overlay" data-close-bg><div class="modal" role="dialog" aria-label="Scene">
+      <h2>${isNew ? "New scene" : "Edit scene"}</h2>
+      <div class="f"><label>Name</label><input type="text" id="sc-name" value="${esc(x.name || "")}" placeholder="e.g. EV charging night"></div>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="sc-backup" ${x.backup ? "checked" : ""}>Backup mode on</label>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="sc-away" ${x.away ? "checked" : ""}>Away mode on</label>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="sc-paused" ${x.paused ? "checked" : ""}>Pause control (only read, send no commands)</label>
+      <h3>Limits this scene sets (leave empty to keep the current value)</h3>
+      <div class="two">${num("import_limit_w", "House import limit (W)")}${num("export_limit_w", "Export limit (W)")}</div>
+      <div class="two">${num("total_charge_limit_w", "Max total charge (W)")}${num("total_discharge_limit_w", "Max total discharge (W)")}</div>
+      <div class="err" id="m-err"></div>
+      <div class="foot">${isNew ? "<span></span>" : `<button class="btn danger" data-act="del-scene" data-id="${esc(x.name)}">Delete</button>`}
+        <div class="r"><button class="btn" data-act="close">Cancel</button><button class="btn pri" data-act="save-scene" data-orig="${isNew ? "" : esc(x.name)}">Save</button></div></div>
+    </div></div>`);
+  }
+
+  _collectScene() {
+    const r = this.shadowRoot, v = (id) => r.getElementById(id).value, settings = {};
+    for (const k of ["import_limit_w", "export_limit_w", "total_charge_limit_w", "total_discharge_limit_w"]) if (v("sc-" + k) !== "") settings[k] = +v("sc-" + k);
+    return { name: v("sc-name").trim(), backup: r.getElementById("sc-backup").checked, away: r.getElementById("sc-away").checked, paused: r.getElementById("sc-paused").checked, settings };
+  }
+
   _overview() {
     const ds = this.data.devices;
     if (!ds.length) {
@@ -317,9 +387,10 @@ class HomePowerPanel extends HTMLElement {
       ${this.live.price_now != null ? tile("Price now", `${this.live.currency || "£"}${this.live.price_now.toFixed(3)}/kWh`, "From your rates") : ""}
     </div>`;
     const cards = ds.map((d, i) => this._batCard(d, rd[i], i)).join("");
-    return `${this._alertsBanner()}${tiles}
+    return `${this._alertsBanner()}${this._tariffBanner()}${this._homeBattery()}${tiles}
       <h2 style="margin:22px 0 10px;font-size:18px">Batteries</h2>
       <div class="grid g-cards">${cards}</div>
+      ${this._scenesCard()}
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-areaspline"></ha-icon>Power, last ${this._durLabel(this._flowMin())}<span class="durs">${this._durButtons()}</span></h2>${this._flowChart()}</div>
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:timeline-clock"></ha-icon>Today's plan</h2>${this._timeline()}</div>
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:text-box-outline"></ha-icon>Activity</h2>${this._log()}</div>`;
@@ -898,6 +969,7 @@ class HomePowerPanel extends HTMLElement {
         <div class="f"><label>Be there by</label><input type="time" id="gl-by" value="${g.by}"></div></div>
       <div class="daypick">${DAYS.map((d, i) => `<label><input type="checkbox" name="gl-day" value="${i}" ${g.days.includes(i) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div>
       <div class="f"><span class="hint">The day the deadline falls on.</span></div>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-auto" ${g.auto_target ? "checked" : ""}>Work the target out from my usual use (the target above becomes the maximum; it learns for a few days first)</label>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-forecast" ${g.use_forecast ? "checked" : ""}>Charge less when tomorrow's solar forecast is good (set the forecast entity in Settings)</label>
       <div class="f"><label>Max total charge power for this goal (W, optional)</label><input type="number" id="gl-max" min="0" step="100" value="${g.max_power_w ?? ""}"></div>
       <div class="err" id="m-err"></div>
@@ -910,7 +982,7 @@ class HomePowerPanel extends HTMLElement {
     const r = this.shadowRoot, v = (id) => r.getElementById(id).value;
     return { id: v("gl-name").trim(), device_ids: [...r.querySelectorAll('input[name="gl-dev"]:checked')].map((x) => x.value),
       target_soc: v("gl-target"), by: v("gl-by"), days: [...r.querySelectorAll('input[name="gl-day"]:checked')].map((x) => +x.value),
-      use_forecast: r.getElementById("gl-forecast").checked, max_power_w: v("gl-max") === "" ? null : +v("gl-max"), enabled: true };
+      use_forecast: r.getElementById("gl-forecast").checked, auto_target: r.getElementById("gl-auto").checked, max_power_w: v("gl-max") === "" ? null : +v("gl-max"), enabled: true };
   }
 
   // ---- insights tab: savings, energy, long-term history -----------------------------
@@ -938,6 +1010,17 @@ class HomePowerPanel extends HTMLElement {
       <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div>`;
   }
 
+  _healthCard() {
+    const h = (this.live.health || {}), rows = this.data.devices.map((d) => {
+      const x = h[d.device_id] || { efficiency: [], warning: null }, e = x.efficiency || [];
+      return `<tr><td>${esc(d.name)}</td><td>${e.length ? e.map(([, v]) => v + "%").join(" → ") : "not enough history yet"}</td><td>${x.warning ? `<span style="color:#dc2626">${esc(x.warning)}</span>` : e.length >= 3 ? "Steady" : "–"}</td></tr>`;
+    }).join("");
+    if (!rows) return "";
+    return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:heart-pulse"></ha-icon>Battery health (weekly round-trip efficiency)</h2>
+      <table class="tbl"><tr><th>Battery</th><th>Last weeks (oldest → newest)</th><th>Trend</th></tr>${rows}</table>
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Energy out divided by energy in, per full week. HomePower alerts you if a battery drops 10 points below its usual.</p></div>`;
+  }
+
   _insightsView() {
     const L = this.live, E = L.energy || {}, cur = L.currency || "£", ids = this.data.entity_ids || {}, H = this._hist2 || {};
     const pts = (eid) => (H[eid] || []).filter((r) => r.mean != null).map((r) => ({ t: typeof r.start === "number" ? r.start : Date.parse(r.start), v: r.mean }));
@@ -958,7 +1041,9 @@ class HomePowerPanel extends HTMLElement {
         ${tile("Saved this month", `${cur}${(L.savings ? L.savings.month : 0).toFixed(2)}`, "Needs prices set in Settings")}
         ${tile("Grid imported", `${kwh("grid_in")} kWh`, `Exported ${kwh("grid_out")} kWh`)}
         ${tile("Solar", `${kwh("pv_in")} kWh`, "As reported by your batteries")}
-      </div>
+        ${L.daily && L.daily.self_consumption != null ? tile("Solar used at home today", `${L.daily.self_consumption}%`, "Not exported to the grid") : ""}
+        ${L.daily && L.daily.cheap_share != null ? tile("Cheap-rate share today", `${L.daily.cheap_share}%`, "Of the grid energy you imported") : ""}
+      </div>${this._healthCard()}
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:battery-sync"></ha-icon>Batteries (since HomePower started recording)</h2>
         <table class="tbl"><tr><th>Battery</th><th>Charged</th><th>Discharged</th><th>Round-trip</th><th>Cycles</th></tr>${rows || ""}</table>
         <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">These are also Home Assistant sensors, so you can add them to the Energy dashboard.</p></div>
@@ -1015,6 +1100,7 @@ class HomePowerPanel extends HTMLElement {
         num("cooldown_s", "Re-apply cooldown (s)", "Stops the same command being re-sent too often.")]],
       ["Zero-import battery", "mdi:scale-balance", [{ k: "zero_import_device", t: "device", label: "Keeps grid import at 0 W when nothing else applies" }]],
       ["Tariff & prices", "mdi:cash", [
+        { k: "tariff_presets", t: "presets", label: "Quick fill the cheap-rate hours" },
         { k: "rates_entity", t: "entity", dom: ["sensor", "event"], label: "Tariff sensor (Octopus, Agile, Nord Pool, Glow rate...)", hint: (this.live.rates_entity && !s.rates_entity ? `Using ${this.live.rates_entity} automatically. ` : "") + "A list of {start, end, value} in its attributes, or a plain price sensor." },
         { k: "rates_unit", t: "select", label: "Rates are in", options: [["auto", "Detect automatically"], ["pence", "Pence (or cents)"], ["main", "Pounds (or euros)"]] },
         num("price_peak", "Standard rate", "Used when there is no rates entity, or to fill gaps.", "any"), num("price_offpeak", "Cheap rate", "", "any"),
@@ -1029,13 +1115,28 @@ class HomePowerPanel extends HTMLElement {
         { k: "storm_entity", t: "entity", dom: ["binary_sensor", "input_boolean", "switch"], label: "Turn backup mode on automatically while this is on (e.g. a weather alert)" },
         { k: "away_entity", t: "entity", dom: ["binary_sensor", "input_boolean", "person", "device_tracker"], label: "Away entity (on / away / not_home turns away mode on)" }]],
       ["Protect loads", "mdi:ev-station", [{ k: "load_rules", t: "rules", label: "Don't charge/discharge the battery while these are busy (EV charger, heat pump...)" }]],
-      ["Alerts", "mdi:bell", [{ k: "notify_service", t: "text", label: "Also send alerts to (e.g. notify.mobile_app_phone)", hint: "Alerts always appear as Home Assistant notifications." }]],
+      ["Alerts & heads-ups", "mdi:bell", [{ k: "notify_service", t: "text", label: "Also send alerts to (e.g. notify.mobile_app_phone)", hint: "Alerts always appear as Home Assistant notifications." },
+        { k: "notify_full", t: "bool", label: "Tell me when the home battery is full" },
+        num("notify_low_pct", "Tell me when the charge falls to (%, 0 = never)"),
+        { k: "notify_cheap_soon", t: "bool", label: "Warn me 30 minutes before the cheap rate starts if the battery is below..." },
+        num("cheap_soon_below_pct", "...this charge (%)")]],
+      ["EcoFlow", "mdi:flash", [{ k: "ecoflow_live", t: "bool", label: "Use EcoFlow's live feed for faster readings (seconds instead of 30 s)" },
+        { k: "ecoflow_live_note", t: "note", label: "Off by default: it opens a second connection to EcoFlow with your keys, which could disturb another EcoFlow integration using the same account (such as EcoFlow Cloud). If readings stop updating after turning it on, turn it off again." }]],
+      ["Backup & restore", "mdi:backup-restore", [{ k: "backup_restore", t: "backup", label: "" }]],
     ];
     const field = (f) => {
       const v = s[f.k] ?? "";
       if (f.t === "bool") return `<label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="st-${f.k}" ${s[f.k] ? "checked" : ""}>${esc(f.label)}</label>`;
       if (f.t === "select") return `<div class="f"><label>${esc(f.label)}</label><select id="st-${f.k}">${f.options.map(([val, l]) => `<option value="${val}" ${(v || "auto") === val ? "selected" : ""}>${l}</option>`).join("")}</select></div>`;
       if (f.t === "device") return `<div class="f"><label>${esc(f.label)}</label><select id="st-${f.k}"><option value="">None</option>${this.data.devices.map((d) => `<option value="${esc(d.device_id)}" ${v === d.device_id ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>`;
+      if (f.t === "note") return `<p class="hint" style="margin:0 0 8px">${esc(f.label)}</p>`;
+      if (f.t === "presets") return `<div class="presets">${[["Octopus Go", "00:30", "05:30"], ["Intelligent Octopus Go", "23:30", "05:30"], ["Economy 7 (check your bill)", "00:30", "07:30"], ["23:30 - 07:30", "23:30", "07:30"]]
+        .map(([n, a, b]) => `<button class="btn sm" data-act="tariff-preset" data-a="${a}" data-b="${b}">${esc(n)} ${a}-${b}</button>`).join("")}</div><span class="hint">Fills the two time boxes below. Prices differ by tariff, so also enter the standard and cheap rate (or a rates sensor).</span>`;
+      if (f.t === "backup") return `<p class="hint" style="margin-top:0">Save everything (batteries, schedules, goals, scenes and settings) to a file, or restore it later, for example after rebuilding Home Assistant.</p>
+        <label style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" id="bk-secrets">Include EcoFlow access keys in the file (keep the file private)</label>
+        <div class="presets"><button class="btn sm" data-act="do-export"><ha-icon icon="mdi:download"></ha-icon>Download backup</button></div>
+        <div class="f"><label>Restore from a backup file</label><input type="file" id="imp-file" accept=".json,application/json"></div>
+        <div class="presets"><button class="btn sm" data-act="do-import"><ha-icon icon="mdi:upload"></ha-icon>Restore</button></div><div class="err" id="bk-msg"></div>`;
       if (f.t === "rules") {
         const rows = (s.load_rules || []).map((r) => this._ruleRow(r)).join("");
         return `<div class="f"><label>${esc(f.label)}</label><div id="st-rules">${rows}</div><div><button class="btn sm" data-act="add-rule">+ Add rule</button></div></div>`;
@@ -1083,8 +1184,8 @@ class HomePowerPanel extends HTMLElement {
     return base;
   }
 
-  async _call(msg, errTarget) {
-    try { await this._hass.callWS(msg); return true; }
+  async _call(msg, errTarget, wantResult) {
+    try { const res = await this._hass.callWS(msg); return wantResult ? res : true; }
     catch (e) { (errTarget || ((m) => this._err(m)))(e.message || String(e)); return false; }
   }
 
@@ -1178,7 +1279,7 @@ class HomePowerPanel extends HTMLElement {
       case "flag":
         if (await this._call({ type: "homepower/flag", flag: t.dataset.flag, enabled: t.dataset.on === "1" }, (m) => alert(m))) { this.live[t.dataset.flag] = t.dataset.on === "1"; this._render(); }
         return;
-      case "add-goal": return this._goalModal({ id: "", device_ids: [], target_soc: 90, by: "07:00", days: [0, 1, 2, 3, 4, 5, 6], use_forecast: false, max_power_w: null, enabled: true }, true);
+      case "add-goal": return this._goalModal({ id: "", device_ids: [], target_soc: 90, by: "07:00", days: [0, 1, 2, 3, 4, 5, 6], use_forecast: false, auto_target: false, max_power_w: null, enabled: true }, true);
       case "edit-goal": return this._goalModal((this.data.goals || []).find((x) => x.id === id), false);
       case "save-goal": {
         const g = this._collectGoal(), orig = t.dataset.orig;
@@ -1194,6 +1295,53 @@ class HomePowerPanel extends HTMLElement {
         await this._call({ type: "homepower/goal/delete", goal_id: id });
         await this._reload(); this._closeModal(); return this._tabLoad();
       case "range": this._range = t.dataset.r; return this._tabLoad();
+      case "goto-tariff": this.tab = "settings"; this._render(); return this._tabLoad();
+      case "tariff-preset": {
+        const r = this.shadowRoot;
+        r.getElementById("st-offpeak_start").value = t.dataset.a; r.getElementById("st-offpeak_end").value = t.dataset.b;
+        const auto = r.getElementById("st-offpeak_auto"); if (auto) auto.checked = false;
+        return;
+      }
+      case "apply-scene":
+        if (await this._call({ type: "homepower/scene/apply", name: id }, (m) => alert(m))) { await this._reload(); }
+        return;
+      case "add-scene": return this._sceneModal({ name: "", backup: false, away: false, paused: false, settings: {} }, true);
+      case "edit-scene": return this._sceneModal((this.data.scenes || []).find((x) => x.name === id), false);
+      case "save-scene": {
+        const sc = this._collectScene(), orig = t.dataset.orig;
+        if (!sc.name) return this._err("Give the scene a name.");
+        if (!orig && (this.data.scenes || []).some((x) => x.name === sc.name)) return this._err("A scene with that name already exists.");
+        if (!(await this._call({ type: "homepower/scene/save", scene: sc }, (m) => this._err(m)))) return;
+        if (orig && orig !== sc.name) await this._call({ type: "homepower/scene/delete", name: orig });
+        await this._reload(); return this._closeModal();
+      }
+      case "del-scene":
+        if (!confirm(`Delete scene "${id}"?`)) return;
+        await this._call({ type: "homepower/scene/delete", name: id });
+        await this._reload(); return this._closeModal();
+      case "do-export": {
+        const keys = this.shadowRoot.getElementById("bk-secrets").checked, msg = this.shadowRoot.getElementById("bk-msg");
+        const dump = await this._call({ type: "homepower/export", include_secrets: keys }, (m) => { msg.textContent = m; }, true);
+        if (!dump) return;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" }));
+        a.download = `homepower-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        return;
+      }
+      case "do-import": {
+        const f = this.shadowRoot.getElementById("imp-file").files[0], msg = this.shadowRoot.getElementById("bk-msg");
+        if (!f) { msg.textContent = "Choose a backup file first."; return; }
+        let data;
+        try { data = JSON.parse(await f.text()); } catch (e) { msg.textContent = "That file is not valid JSON."; return; }
+        if (!confirm("Restore from this file? Items with the same name are replaced.")) return;
+        const res = await this._call({ type: "homepower/import", data }, (m) => { msg.textContent = m; }, true);
+        if (!res) return;
+        await this._reload();
+        const a = res.added || {};
+        alert(`Restored ${a.devices || 0} batteries, ${a.schedules || 0} schedules, ${a.goals || 0} goals and ${a.scenes || 0} scenes.` + ((res.skipped || []).length ? `\n\nSkipped:\n- ${res.skipped.join("\n- ")}` : ""));
+        return;
+      }
       case "flowdur":
         this._flowMinV = parseInt(t.dataset.m, 10);
         try { localStorage.setItem("homepower.flowMin", String(this._flowMinV)); } catch (e) { /* optional */ }

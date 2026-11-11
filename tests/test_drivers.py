@@ -403,3 +403,43 @@ def test_ecoflow_ac5000_style_readings_decode_and_stay_read_only():
         assert False
     except ValueError:
         pass
+
+
+def test_ecoflow_live_messages_and_driver_merge():
+    import asyncio
+    from hp.core.models import Mode
+    from hp.drivers.ecoflow import EcoFlowStreamDriver
+    from hp.drivers.ecoflow_live import EcoFlowLive, parse_topic, push_params
+
+    assert parse_topic("/open/acct/BK61ZK/quota") == ("BK61ZK", "quota") and parse_topic("/x/y") is None
+    assert push_params({"cmdFunc": 254, "params": {"powGetBpCms": -500.0, "cmsBattSoc": 90}}) == {
+        "powGetBpCms": -500.0, "cmsBattSoc": 90, "cmdFunc": 254}
+    assert push_params({"param": {"20_1.soc": "88"}}) == {"soc": 88.0}
+    assert push_params("junk") == {}
+
+    got = []
+
+    async def go():
+        hub = EcoFlowLive(api=None, loop=asyncio.get_running_loop())
+        hub.register = lambda sn, cb: hub._devs.__setitem__(sn, cb)       # no network in this test
+        d = EcoFlowStreamDriver.__new__(EcoFlowStreamDriver)
+        d.sn, d.hub, d.last_quota, d.last_error, d._cache = "SN1", hub, {}, None, None
+        d._state, d._pushed, d._polled = {}, 0.0, 0.0
+        d.config = type("C", (), {"device_id": "x"})()
+        hub.register("SN1", d.merge_push)
+        hub._dispatch("/open/a/SN1/quota", b'{"params": {"soc": 70}}')     # before the first full reading: ignored
+        assert d._state == {}
+        import time
+        d._state, d._polled = {"soc": 50.0, "powGetBpCms": 0.0}, time.monotonic()
+        hub._dispatch("/open/a/SN1/quota", b'{"params": {"soc": 71.5, "powGetBpCms": -900}}')
+        hub._dispatch("/open/a/OTHER/quota", b'{"params": {"soc": 1}}')     # not ours
+        hub._dispatch("/open/a/SN1/quota", b"not json")                     # ignored quietly
+        a = await d.read()
+        got.append((a.soc, a.power_w, hub.messages))
+        hub.unregister("SN1", lambda x: None)                               # someone else's callback: stays registered
+        assert "SN1" in hub._devs
+        hub.unregister("SN1", d.merge_push)
+        assert "SN1" not in hub._devs
+
+    asyncio.run(go())
+    assert got == [(71.5, -900.0, 2)]

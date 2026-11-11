@@ -47,11 +47,16 @@ def async_register(hass: HomeAssistant) -> None:
         if m := _mgr(hass):
             await m.set_away(bool(call.data["enabled"]))
 
+    async def scene(call: ServiceCall) -> None:
+        if m := _mgr(hass):
+            await m.apply_scene(call.data["name"])
+
     async def test_control(call: ServiceCall):
         m = _mgr(hass)
         return await m.coordinator.test_control(call.data["device_id"]) if m and m.coordinator else {"ok": False}
 
     hass.services.async_register(DOMAIN, "backup", backup, schema=vol.Schema({vol.Required("enabled"): bool}))
+    hass.services.async_register(DOMAIN, "apply_scene", scene, schema=vol.Schema({vol.Required("name"): str}))
     hass.services.async_register(DOMAIN, "away", away, schema=vol.Schema({vol.Required("enabled"): bool}))
     hass.services.async_register(DOMAIN, "test_control", test_control, schema=vol.Schema({vol.Required("device_id"): str}),
                                  supports_response=SupportsResponse.OPTIONAL)

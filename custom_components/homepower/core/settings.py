@@ -17,10 +17,12 @@ DEFAULTS: dict = {
     "forecast_entity": "", "forecast_share": 0.5,
     "storm_entity": "", "backup_reserve_pct": 50, "away_entity": "", "notify_service": "",
     "load_rules": [],
+    "ecoflow_live": False, "notify_full": False, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
 }
-INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct")
+INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
+            "notify_low_pct", "cheap_soon_below_pct")
 FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share")
-BOOL_KEYS = ("peak_shaving", "grid_invert", "offpeak_auto")
+BOOL_KEYS = ("peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "notify_full", "notify_cheap_soon")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
             "forecast_entity", "storm_entity", "away_entity", "notify_service")
 
@@ -61,6 +63,9 @@ def clean(raw: dict) -> dict:
     for k in ("offpeak_start", "offpeak_end"):
         if k in out:
             _t(out[k])
+    for k in ("notify_low_pct", "cheap_soon_below_pct"):
+        if k in out and out[k] > 100:
+            raise SettingsError("percentages must be 0-100")
     if "backup_reserve_pct" in out and out["backup_reserve_pct"] > 100:
         raise SettingsError("backup reserve must be 0-100")
     if "forecast_share" in out and out["forecast_share"] is not None and not 0 <= out["forecast_share"] <= 1:
@@ -108,6 +113,11 @@ class AppSettings:
     away_entity: str = ""
     notify_service: str = ""
     load_rules: list[dict] = field(default_factory=list)
+    ecoflow_live: bool = False
+    notify_full: bool = False
+    notify_low_pct: int = 0
+    notify_cheap_soon: bool = False
+    cheap_soon_below_pct: int = 60
 
 
 def build(cfg: dict) -> AppSettings:
@@ -124,4 +134,6 @@ def build(cfg: dict) -> AppSettings:
         price_offpeak=c["price_offpeak"], offpeak_start=_t(c["offpeak_start"]), offpeak_end=_t(c["offpeak_end"]), offpeak_auto=bool(c["offpeak_auto"]),
         currency=c["currency"] or "£", forecast_entity=c["forecast_entity"], storm_entity=c["storm_entity"],
         away_entity=c["away_entity"], notify_service=c["notify_service"], load_rules=list(c["load_rules"] or []),
+        ecoflow_live=bool(c["ecoflow_live"]), notify_full=bool(c["notify_full"]), notify_low_pct=int(c["notify_low_pct"] or 0),
+        notify_cheap_soon=bool(c["notify_cheap_soon"]), cheap_soon_below_pct=int(c["cheap_soon_below_pct"] or 60),
     )

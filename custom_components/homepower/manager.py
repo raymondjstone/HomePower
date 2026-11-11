@@ -11,6 +11,7 @@ from .adapters.direct import DirectAdapter
 from .adapters.ha_entities import HaEntityAdapter
 from .const import DOMAIN, STORAGE_KEY, STORAGE_VERSION
 from .coordinator import HomePowerCoordinator
+from .core.insights import DEFAULT_SCENES, SceneError, clean_scene
 from .core.models import Desired, Mode
 from .core.profiles import PROFILE_BY_ID
 from .core.serde import (
@@ -26,6 +27,7 @@ from .core.serde import (
 from .drivers import discovery
 from .drivers.anker import AnkerModbusDriver
 from .drivers.ecoflow import EcoFlowApi, EcoFlowError, EcoFlowStreamDriver
+from .drivers.ecoflow_live import EcoFlowLive
 from .drivers.modbus_generic import GenericModbusDriver
 
 
@@ -47,8 +49,14 @@ class HomePowerManager:
         self.away = False         # manual "away / holiday" mode
         self.energy: dict[str, float] = {}       # lifetime kWh counters
         self.ledger_days: dict[str, dict] = {}   # savings ledger
+        self.profile_data: dict = {}             # learned usual household load
+        self.daily_data: dict = {}               # daily self-consumption / cheap-rate figures
+        self.health_data: dict = {}              # weekly battery efficiency
+        self.scenes: dict[str, dict] = {}        # saved combinations of modes and limits
         self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
+        self._live_on = False                       # opt-in setting: EcoFlow live (MQTT) updates
+        self._hubs: dict[tuple, EcoFlowLive] = {}   # live-update connections, one per EcoFlow account
 
     # ------------------------------------------------------------------ persistence
     async def async_load(self) -> None:
@@ -62,6 +70,10 @@ class HomePowerManager:
         self.forced = set(data.get("forced", []))
         self.energy = dict(data.get("energy", {}))
         self.ledger_days = dict(data.get("ledger", {}))
+        self.profile_data, self.daily_data = dict(data.get("profile", {})), dict(data.get("daily", {}))
+        self.health_data = dict(data.get("health", {}))
+        scenes = data.get("scenes")
+        self.scenes = {s["name"]: s for s in (scenes if scenes is not None else DEFAULT_SCENES)}
 
     async def _save(self) -> None:
         c = self.coordinator
@@ -70,6 +82,8 @@ class HomePowerManager:
             "goals": list(self.goals.values()), "paused": self.paused, "backup": self.backup, "away": self.away,
             "forced": sorted(self.forced),
             "energy": c.meter.totals if c else self.energy, "ledger": c.ledger.dump() if c else self.ledger_days,
+            "profile": c.profile.dump() if c else self.profile_data, "daily": c.daily.dump() if c else self.daily_data,
+            "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
         })
 
     async def save_runtime(self) -> None:
@@ -85,10 +99,31 @@ class HomePowerManager:
         if driver == "anker_modbus":
             return DirectAdapter(cfg, AnkerModbusDriver(cfg))
         if driver == "ecoflow_stream":
-            return DirectAdapter(cfg, EcoFlowStreamDriver(cfg, async_get_clientsession(self.hass)))
+            return DirectAdapter(cfg, EcoFlowStreamDriver(cfg, async_get_clientsession(self.hass), self._live_hub(cfg)))
         if driver == "modbus_generic":
             return DirectAdapter(cfg, GenericModbusDriver(cfg))
         return HaEntityAdapter(self.hass, cfg)
+
+    def _live_hub(self, cfg) -> EcoFlowLive | None:
+        """One shared live-update connection per EcoFlow account."""
+        c = cfg.extra.get("connection", {})
+        key = (c.get("access_key"), c.get("region"))
+        hub = self._hubs.get(key)
+        if hub is None:
+            try:
+                hub = self._hubs[key] = EcoFlowLive(EcoFlowApi(async_get_clientsession(self.hass), c.get("region", "global"),
+                                                              c["access_key"], c["secret_key"]), self.hass.loop)
+            except Exception:  # noqa: BLE001 - live updates are optional
+                return None
+            hub.enabled = self._live_on
+        return hub
+
+    def set_live(self, on: bool) -> None:
+        self._live_on = on
+        for hub in self._hubs.values():
+            hub.enabled = on
+            if not on:
+                hub.stop()
 
     def build(self):
         """Validate everything stored and build adapters/schedules/goals; bad rows are skipped.
@@ -123,6 +158,8 @@ class HomePowerManager:
         return adapters, schedules, goals
 
     async def async_close(self) -> None:
+        for hub in self._hubs.values():
+            hub.stop()
         for _, adapter in self._adapters.values():
             await adapter.close()
 
@@ -317,6 +354,90 @@ class HomePowerManager:
     async def delete_goal(self, goal_id: str) -> None:
         self.goals.pop(goal_id, None)
         await self._apply()
+
+    # ------------------------------------------------------------------ scenes
+    async def save_scene(self, raw: dict) -> dict:
+        try:
+            s = clean_scene(raw)
+        except SceneError as err:
+            raise ValidationError(str(err)) from err
+        self.scenes[s["name"]] = s
+        await self._save()
+        return s
+
+    async def delete_scene(self, name: str) -> None:
+        self.scenes.pop(name, None)
+        await self._save()
+
+    async def apply_scene(self, name: str) -> None:
+        """Switch to a saved scene: its flags, and any limits it sets (others stay as they are)."""
+        s = self.scenes.get(name)
+        if s is None:
+            raise ValidationError(f"no scene called {name}")
+        self.backup, self.away, self.paused = bool(s["backup"]), bool(s["away"]), bool(s["paused"])
+        c = self.coordinator
+        if s["settings"] and c is not None:
+            entry = c.config_entry
+            self.hass.config_entries.async_update_entry(entry, options={**entry.options, **s["settings"]})
+        await self._save()
+        if c is not None:
+            c.async_update_listeners()
+            await c.async_request_refresh()
+
+    # ------------------------------------------------------------------ backup / restore
+    def export_all(self, settings: dict, include_secrets: bool = False) -> dict:
+        devices = []
+        for d in self.devices.values():
+            d = {**d, "connection": dict(d.get("connection", {}))}
+            if not include_secrets:
+                for k in ("secret_key", "access_key"):
+                    if k in d["connection"]:
+                        d["connection"][k] = ""
+            devices.append(d)
+        return {"homepower_export": 1, "includes_secrets": include_secrets, "devices": devices,
+                "schedules": list(self.schedules.values()), "goals": list(self.goals.values()),
+                "scenes": list(self.scenes.values()), "settings": settings}
+
+    async def import_all(self, data: dict, entry) -> dict:
+        """Restore from export_all(). Every row is validated on its own; bad ones are reported, never half-applied."""
+        if not isinstance(data, dict) or data.get("homepower_export") != 1:
+            raise ValidationError("this is not a HomePower export file")
+        added, skipped = {"devices": 0, "schedules": 0, "goals": 0, "scenes": 0}, []
+        for raw in data.get("devices") or []:
+            try:
+                raw = self._with_saved_secret(dict(raw))
+                d = device_to_dict(device_from_dict(raw))
+                self.devices[d["device_id"]] = d
+                added["devices"] += 1
+            except (ValidationError, KeyError, TypeError) as err:
+                skipped.append(f"battery {raw.get('name') or raw.get('device_id')}: {err} (re-add it, keys are not in the file)"
+                               if "required" in str(err) else f"battery {raw.get('name') or raw.get('device_id')}: {err}")
+        for kind, coll, parse, dump in (("schedules", self.schedules, schedule_from_dict, schedule_to_dict),
+                                        ("goals", self.goals, goal_from_dict, goal_to_dict)):
+            for raw in data.get(kind) or []:
+                try:
+                    row = dump(parse(raw))
+                    coll[row["id"]] = row
+                    added[kind] += 1
+                except (ValidationError, KeyError, TypeError) as err:
+                    skipped.append(f"{kind[:-1]} {raw.get('id')}: {err}")
+        for raw in data.get("scenes") or []:
+            try:
+                s = clean_scene(raw)
+                self.scenes[s["name"]] = s
+                added["scenes"] += 1
+            except SceneError as err:
+                skipped.append(f"scene {raw.get('name')}: {err}")
+        if isinstance(data.get("settings"), dict) and entry is not None:
+            from .core.settings import SettingsError, clean
+
+            try:
+                self.hass.config_entries.async_update_entry(entry, options={**entry.options, **clean(data["settings"])})
+                added["settings"] = len(data["settings"])
+            except SettingsError as err:
+                skipped.append(f"settings: {err}")
+        await self._apply()
+        return {"added": added, "skipped": skipped}
 
     # ------------------------------------------------------------------ views
     def public_devices(self) -> list[dict]:

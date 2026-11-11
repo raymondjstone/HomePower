@@ -85,6 +85,10 @@ class EcoFlowApi:
     async def devices(self) -> list[dict]:
         return await self._call("GET", "/iot-open/sign/device/list") or []
 
+    async def certification(self) -> dict:
+        """MQTT broker address and login for live updates."""
+        return await self._call("GET", "/iot-open/sign/certification") or {}
+
     async def quota(self, sn: str) -> dict:
         try:
             return await self._call("GET", "/iot-open/sign/device/quota/all", {"sn": sn}) or {}
@@ -141,7 +145,7 @@ def _first(q: dict, *keys: str, positive: bool = False) -> float | None:
 
 
 class EcoFlowStreamDriver:
-    def __init__(self, config: DeviceConfig, session) -> None:
+    def __init__(self, config: DeviceConfig, session, hub=None) -> None:
         self.config = config
         c = config.extra["connection"]
         self.sn = c["sn"]
@@ -149,9 +153,22 @@ class EcoFlowStreamDriver:
         self.last_quota: dict = {}
         self.last_error: str | None = None
         self._cache: tuple[float, Actual] | None = None  # the cloud API is rate limited: poll at most every 30 s
+        self.hub = hub                  # shared live (MQTT) connection for this account, or None
+        self._state: dict = {}          # last full reading with live updates merged in
+        self._pushed = 0.0              # when a live update last arrived
+        self._polled = 0.0              # when the full reading was last fetched
 
     async def close(self) -> None:
-        return None
+        if self.hub is not None:
+            self.hub.unregister(self.sn, self.merge_push)
+
+    def merge_push(self, flat: dict) -> None:
+        """A live update arrived: fold it into the current reading (called on the event loop)."""
+        if not self._state:
+            return                       # wait for the first full reading so nothing is missing
+        self._state.update(flat)
+        self.last_quota = dict(self._state)
+        self._pushed = time.monotonic()
 
     @staticmethod
     def _decode(q: dict) -> Actual:
@@ -177,10 +194,16 @@ class EcoFlowStreamDriver:
         )
 
     async def read(self) -> Actual:
-        if self._cache and time.monotonic() - self._cache[0] < 30:
+        now = time.monotonic()
+        if self.hub is not None:
+            self.hub.register(self.sn, self.merge_push)   # no-op once registered; retries a failed connection later
+        if self._pushed and now - self._pushed < 120 and now - self._polled < 300 and self._state:
+            return self._decode(self._state)             # live data is flowing: no need to poll
+        if self._cache and now - self._cache[0] < 30:
             return self._cache[1]
         try:
             q = normalise(await self.api.quota(self.sn))
+            self._state, self._polled, self._pushed = dict(q), time.monotonic(), 0.0
             self.last_quota, self.last_error = q, None
             actual = self._decode(q)
             if actual.soc is None and q:
@@ -204,7 +227,7 @@ class EcoFlowStreamDriver:
                 "reserve": q.get("backupReverseSoc")}
 
     async def apply(self, desired: Desired) -> None:
-        self._cache = None  # next read must show the effect of this command
+        self._cache, self._pushed = None, 0.0   # next read must come from the cloud and show the effect of this command
         if self.last_quota and "backupReverseSoc" not in self.last_quota:
             # A model that reports different settings (e.g. AC 5000): its command format is not known, so never guess.
             if desired.mode is Mode.AUTO:

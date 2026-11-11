@@ -36,7 +36,7 @@ def _payload(hass: HomeAssistant) -> dict:
         "goals": list(mgr.goals.values()),
         "settings": _settings(entry) if entry else {},
         "catalogue": catalogue(),
-        "paused": mgr.paused, "backup": mgr.backup, "away": mgr.away,
+        "paused": mgr.paused, "backup": mgr.backup, "away": mgr.away, "scenes": list(mgr.scenes.values()),
         "entity_ids": mgr.entity_ids(),
         "live": mgr.coordinator.view() if mgr.coordinator else {"devices": {}, "events": []},
     }
@@ -48,7 +48,8 @@ def async_register(hass: HomeAssistant) -> None:
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
                 ws_override, ws_clear_override,
                 ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control,
-                ws_save_goal, ws_delete_goal, ws_flag, ws_preview, ws_diagnostics, ws_test):
+                ws_save_goal, ws_delete_goal, ws_flag, ws_preview, ws_diagnostics, ws_test,
+                ws_save_scene, ws_delete_scene, ws_apply_scene, ws_export, ws_import):
         websocket_api.async_register_command(hass, cmd)
 
 
@@ -292,3 +293,46 @@ async def ws_diagnostics(hass, msg):
 @_guard
 async def ws_test(hass, msg):
     return await _mgr(hass).coordinator.test_control(msg["device_id"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/scene/save", vol.Required("scene"): dict})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_save_scene(hass, msg):
+    return await _mgr(hass).save_scene(msg["scene"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/scene/delete", vol.Required("name"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_delete_scene(hass, msg):
+    await _mgr(hass).delete_scene(msg["name"])
+    return {}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/scene/apply", vol.Required("name"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_apply_scene(hass, msg):
+    await _mgr(hass).apply_scene(msg["name"])
+    return {}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/export", vol.Optional("include_secrets"): bool})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_export(hass, msg):
+    entry = _entry(hass)
+    return _mgr(hass).export_all(_settings(entry) if entry else {}, bool(msg.get("include_secrets")))
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/import", vol.Required("data"): dict})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_import(hass, msg):
+    return await _mgr(hass).import_all(msg["data"], _entry(hass))

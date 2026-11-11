@@ -233,6 +233,16 @@
     "test_control": {
       "name": "Test control",
       "description": "Send a tiny safe command and check the battery follows it."
+    },
+    "apply_scene": {
+      "name": "Apply scene",
+      "description": "Switch to a saved scene.",
+      "fields": {
+        "name": {
+          "name": "Scene",
+          "description": "The scene's name."
+        }
+      }
     }
   }
 }

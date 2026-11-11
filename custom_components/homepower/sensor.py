@@ -24,7 +24,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     coord: HomePowerCoordinator = hass.data[DOMAIN][entry.entry_id]
     add([BatteryFlow(coord, entry), StoredEnergy(coord, entry), GridPower(coord, entry),
          EnergyTotal(coord, entry, "grid_in", "Grid energy imported"), EnergyTotal(coord, entry, "grid_out", "Grid energy exported"),
-         EnergyTotal(coord, entry, "pv_in", "Solar energy"), Savings(coord, entry, "today"), Savings(coord, entry, "month"), PriceNow(coord, entry)])
+         EnergyTotal(coord, entry, "pv_in", "Solar energy"), Savings(coord, entry, "today"), Savings(coord, entry, "month"), PriceNow(coord, entry),
+         HomeBattery(coord, entry), DailyShare(coord, entry, "self_consumption", "Solar self-consumption today"),
+         DailyShare(coord, entry, "cheap_share", "Cheap-rate share of grid import today")])
     known: set[str] = set()
 
     def _sync() -> None:
@@ -272,3 +274,53 @@ class Cycles(_BatteryBase):
         a = next((x for x in self.coordinator.adapters if x.config.device_id == self._did), None)
         cap_kwh = max(a.config.caps.capacity_wh if a else 1, 1) / 1000   # follows edits to the capacity
         return round(self.coordinator.meter.get(f"bat:{self._did}_out") / cap_kwh, 1)
+
+
+class HomeBattery(_Base):
+    """All batteries as one: charge level (state) plus totals in the attributes (the Lovelace card reads these)."""
+
+    _attr_name = "Home battery"
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+
+    def __init__(self, coord, entry) -> None:
+        super().__init__(coord, entry)
+        self._attr_unique_id = f"{entry.entry_id}_home_battery"
+
+    def _fig(self) -> dict:
+        actuals = {did: s.actual for did, s in self.coordinator._snap.devices.items() if s.actual}
+        return self.coordinator._combined(actuals)
+
+    @property
+    def native_value(self):
+        return self._fig()["soc"]
+
+    @property
+    def extra_state_attributes(self):
+        fig = self._fig()
+        v = self.coordinator.view()["devices"]
+        return {**fig, "homepower": True,
+                "batteries": [{"name": a.config.name, "soc": (v.get(a.config.device_id) or {}).get("soc"),
+                               "power_w": (v.get(a.config.device_id) or {}).get("power_w"),
+                               "online": bool((v.get(a.config.device_id) or {}).get("online"))} for a in self.coordinator.adapters]}
+
+
+class DailyShare(_Base):
+    """Today's solar self-consumption or cheap-rate share of imports, in percent."""
+
+    _attr_device_class = None
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_icon = "mdi:percent"
+
+    def __init__(self, coord, entry, key: str, name: str) -> None:
+        super().__init__(coord, entry)
+        self._key, self._attr_name = key, name
+        self._attr_unique_id = f"{entry.entry_id}_{key}_today"
+
+    @property
+    def native_value(self):
+        from homeassistant.util import dt as dt_util
+
+        day = dt_util.now().strftime("%Y-%m-%d")
+        return getattr(self.coordinator.daily, self._key)(day)
