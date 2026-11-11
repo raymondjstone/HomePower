@@ -90,7 +90,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.health = Health(manager.health_data)           # weekly round-trip efficiency per battery
         self._event_state: dict[str, bool] = dict(manager.event_state)   # which heads-up messages are showing (survives restarts)
         self.diverter = Diverter()                           # solar-surplus load
-        self._divert_entity = ""                             # the entity we switched on, to switch the same one off
+        self._divert_entity = manager.divert_on or ""        # the entity we switched on, to switch the same one off
+        self.diverter.on = bool(manager.divert_on)           # still on from before a restart: we must be able to switch it off
         self.alerts = AlertTracker()
         self.last_result = Result()
         self.last_grid: float | None = None
@@ -216,7 +217,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         peak, off, a, b = s.price_peak, s.price_offpeak, s.offpeak_start, s.offpeak_end
         inf = self._tariff if s.offpeak_auto and ent else None
         if inf is not None:   # anything the user typed in wins; history only fills the blanks
-            if a is None or b is None:
+            if (a is None or b is None) and not s.offpeak_extra:   # typed-in extra periods mean the user knows the hours
                 # The window is read from when the sensor's value changed, and such sensors (smart-meter/DCC data in
                 # particular) lag the real switch by up to an hour. A late *start* only wastes cheap time, but a late
                 # *end* would plan charging into peak-rate time, so the end is pulled back one half-hour.
@@ -418,13 +419,18 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if self._divert_entity and self._divert_entity != s.divert_entity:      # setting changed or cleared: release the old load
             if self.diverter.on:
                 await self._switch(self._divert_entity, False)
+                self.manager.divert_on = ""
             self.diverter = Diverter()
         self._divert_entity = s.divert_entity
         if not s.divert_entity:
             return
-        act = self.diverter.decide(now_s, self._combined(actuals)["soc"], grid, s.divert_export_w, s.divert_min_soc)
+        # While paused HomePower switches nothing on, and lets go of the load if it is running.
+        soc = None if self.paused else self._combined(actuals)["soc"]
+        act = self.diverter.decide(now_s, soc, grid, s.divert_export_w, s.divert_min_soc)
         if act:
             await self._switch(s.divert_entity, act == "on")
+            self.manager.divert_on = s.divert_entity if act == "on" else ""
+            self.hass.async_create_task(self.manager.save_runtime())
             self._log("divert", f"{s.divert_entity} switched {act} ({'surplus solar' if act == 'on' else 'no surplus'})")
 
     async def _switch(self, entity_id: str, on: bool) -> None:
@@ -725,9 +731,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if rates is None:
             return []
         lo = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
+        found = rates.slots_between(lo, lo + timedelta(hours=hours))
+        mean = sum(x.price for x in found) / len(found) if found else 0.0   # per-slot tariffs: 'cheap' = well below average
         return [{"start": x.start.isoformat(), "end": x.end.isoformat(), "price": round(to_main_units(x.price, self.settings.rates_unit), 4),
-                 "cheap": rates.in_cheap_window(x.start.astimezone(now.tzinfo).time()) if rates.windows else None}
-                for x in rates.slots_between(lo, lo + timedelta(hours=hours))]
+                 "cheap": rates.in_cheap_window(x.start.astimezone(now.tzinfo).time()) if rates.windows else (x.price < 0.9 * mean)}
+                for x in found]
 
     def diagnostics(self) -> dict:
         out = {}

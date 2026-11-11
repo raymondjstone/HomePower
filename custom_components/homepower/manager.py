@@ -55,6 +55,7 @@ class HomePowerManager:
         self.scenes: dict[str, dict] = {}        # saved combinations of modes and limits
         self.event_state: dict[str, bool] = {}   # heads-up messages currently showing
         self.tests: dict[str, dict] = {}         # last control-test result per battery
+        self.divert_on: str = ""                 # the solar-surplus load we switched on (to switch it off after a restart)
         self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
         self._live_on = False                       # opt-in setting: EcoFlow live (MQTT) updates
@@ -75,6 +76,7 @@ class HomePowerManager:
         self.profile_data, self.daily_data = dict(data.get("profile", {})), dict(data.get("daily", {}))
         self.health_data = dict(data.get("health", {}))
         self.event_state, self.tests = dict(data.get("event_state", {})), dict(data.get("tests", {}))
+        self.divert_on = str(data.get("divert_on") or "")
         scenes = data.get("scenes")
         self.scenes = {s["name"]: s for s in (scenes if scenes is not None else DEFAULT_SCENES)}
 
@@ -87,7 +89,7 @@ class HomePowerManager:
             "energy": c.meter.totals if c else self.energy, "ledger": c.ledger.dump() if c else self.ledger_days,
             "profile": c.profile.dump() if c else self.profile_data, "daily": c.daily.dump() if c else self.daily_data,
             "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
-            "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests,
+            "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on,
         })
 
     async def save_runtime(self) -> None:
@@ -314,6 +316,7 @@ class HomePowerManager:
         await self._hand_back(device_id)
         self.devices.pop(device_id, None)
         self.forced.discard(device_id)
+        self.tests.pop(device_id, None)
         self._remove_entities(device_id)
         for coll in (self.schedules, self.goals):  # drop references; an empty list would mean "all batteries"
             for item in coll.values():

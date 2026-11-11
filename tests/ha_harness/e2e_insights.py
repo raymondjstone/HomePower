@@ -157,6 +157,14 @@ async def main():
     print("divert   :", calls)
     assert calls == [("on", "switch.immersion"), ("off", "switch.immersion")]
     await coord._divert(2000.0, acts, -900.0); await coord._divert(2130.0, acts, -900.0)
+    assert mgr.divert_on == "switch.immersion", "remembered, so a restart can still switch it off"
+    c3 = HomePowerCoordinator(hass, entry, mgr, *mgr.build())                    # what a restart would build
+    assert c3.diverter.on and c3._divert_entity == "switch.immersion"
+    mgr.paused = True                                                             # pausing lets go of the load
+    await coord._divert(2200.0, acts, -900.0); await coord._divert(2330.0, acts, -900.0); await asyncio.sleep(0.2)
+    assert calls[-1] == ("off", "switch.immersion") and mgr.divert_on == ""
+    mgr.paused = False
+    await coord._divert(3000.0, acts, -900.0); await coord._divert(3130.0, acts, -900.0)
     coord.apply_settings({"divert_entity": ""})                                   # cleared while on: the load is released
     await coord._divert(2140.0, acts, -900.0); await asyncio.sleep(0.2)
     assert calls[-1] == ("off", "switch.immersion") and not coord.diverter.on

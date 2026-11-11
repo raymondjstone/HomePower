@@ -253,10 +253,11 @@ def compute(w: World) -> Result:
         return any(o.config.extra.get("role") != "reserve" and o.actual.online and o.actual.soc is not None
                    and o.actual.soc > _floor(o.config.caps, w) + SOC_MARGIN + margin for o in w.devices)
 
+    # Never get in the way of solar charging: not this battery's own panels, nor surplus from anywhere else in the house.
+    solar_about = any((o.actual.pv_w or 0) > 50 for o in w.devices if o.actual.online) or (w.grid_w is not None and w.grid_w < -50)
     for d in w.devices:
         did, caps = d.config.device_id, d.config.caps
-        if (did in res.wants or not d.controllable or not d.actual.online or Mode.HOLD not in caps.supported_modes
-                or (d.actual.pv_w or 0) > 50):          # never get in the way of solar charging
+        if (did in res.wants or not d.controllable or not d.actual.online or Mode.HOLD not in caps.supported_modes or solar_about):
             continue
         # A reserve battery already being held is released a little later than it is taken (no flapping at the edge).
         if d.config.extra.get("role") == "reserve" and others_have_charge(1 if d.release_pending else 3):
