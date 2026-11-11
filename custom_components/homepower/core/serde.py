@@ -128,6 +128,15 @@ def device_from_dict(d: dict) -> DeviceConfig:
         extra.update(connection=connection,
                      restore_mode=int(profile.get("restore_mode", 0)), watchdog=bool(profile.get("watchdog", False)),
                      control_enabled=bool(d.get("control_enabled", False)))  # monitor-only until the user opts in
+    grid_meter = str(d.get("grid_meter") or "auto")
+    if grid_meter not in ("auto", "yes", "no"):
+        raise ValidationError("grid meter must be auto, yes or no")
+    extra["grid_meter"] = grid_meter
+    extra["house_meter"] = bool(profile.get("house_meter", False))   # what 'auto' means for this model
+    solar = str(d.get("solar") or "auto")
+    if solar not in ("auto", "yes", "no"):
+        raise ValidationError("solar must be auto, yes or no")
+    extra["solar"] = solar
     role = str(d.get("role") or "normal")
     if role not in ("normal", "reserve"):
         raise ValidationError("role must be normal or reserve")
@@ -148,7 +157,7 @@ def device_to_dict(c: DeviceConfig) -> dict:
         "driver": e.get("driver", "entities"), "connection": e.get("connection", {}),
         "control_enabled": bool(e.get("control_enabled", True)),
         "entities": e.get("entities", {}), "mode_map": e.get("mode_map", {}),
-        "invert_power": bool(e.get("invert_power", False)), "role": e.get("role", "normal"),
+        "invert_power": bool(e.get("invert_power", False)), "role": e.get("role", "normal"), "solar": e.get("solar", "auto"), "grid_meter": e.get("grid_meter", "auto"),
     }
 
 
@@ -184,6 +193,9 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
     presence = str(d.get("presence") or "any")
     if presence not in ("any", "home", "away"):
         raise ValidationError("presence must be any, home or away")
+    source = str(d.get("source") or "grid")
+    if source not in ("grid", "solar", "both"):
+        raise ValidationError("charge source must be grid, solar or both")
     cond = str(d.get("condition_entity") or "").strip() or None
     if all_day and not cond:
         raise ValidationError("an all-day schedule needs a condition entity (otherwise it never stops)")
@@ -203,7 +215,7 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
         season_start=season[0], season_end=season[1], on_date=on_date,
         enabled=bool(d.get("enabled", True)), all_day=all_day, condition_entity=cond,
         total_power_w=_opt_int(d.get("total_power_w"), "total power", 0, 200000),
-        presence=presence,
+        presence=presence, source=source if mode is Mode.CHARGE else "grid",
     )
 
 
@@ -218,12 +230,19 @@ def schedule_to_dict(e: ScheduleEntry) -> dict:
         "season_end": f"{e.season_end[0]:02d}-{e.season_end[1]:02d}" if e.season_end else None,
         "on_date": e.on_date.isoformat() if e.on_date else None, "enabled": e.enabled,
         "all_day": e.all_day, "condition_entity": e.condition_entity,
-        "total_power_w": e.total_power_w, "presence": e.presence,
+        "total_power_w": e.total_power_w, "presence": e.presence, "source": e.source,
     }
 
 
 # ---------------------------------------------------------------- goals ("be at X% by HH:MM")
 from .goals import Goal  # noqa: E402
+
+
+def _goal_source(v) -> str:
+    v = str(v or "grid")
+    if v not in ("grid", "solar", "both"):
+        raise ValidationError("charge source must be grid, solar or both")
+    return v
 
 
 def goal_from_dict(d: dict) -> Goal:
@@ -242,7 +261,7 @@ def goal_from_dict(d: dict) -> Goal:
         by=_time(d.get("by"), "deadline"), days=days,
         use_forecast=bool(d.get("use_forecast", False)),
         max_power_w=_opt_int(d.get("max_power_w"), "max power", 0, 200000),
-        enabled=bool(d.get("enabled", True)), auto_target=bool(d.get("auto_target", False)),
+        enabled=bool(d.get("enabled", True)), auto_target=bool(d.get("auto_target", False)), source=_goal_source(d.get("source")),
     )
 
 
@@ -250,5 +269,5 @@ def goal_to_dict(g: Goal) -> dict:
     return {
         "id": g.id, "device_ids": sorted(g.device_ids), "target_soc": g.target_soc,
         "by": g.by.strftime("%H:%M"), "days": sorted(g.days), "use_forecast": g.use_forecast,
-        "max_power_w": g.max_power_w, "enabled": g.enabled, "auto_target": g.auto_target,
+        "max_power_w": g.max_power_w, "enabled": g.enabled, "auto_target": g.auto_target, "source": g.source,
     }

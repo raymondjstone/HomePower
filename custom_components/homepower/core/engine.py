@@ -35,6 +35,7 @@ class DevIn:
     release_pending: bool = False
     guard_held: bool = False
     controllable: bool = True   # False = monitor-only: shown, never used to satisfy a guard
+    has_solar: bool | None = None   # panels attached to this battery? None = not known
 
 
 @dataclass
@@ -59,12 +60,14 @@ class World:
     goals: list[Goal] = field(default_factory=list)
     overrides: dict[str, Desired] = field(default_factory=dict)
     grid_w: float | None = None
+    grid_fresh: bool = True      # False = the grid reading is too old to steer charging by
     condition_ok: Callable[[str], bool] | None = None
     backup_active: bool = False
     away: bool = False
     load_blocks: set[str] = field(default_factory=set)
     rates: RateTable | None = None
     forecast_kwh: float | None = None
+    export_better: bool = False                    # selling surplus pays more than storing it and buying cheap later
     cheap_now: bool | None = None                  # is this a cheap-rate period? None = unknown / flat tariff
     usage_wh: Callable[[datetime, float], float | None] | None = None   # learned household use: (from, hours) -> Wh
 
@@ -116,14 +119,13 @@ def _auto_target(w: World, g: Goal, devs: list[DevIn], deadline: datetime, res: 
 
 
 def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
-    out: dict[str, tuple[Desired, str]] = {}
+    out: dict[str, tuple[Desired, str, str]] = {}      # device -> (instruction, reason, source: grid / solar / both)
     if not w.goals:
         return out
-    if w.rates is None:
+    if w.rates is None and any(g.enabled and g.source != "solar" for g in w.goals):
         res.notes.append("goals need price data: set a rates entity or a fixed tariff")
-        return out
     for g in w.goals:
-        if not g.enabled:
+        if not g.enabled or (w.rates is None and g.source == "grid"):
             continue
         deadline = next_deadline(g, w.now)
         if deadline is None:
@@ -141,21 +143,30 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         if g.use_forecast:
             target = adjust_target_for_forecast(
                 target, w.forecast_kwh, sum(d.config.caps.capacity_wh for d in devs) / 1000, w.settings.forecast_share)
-        needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, target)
-                 for d in devs]
-        slots = w.rates.slots_between(w.now, deadline)
-        if not slots:
-            res.notes.append(f"goal '{g.id}': no price data before {deadline:%H:%M}")
-            continue
-        allocs, unmet = plan_charge(w.now, deadline, needs, slots, g.max_power_w)
-        res.allocs += allocs
-        for did in unmet:
-            res.notes.append(f"goal '{g.id}': cannot fully reach {target}% by {deadline:%H:%M} on {did}")
+        allocs: list[Alloc] = []
+        if g.source != "solar" and w.rates is not None:
+            needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, target)
+                     for d in devs]
+            slots = w.rates.slots_between(w.now, deadline)
+            if not slots:
+                res.notes.append(f"goal '{g.id}': no price data before {deadline:%H:%M}")
+                if g.source == "grid":
+                    continue
+            else:
+                allocs, unmet = plan_charge(w.now, deadline, needs, slots, g.max_power_w)
+                res.allocs += allocs
+                for did in unmet:
+                    res.notes.append(f"goal '{g.id}': cannot fully reach {target}% by {deadline:%H:%M} on {did}")
+        if g.source != "grid" and w.export_better:
+            res.notes.append(f"goal '{g.id}': exporting pays more than storing right now, so spare solar is left to export")
         for d in devs:
             did = d.config.device_id
             p = power_now(allocs, did, w.now)
             if p > 0 and (did not in out or p > (out[did][0].power_w or 0)):
-                out[did] = (Desired(Mode.CHARGE, p, target_soc=target), f"goal '{g.id}'")
+                out[did] = (Desired(Mode.CHARGE, p, target_soc=target), f"goal '{g.id}'", "both" if g.source == "both" else "grid")
+            elif (p <= 0 and g.source != "grid" and not w.export_better and did not in out and d.actual.soc < target):
+                # no grid slot right now: take whatever solar would otherwise be exported (and nothing from the grid)
+                out[did] = (Desired(Mode.CHARGE, g.max_power_w, target_soc=target), f"goal '{g.id}'", "solar")
     return out
 
 
@@ -164,6 +175,7 @@ def compute(w: World) -> Result:
     by_id = {d.config.device_id: d for d in w.devices}
     goal_plan = _plan_goals(w, res)
     entries: dict[str, ScheduleEntry] = {}
+    goal_src: dict[str, str] = {}      # batteries whose instruction comes from a goal -> its charge source
 
     # ---- 1. who wants what
     for d in w.devices:
@@ -176,11 +188,18 @@ def compute(w: World) -> Result:
         elif (e := resolve_entry(w.schedules, did, w.now, w.condition_ok, w.away)) is not None:
             want, reason, entries[did] = e.desired, f"schedule '{e.id}'", e
         elif did in goal_plan:
-            want, reason = goal_plan[did]
+            want, reason, goal_src[did] = goal_plan[did]
         elif did == S.zero_import_device:
             want, reason = _zero_import(w, d), "zero-import"
         if want is None:
             continue
+        if (did in entries and want.mode is Mode.CHARGE and entries[did].source == "solar" and Mode.CHARGE not in caps.supported_modes
+                and Mode.HOLD in caps.supported_modes):
+            if d.has_solar is False:
+                res.notes.append(f"{did}: solar-only charging does nothing for a battery without panels that cannot be told to charge; left alone")
+                continue
+            # No charge command on this battery, but Hold stops it discharging while its own panels keep charging it.
+            want, reason = Desired(Mode.HOLD, reserve_soc=want.reserve_soc), reason + " (solar only)"
         if want.mode not in caps.supported_modes:
             res.notes.append(f"{did}: {want.mode.value} is not supported by this battery; left alone")
             continue
@@ -202,6 +221,56 @@ def compute(w: World) -> Result:
         for did, p in split_power(e.total_power_w, items).items():
             old = res.wants[did]
             res.wants[did] = replace(old, power_w=p) if p > 0 else Desired(Mode.HOLD)
+
+    # ---- 2b. where the charging energy may come from: the grid (fixed power), solar surplus only, or both
+    src = {did: e.source for did, e in entries.items()}
+    src.update({did: s for did, s in goal_src.items() if did not in entries})
+    trackers = [did for did, s in src.items() if did in res.wants and res.wants[did].mode is Mode.CHARGE and s in ("solar", "both")]
+    if trackers:
+        fixed = sum(max(0.0, o.actual.power_w or 0.0) for o in w.devices
+                    if o.actual.online and o.config.device_id not in trackers)   # deliberate charging elsewhere: not surplus
+        for did in trackers:
+            source, d, old = src[did], by_id[did], res.wants[did]
+            caps = d.config.caps
+            from_goal = did not in entries
+            label = " (solar only)" if source == "solar" else " (grid + solar)"
+
+            def idle() -> None:
+                # A schedule's window is explicit, so the battery waits on Hold; a goal can run all day, so the battery is
+                # simply left to its own control (it must still be able to power the house).
+                if from_goal:
+                    del res.wants[did], res.reasons[did]
+                else:
+                    res.wants[did] = Desired(Mode.HOLD, reserve_soc=old.reserve_soc)
+                    res.reasons[did] += label
+
+            if w.grid_w is None or not w.grid_fresh or not d.actual.online:
+                # Without a live grid reading the surplus is unknown: solar-only waits (never imports), grid+solar uses its fixed power.
+                if source == "solar":
+                    res.notes.append(f"{did}: solar-only charging needs a live grid meter reading; waiting until there is one")
+                    idle()
+                else:
+                    res.reasons[did] += label
+                continue
+            own = max(0.0, d.actual.power_w or 0.0)
+            export = -(w.grid_w - fixed)                       # what the house is sending out, ignoring deliberate charging
+            surplus = max(0.0, min(own + export / len(trackers), float(caps.max_charge_w)))
+            cur = d.actual.set_power_w if d.actual.mode is Mode.CHARGE and d.actual.set_power_w else 0
+            if surplus < 30:
+                surplus = 0.0
+            elif cur and abs(surplus - cur) < 50:
+                surplus = float(cur)                           # small changes do not re-send the command
+            if source == "solar":
+                cap = old.power_w if old.power_w is not None else caps.max_charge_w
+                p = int(min(surplus, cap))
+                if p <= 0:
+                    idle()
+                    continue
+                res.wants[did] = replace(old, power_w=p)
+            else:
+                base = old.power_w if old.power_w is not None else caps.max_charge_w
+                res.wants[did] = replace(old, power_w=int(max(base, surplus)))
+            res.reasons[did] += label
 
     # ---- 3. clamps: device limits, SOC limits (with hysteresis), load rules
     for did in list(res.wants):

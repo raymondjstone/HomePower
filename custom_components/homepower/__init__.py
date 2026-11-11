@@ -7,10 +7,11 @@ from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from . import services
-from .const import DOMAIN
+from .const import DOMAIN, SIGNAL_UPDATE, STORAGE_KEY, STORAGE_VERSION
 from .coordinator import HomePowerCoordinator
 from .manager import HomePowerManager
 
@@ -46,9 +47,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop))
 
-    await coordinator.async_config_entry_first_refresh()
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except BaseException:
+        await manager.async_close()     # Home Assistant retries setup: don't leave battery connections open meanwhile
+        raise
     domain_data[entry.entry_id] = coordinator
     domain_data["manager"] = manager
+
+    # The panel's live feed follows this signal rather than one coordinator, so it keeps working after a reload.
+    @callback
+    def _cycle_done() -> None:
+        async_dispatcher_send(hass, SIGNAL_UPDATE)
+
+    entry.async_on_unload(coordinator.async_add_listener(_cycle_done))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     await _async_register_panel(hass)
@@ -112,19 +124,36 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         mgr = hass.data.get(DOMAIN, {}).get("manager")
         coord = hass.data.get(DOMAIN, {}).get(entry.entry_id)
         if coord:
-            await coord.manager.save_runtime()
+            # Reloaded, disabled or removed: nothing will be steering the batteries, so hand back any we are forcing.
+            try:
+                await coord.release_all()
+            except Exception:  # noqa: BLE001 - unloading must still finish
+                _LOGGER.warning("could not hand the batteries back while unloading", exc_info=True)
         if mgr:
             await mgr.async_close()
         try:
             from homeassistant.components import frontend
 
             frontend.async_remove_panel(hass, PANEL_URL, warn_if_unknown=False)
+            frontend.remove_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={VERSION}")
         except Exception:  # noqa: BLE001
             pass
         data = hass.data.get(DOMAIN, {})
         data.pop(entry.entry_id, None)
         data.pop("manager", None)
     return ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """HomePower was deleted. Its batteries, schedules and history are kept (so adding it again restores everything)
+    unless the user ticked 'erase everything when HomePower is removed' in Settings."""
+    if not entry.options.get("erase_on_remove"):
+        _LOGGER.info("HomePower removed; its saved batteries, schedules and history were kept")
+        return
+    from homeassistant.helpers.storage import Store
+
+    await Store(hass, STORAGE_VERSION, STORAGE_KEY).async_remove()
+    _LOGGER.info("HomePower removed; its saved batteries, keys, schedules and history were erased")
 
 
 async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:

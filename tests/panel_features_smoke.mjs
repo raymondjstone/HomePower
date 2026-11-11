@@ -1,6 +1,6 @@
 // Renders the newer panel pieces with fake data and checks they produce sensible HTML (run: node tests/panel_features_smoke.mjs)
 const els = {};
-globalThis.HTMLElement = class { attachShadow(){ this.shadowRoot = { innerHTML:"", addEventListener(){}, getElementById:(i)=>(els[i] ||= { innerHTML:"" }), querySelector(){return null}, querySelectorAll(){return []} }; } };
+globalThis.HTMLElement = class { attachShadow(){ this.shadowRoot = { innerHTML:"", addEventListener(){}, getElementById:(i)=>(els[i] ||= { innerHTML:"", style:{}, value:"", checked:false, textContent:"" }), querySelector(){return {value:"charge"}}, querySelectorAll(){return []} }; } };
 globalThis.localStorage = { getItem:()=>null, setItem(){} };
 let cls; globalThis.customElements = { define:(n,c)=>cls=c };
 await import("../custom_components/homepower/frontend/homepower-panel.js");
@@ -55,3 +55,27 @@ must("price chart: 48 bars, 1 planned, axes", (pc.match(/<rect/g) || []).length 
 p._preview.prices = []; must("price chart hidden without prices", p._priceChart() === "");
 const st2 = p._settingsView();
 must("settings: more windows, save for peak, summary, diverter, Cosy", ["st-offpeak_extra", "st-save_for_peak", "st-daily_summary_time", "st-divert_entity", "Cosy Octopus"].every((k) => st2.includes(k)));
+
+// ---- charge source on schedules
+p._scheduleModal({ ...p._blankSchedule("night"), source: "solar" }, true);
+must("schedule modal offers the charge source", els.modal.innerHTML.includes('id="s-source"') && els.modal.innerHTML.includes('value="solar" selected'));
+p.data.schedules = [{ id: "Sun", device_ids: [], start: "10:00", end: "15:00", mode: "charge", power_w: 2000, source: "solar", days: [0,1,2,3,4,5,6], enabled: true, priority: 0 }];
+must("schedule card says solar only", p._schedules().includes("solar only"));
+
+// ---- solar-aware goals, panels on a battery, export price
+p._goalModal({ id: "g", device_ids: [], target_soc: 90, by: "16:00", days: [0,1,2,3,4,5,6], use_forecast: false, auto_target: false, source: "both", max_power_w: null, enabled: true }, false);
+must("goal modal offers the charge source", els.modal.innerHTML.includes('id="gl-source"') && els.modal.innerHTML.includes('value="both" selected'));
+p.data.goals = [{ id: "g", device_ids: [], target_soc: 90, by: "16:00", days: [0], use_forecast: false, source: "solar", enabled: true }];
+must("goal card says solar only", p._planView().includes("solar only"));
+p.live.devices.a = { online: true, soc: 60, power_w: 500, pv_w: 820, has_solar: true };
+must("battery card shows its solar", p._overview().includes("Solar 820 W"));
+must("settings has the export price", p._settingsView().includes("st-export_price"));
+
+// ---- configurable grid reading order
+p.data.settings = { grid_order: "glow,sensor" }; p.live.grid_source = "sensor.glow_power";
+const go = p._settingsView();
+must("grid order list: saved order first, unused ones unticked", go.indexOf('data-key="glow"') < go.indexOf('data-key="sensor"') && go.indexOf('data-key="sensor"') < go.indexOf('data-key="battery"')
+  && /data-key="glow"><input type="checkbox" class="o-on" checked/.test(go) && /data-key="battery"><input type="checkbox" class="o-on" {2}aria/.test(go) && go.includes("Using now: sensor.glow_power"));
+const mkRow = (k, on) => ({ dataset: { key: k }, querySelector: () => ({ checked: on }) });
+els["st-grid_order"] = { querySelectorAll: () => [mkRow("battery", true), mkRow("glow", false), mkRow("sensor", true)] };
+must("grid order collects ticked rows in order", p._collectSettings().grid_order === "battery,sensor");

@@ -86,7 +86,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         if mgr.devices:
             menu += ["control_battery", "remove_battery"]
         if mgr.schedules:
-            menu.append("remove_schedule")
+            menu += ["edit_schedule", "remove_schedule"]
         if mgr.goals:
             menu.append("remove_goal")
         return self.async_show_menu(step_id="init", menu_options=menu)
@@ -279,6 +279,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                 "start": str(user_input["start"])[:5], "end": str(user_input["end"])[:5],
                 "days": [DAYS.index(d) for d in user_input.get("days", DAYS)],
                 "condition_entity": user_input.get("condition_entity"), "all_day": bool(user_input.get("all_day", False)),
+                "source": user_input.get("source", "grid"),
             }
             if raw["id"] in mgr.schedules:
                 return self.async_abort(reason="invalid", description_placeholders={"error": f"a schedule called '{raw['id']}' already exists"})
@@ -295,6 +296,10 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             vol.Required("start", default="23:30:00"): sel.TimeSelector(),
             vol.Required("end", default="07:30:00"): sel.TimeSelector(),
             vol.Optional("power_w", default=3000): _num(0, 50000, "W", 100),
+            vol.Optional("source", default="grid"): _dropdown([
+                {"value": "grid", "label": "Grid: charge at the set power"},
+                {"value": "solar", "label": "Solar only: spare solar, never import to charge"},
+                {"value": "both", "label": "Grid + solar: the set power plus any spare solar"}]),
             vol.Optional("target_soc"): _num(0, 100, "%"),
             vol.Optional("days", default=DAYS): sel.SelectSelector(sel.SelectSelectorConfig(options=DAYS, multiple=True, translation_key="days")),
             vol.Optional("condition_entity"): sel.EntitySelector(sel.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])),
@@ -384,6 +389,62 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             return self._done()
         opts = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
         return self.async_show_form(step_id="remove_battery", data_schema=vol.Schema({vol.Required("device"): _dropdown(opts)}))
+
+    async def async_step_edit_schedule(self, user_input=None):
+        mgr = self._mgr()
+        if user_input is not None:
+            self._edit_id = user_input["schedule"]
+            return await self.async_step_edit_schedule_form()
+        opts = [{"value": s["id"], "label": s["id"]} for s in mgr.schedules.values()]
+        return self.async_show_form(step_id="edit_schedule", data_schema=vol.Schema({vol.Required("schedule"): _dropdown(opts)}))
+
+    async def async_step_edit_schedule_form(self, user_input=None):
+        """Change an existing schedule. Anything this form does not show (season, priority, sharing...) is kept as it is."""
+        mgr = self._mgr()
+        cur = mgr.schedules.get(getattr(self, "_edit_id", None))
+        if cur is None:
+            return self.async_abort(reason="invalid", description_placeholders={"error": "that schedule no longer exists"})
+        if user_input is not None:
+            raw = {
+                **cur, "device_ids": user_input.get("devices", []), "mode": user_input["mode"],
+                "power_w": user_input.get("power_w"), "target_soc": user_input.get("target_soc"),
+                "start": str(user_input["start"])[:5], "end": str(user_input["end"])[:5],
+                "days": [DAYS.index(d) for d in user_input.get("days", DAYS)],
+                "condition_entity": user_input.get("condition_entity"), "all_day": bool(user_input.get("all_day", False)),
+                "source": user_input.get("source", "grid"), "enabled": bool(user_input.get("enabled", True)),
+            }
+            try:
+                await mgr.save_schedule(raw)
+            except ValidationError as err:
+                return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
+            return self._done()
+
+        def opt(key: str):   # optional field pre-filled with the current value, which the user can still clear
+            v = cur.get(key)
+            return vol.Optional(key, description={"suggested_value": v}) if v not in (None, "") else vol.Optional(key)
+
+        known = set(mgr.devices)
+        devices = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
+        fields: dict = {
+            vol.Optional("devices", default=[x for x in cur.get("device_ids", []) if x in known]): sel.SelectSelector(
+                sel.SelectSelectorConfig(options=devices, multiple=True, mode=sel.SelectSelectorMode.DROPDOWN)),
+            vol.Required("mode", default=cur.get("mode", "charge")): _dropdown(MODE_OPTIONS),
+            vol.Required("start", default=f"{cur.get('start', '23:30')}:00"): sel.TimeSelector(),
+            vol.Required("end", default=f"{cur.get('end', '07:30')}:00"): sel.TimeSelector(),
+            opt("power_w"): _num(0, 50000, "W", 100),
+            vol.Optional("source", default=cur.get("source", "grid")): _dropdown([
+                {"value": "grid", "label": "Grid: charge at the set power"},
+                {"value": "solar", "label": "Solar only: spare solar, never import to charge"},
+                {"value": "both", "label": "Grid + solar: the set power plus any spare solar"}]),
+            opt("target_soc"): _num(0, 100, "%"),
+            vol.Optional("days", default=[DAYS[i] for i in cur.get("days", range(7))]): sel.SelectSelector(
+                sel.SelectSelectorConfig(options=DAYS, multiple=True, translation_key="days")),
+            opt("condition_entity"): sel.EntitySelector(sel.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])),
+            vol.Optional("all_day", default=bool(cur.get("all_day", False))): bool,
+            vol.Optional("enabled", default=bool(cur.get("enabled", True))): bool,
+        }
+        return self.async_show_form(step_id="edit_schedule_form", data_schema=vol.Schema(fields),
+                                    description_placeholders={"name": cur["id"]})
 
     async def async_step_remove_schedule(self, user_input=None):
         mgr = self._mgr()

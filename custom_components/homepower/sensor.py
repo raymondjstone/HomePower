@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -15,7 +15,7 @@ from .coordinator import HomePowerCoordinator
 
 def _info(entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)}, name="HomePower", manufacturer="HomePower",
+        identifiers={(DOMAIN, entry.entry_id)}, name="HomePower", manufacturer="HomePower", entry_type=DeviceEntryType.SERVICE,
         configuration_url="homeassistant://homepower",  # "Visit" button on the device page
     )
 
@@ -99,6 +99,7 @@ class BatteryTarget(_Base):
     """What HomePower currently wants this battery to do (state) and why (attributes)."""
 
     _attr_icon = "mdi:home-battery"
+    _unrecorded_attributes = frozenset({MATCH_ALL})   # they change every cycle and have sensors of their own: keep the database small
 
     def __init__(self, coord, entry, device_id: str, name: str) -> None:
         super().__init__(coord, entry)
@@ -115,7 +116,7 @@ class BatteryTarget(_Base):
 
     @property
     def extra_state_attributes(self):
-        v = self.coordinator.view()["devices"].get(self._did, {})
+        v = self.coordinator.devices_view().get(self._did, {})
         return {k: v.get(k) for k in ("decision", "desired_power_w", "mode", "soc", "power_w", "online",
                                      "active_schedules", "override", "last_error", "reason")}
 
@@ -280,6 +281,7 @@ class HomeBattery(_Base):
     """All batteries as one: charge level (state) plus totals in the attributes (the Lovelace card reads these)."""
 
     _attr_name = "Home battery"
+    _unrecorded_attributes = frozenset({MATCH_ALL})   # live figures for the card; the charge level itself is recorded
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -299,7 +301,7 @@ class HomeBattery(_Base):
     @property
     def extra_state_attributes(self):
         fig = self._fig()
-        v = self.coordinator.view()["devices"]
+        v = self.coordinator.devices_view()
         return {**fig, "homepower": True,
                 "batteries": [{"name": a.config.name, "soc": (v.get(a.config.device_id) or {}).get("soc"),
                                "power_w": (v.get(a.config.device_id) or {}).get("power_w"),

@@ -11,22 +11,22 @@ from .engine import Settings as EngineSettings
 DEFAULTS: dict = {
     "import_limit_w": 7000, "cooldown_s": 120, "total_charge_limit_w": 0, "total_discharge_limit_w": 0,
     "export_limit_w": 0, "peak_shaving": False,
-    "grid_import_entity": "", "grid_export_entity": "", "grid_invert": False, "zero_import_device": "",
-    "rates_entity": "", "rates_unit": "auto", "price_peak": None, "price_offpeak": None,
+    "grid_import_entity": "", "grid_export_entity": "", "grid_invert": False, "grid_order": "sensor,battery,glow,cloud", "zero_import_device": "",
+    "rates_entity": "", "rates_unit": "auto", "price_peak": None, "price_offpeak": None, "export_price": None,
     "offpeak_start": "", "offpeak_end": "", "offpeak_auto": True, "currency": "£",
     "forecast_entity": "", "forecast_share": 0.5,
     "storm_entity": "", "backup_reserve_pct": 50, "away_entity": "", "notify_service": "",
     "load_rules": [],
-    "ecoflow_live": False, "notify_full": False, "offpeak_extra": "", "save_for_peak": False,
+    "ecoflow_live": False, "erase_on_remove": False, "notify_full": False, "offpeak_extra": "", "save_for_peak": False,
     "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
             "notify_low_pct", "cheap_soon_below_pct", "divert_export_w", "divert_min_soc")
-FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share")
-BOOL_KEYS = ("peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "save_for_peak", "notify_full", "notify_cheap_soon")
+FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price")
+BOOL_KEYS = ("peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "save_for_peak", "notify_full", "notify_cheap_soon")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
             "forecast_entity", "storm_entity", "away_entity", "notify_service",
-            "offpeak_extra", "daily_summary_time", "divert_entity")
+            "offpeak_extra", "daily_summary_time", "divert_entity", "grid_order")
 
 
 class SettingsError(ValueError):
@@ -41,6 +41,25 @@ def _t(v: str) -> time | None:
         return time(int(h), int(m))
     except (ValueError, TypeError) as e:
         raise SettingsError(f"'{v}' is not a time (HH:MM)") from e
+
+
+GRID_SOURCES = ("sensor", "battery", "glow", "cloud")
+
+
+def parse_grid_order(v) -> list[str]:
+    """'battery, sensor' -> ['battery', 'sensor']: which grid readings to use, most trusted first. Left-out ones are never used."""
+    out: list[str] = []
+    for part in str(v or "").replace(";", ",").split(","):
+        part = part.strip().lower()
+        if not part:
+            continue
+        if part not in GRID_SOURCES:
+            raise SettingsError(f"'{part}' is not a grid reading source ({', '.join(GRID_SOURCES)})")
+        if part not in out:
+            out.append(part)
+    if not out:
+        raise SettingsError("choose at least one source for the grid reading")
+    return out
 
 
 def parse_windows(v: str) -> list[tuple[time, time]]:
@@ -82,6 +101,8 @@ def clean(raw: dict) -> dict:
     for k in ("offpeak_start", "offpeak_end", "daily_summary_time"):
         if k in out:
             _t(out[k])
+    if "grid_order" in out:
+        out["grid_order"] = ",".join(parse_grid_order(out["grid_order"]))
     if "offpeak_extra" in out:
         parse_windows(out["offpeak_extra"])
     if "divert_min_soc" in out and out["divert_min_soc"] > 100:
@@ -123,10 +144,12 @@ class AppSettings:
     grid_entity: str = ""
     grid_export_entity: str = ""
     grid_invert: bool = False
+    grid_order: list = field(default_factory=lambda: list(GRID_SOURCES))   # grid reading sources, most trusted first
     rates_entity: str = ""
     rates_unit: str = "auto"   # auto | pence | main
     price_peak: float | None = None
     price_offpeak: float | None = None
+    export_price: float | None = None   # what you are paid per kWh exported (same unit as the import prices)
     offpeak_start: time | None = None
     offpeak_end: time | None = None
     offpeak_auto: bool = True   # learn the cheap window from the rates entity's price history
@@ -157,9 +180,9 @@ def build(cfg: dict) -> AppSettings:
         backup_pct=int(c["backup_reserve_pct"]), save_for_peak=bool(c["save_for_peak"]), forecast_share=float(c["forecast_share"] if c["forecast_share"] is not None else 0.5),
     )
     return AppSettings(
-        engine=eng, cooldown_s=c["cooldown_s"], grid_entity=c["grid_import_entity"], grid_export_entity=c["grid_export_entity"], grid_invert=bool(c["grid_invert"]),
+        engine=eng, cooldown_s=c["cooldown_s"], grid_entity=c["grid_import_entity"], grid_export_entity=c["grid_export_entity"], grid_invert=bool(c["grid_invert"]), grid_order=parse_grid_order(c["grid_order"] or ",".join(GRID_SOURCES)),
         rates_entity=c["rates_entity"], rates_unit=c["rates_unit"] or "auto", price_peak=c["price_peak"],
-        price_offpeak=c["price_offpeak"], offpeak_start=_t(c["offpeak_start"]), offpeak_end=_t(c["offpeak_end"]), offpeak_auto=bool(c["offpeak_auto"]),
+        price_offpeak=c["price_offpeak"], export_price=c["export_price"], offpeak_start=_t(c["offpeak_start"]), offpeak_end=_t(c["offpeak_end"]), offpeak_auto=bool(c["offpeak_auto"]),
         currency=c["currency"] or "£", forecast_entity=c["forecast_entity"], storm_entity=c["storm_entity"],
         away_entity=c["away_entity"], notify_service=c["notify_service"], load_rules=list(c["load_rules"] or []),
         ecoflow_live=bool(c["ecoflow_live"]), offpeak_extra=parse_windows(c["offpeak_extra"]),

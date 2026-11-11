@@ -24,7 +24,8 @@
           "remove_schedule": "Remove a schedule",
           "add_goal": "Add a goal (be at X% by a time)",
           "remove_goal": "Remove a goal",
-          "settings": "Settings (limits, tariff, forecast, backup)"
+          "settings": "Settings (limits, tariff, forecast, backup)",
+          "edit_schedule": "Change a schedule"
         }
       },
       "add_battery": {
@@ -118,7 +119,8 @@
           "target_soc": "Stop charging at SOC (%)",
           "days": "Days",
           "condition_entity": "Only while this entity is on",
-          "all_day": "Ignore times; follow the entity only"
+          "all_day": "Ignore times; follow the entity only",
+          "source": "Charge from (charge schedules only)"
         }
       },
       "remove_battery": {
@@ -181,6 +183,29 @@
           "storm_entity": "Turn backup on while this is on",
           "away_entity": "Away entity",
           "notify_service": "Also send alerts to (notify.xxx)"
+        }
+      },
+      "edit_schedule": {
+        "title": "Change a schedule",
+        "data": {
+          "schedule": "Schedule"
+        }
+      },
+      "edit_schedule_form": {
+        "title": "Change schedule: {name}",
+        "description": "Anything not shown here (season, one-off date, priority, sharing a total) is kept as it is; the sidebar panel can change those.",
+        "data": {
+          "devices": "Batteries",
+          "mode": "What to do",
+          "start": "Start",
+          "end": "End",
+          "power_w": "Power (W)",
+          "target_soc": "Stop charging at SOC (%)",
+          "days": "Days",
+          "condition_entity": "Only while this entity is on",
+          "all_day": "Ignore times; follow the entity only",
+          "source": "Charge from (charge schedules only)",
+          "enabled": "Schedule is switched on"
         }
       }
     },

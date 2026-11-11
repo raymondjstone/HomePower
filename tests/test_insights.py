@@ -186,3 +186,167 @@ def test_diverter_waits_then_switches_and_releases():
     d2 = Diverter()
     d2.on = True
     assert d2.decide(0, None, None, 500, 95) is None and d2.decide(130, None, None, 500, 95) == "off"   # no data: release the load
+
+
+# ---------------------------------------------------------------- charge source: grid / solar only / grid + solar
+def _src_world(devs, source, grid, power=2000, **kw):
+    from test_engine import sched
+    return World(now=TUE_22, devices=devs, settings=Settings(import_limit_w=None), grid_w=grid,
+                 schedules=[sched(power=power, source=source)], **kw)
+
+
+def test_grid_source_is_the_fixed_power_whatever_the_meter_says():
+    for grid in (None, -3000, 0, 4000):
+        r = compute(_src_world([dev("a")], "grid", grid))
+        assert r.wants["a"].mode is Mode.CHARGE and r.wants["a"].power_w == 2000 and r.reasons["a"] == "schedule 's'"
+
+
+def test_solar_only_follows_the_surplus_and_never_imports():
+    r = compute(_src_world([dev("a", power=0)], "solar", -1500))
+    assert r.wants["a"].mode is Mode.CHARGE and r.wants["a"].power_w == 1500 and "(solar only)" in r.reasons["a"]
+    r = compute(_src_world([dev("a", power=1500)], "solar", 0))               # already taking the surplus, meter balanced: keep going
+    assert r.wants["a"].power_w == 1500
+    r = compute(_src_world([dev("a", power=1500)], "solar", 600))             # a cloud: charging now imports 600 W -> back off
+    assert r.wants["a"].power_w == 900
+    r = compute(_src_world([dev("a", power=0)], "solar", 800))                # importing, no surplus: wait, do not discharge either
+    assert r.wants["a"].mode is Mode.HOLD
+    r = compute(_src_world([dev("a", power=0)], "solar", -5000))              # the schedule's power is the ceiling
+    assert r.wants["a"].power_w == 2000
+    r = compute(_src_world([dev("a", power=0)], "solar", None))               # no meter: cannot know the surplus -> wait
+    assert r.wants["a"].mode is Mode.HOLD and any("grid meter" in n for n in r.notes)
+
+
+def test_grid_plus_solar_takes_the_fixed_power_and_any_extra_surplus():
+    r = compute(_src_world([dev("a", power=2000)], "both", 0))
+    assert r.wants["a"].power_w == 2000 and "(grid + solar)" in r.reasons["a"]
+    r = compute(_src_world([dev("a", power=2000)], "both", -800))             # exporting 800 W while charging: soak it up too
+    assert r.wants["a"].power_w == 2800
+    r = compute(_src_world([dev("a", power=2000)], "both", -9000))            # never above the battery's own limit
+    assert r.wants["a"].power_w == 3000
+    r = compute(_src_world([dev("a", power=0)], "both", None))                # no meter: plain fixed power
+    assert r.wants["a"].power_w == 2000
+
+
+def test_solar_surplus_is_shared_and_ignores_deliberate_charging_elsewhere():
+    r = compute(_src_world([dev("a", power=0), dev("b", power=0)], "solar", -2000))
+    assert r.wants["a"].power_w == 1000 and r.wants["b"].power_w == 1000      # two batteries split the surplus, no overshoot
+    from test_engine import sched
+    w = World(now=TUE_22, devices=[dev("a", power=0), dev("g", power=2000)], settings=Settings(import_limit_w=None), grid_w=1500,
+              schedules=[sched("sol", devs=("a",), power=3000, source="solar"), sched("grd", devs=("g",), power=2000)])
+    r = compute(w)                                                             # 'g' charges 2000 W on purpose; import is only 1500 W
+    assert r.wants["a"].power_w == 500 and r.wants["g"].power_w == 2000       # so 500 W of real surplus is left for 'a'
+
+
+def test_solar_only_on_a_hold_only_battery_becomes_hold():
+    eco = dev("e", soc=50, modes=[Mode.AUTO, Mode.HOLD], mc=0, md=0)
+    r = compute(_src_world([eco], "solar", -1000))
+    assert r.wants["e"].mode is Mode.HOLD and "(solar only)" in r.reasons["e"]
+    r = compute(_src_world([eco], "grid", -1000))                             # a grid charge it cannot do: left alone, with a note
+    assert "e" not in r.wants and any("not supported" in n for n in r.notes)
+
+
+def test_schedule_source_round_trips_and_validates():
+    from core.serde import ValidationError, schedule_from_dict, schedule_to_dict
+    base = {"id": "s", "start": "10:00", "end": "15:00", "mode": "charge", "power_w": 2000}
+    assert schedule_to_dict(schedule_from_dict(base))["source"] == "grid"                      # old schedules behave as before
+    assert schedule_to_dict(schedule_from_dict({**base, "source": "solar"}))["source"] == "solar"
+    assert schedule_to_dict(schedule_from_dict({**base, "mode": "discharge", "source": "solar"}))["source"] == "grid"
+    try:
+        schedule_from_dict({**base, "source": "wind"})
+        assert False
+    except ValidationError:
+        pass
+
+
+# ---------------------------------------------------------------- goals: solar only / solar first then grid; panels; export price
+def _goal_src_world(source, grid, soc=40, cheap_now_slot=False, **kw):
+    # prices: a cheap slot either right now or only later, so the grid plan is or is not charging at this moment
+    def slot(i, p):
+        return Slot(TUE_22 + timedelta(minutes=30 * i), TUE_22 + timedelta(minutes=30 * (i + 1)), p)
+    prices = [slot(i, (5 if (i == 0) == cheap_now_slot and (cheap_now_slot or i >= 12) else 30)) for i in range(18)]
+    return World(now=TUE_22, devices=[dev("a", soc=soc, power=0)], settings=Settings(import_limit_w=None), grid_w=grid,
+                 goals=[Goal("g", frozenset(), 90, time(7, 0), source=source)], rates=RateTable(prices), **kw)
+
+
+def test_solar_goal_takes_only_surplus_and_leaves_the_battery_alone_otherwise():
+    r = compute(_goal_src_world("solar", -1200))
+    assert r.wants["a"].mode is Mode.CHARGE and r.wants["a"].power_w == 1200 and "(solar only)" in r.reasons["a"]
+    assert not r.allocs                                                         # a solar goal never plans grid slots
+    for grid in (500, None):                                                    # no surplus / no meter: no instruction at all (not Hold)
+        assert "a" not in compute(_goal_src_world("solar", grid)).wants
+    assert "a" not in compute(_goal_src_world("solar", -1200, soc=95)).wants    # already at the target
+    w = World(now=TUE_22, devices=[dev("a", soc=40, power=0)], settings=Settings(import_limit_w=None), grid_w=-900,
+              goals=[Goal("g", frozenset(), 90, time(7, 0), source="solar")], rates=None)
+    r = compute(w)
+    assert r.wants["a"].power_w == 900 and not any("price data" in n for n in r.notes)   # needs no prices at all
+
+
+def test_solar_first_goal_uses_solar_now_and_the_cheap_slots_later():
+    later = compute(_goal_src_world("both", -1000))                             # cheap slot is hours away: only solar for now
+    assert later.wants["a"].power_w == 1000 and "(solar only)" in later.reasons["a"] and later.allocs
+    assert "a" not in compute(_goal_src_world("both", 400)).wants               # no surplus, not a cheap slot: leave it be
+    now = compute(_goal_src_world("both", 0, cheap_now_slot=True))              # in the cheap slot: grid charge
+    assert now.wants["a"].mode is Mode.CHARGE and now.wants["a"].power_w >= 1000 and "(grid + solar)" in now.reasons["a"]
+    plain = compute(_goal_src_world("grid", -1000))                             # the old behaviour is untouched
+    assert "a" not in plain.wants and plain.allocs
+
+
+def test_stale_grid_reading_is_not_used_to_steer_solar_charging():
+    assert "a" not in compute(_goal_src_world("solar", -1200, grid_fresh=False)).wants
+    r = compute(_src_world([dev("a", power=0)], "solar", -1500, grid_fresh=False))
+    assert r.wants["a"].mode is Mode.HOLD and any("live grid" in n for n in r.notes)
+
+
+def test_export_paying_more_than_storing_leaves_surplus_to_export():
+    r = compute(_goal_src_world("solar", -1200, export_better=True))
+    assert "a" not in r.wants and any("exporting pays more" in n for n in r.notes)
+    r = compute(_src_world([dev("a", power=0)], "solar", -1500, export_better=True))
+    assert r.wants["a"].power_w == 1500                                         # an explicit schedule is still obeyed
+
+
+def test_hold_only_battery_without_panels_is_not_held_for_solar_only():
+    no_panels = dev("e", soc=50, modes=[Mode.AUTO, Mode.HOLD], mc=0, md=0)
+    no_panels.has_solar = False
+    r = compute(_src_world([no_panels], "solar", -1000))
+    assert "e" not in r.wants and any("without panels" in n for n in r.notes)
+    for known in (True, None):                                                  # panels, or not known: Hold so its panels charge it
+        d = dev("e", soc=50, modes=[Mode.AUTO, Mode.HOLD], mc=0, md=0)
+        d.has_solar = known
+        assert compute(_src_world([d], "solar", -1000)).wants["e"].mode is Mode.HOLD
+
+
+def test_goal_and_battery_fields_round_trip():
+    from core.serde import ValidationError, device_from_dict, device_to_dict, goal_from_dict, goal_to_dict
+    g = {"id": "g", "target_soc": 90, "by": "07:00"}
+    assert goal_to_dict(goal_from_dict(g))["source"] == "grid" and goal_to_dict(goal_from_dict({**g, "source": "both"}))["source"] == "both"
+    d = {"device_id": "a", "kind": "anker_e5000_pro", "connection": {"host": "10.0.0.2"}, "capacity_wh": 10000, "max_charge_w": 3000, "max_discharge_w": 3000}
+    assert device_to_dict(device_from_dict(d))["solar"] == "auto" and device_to_dict(device_from_dict({**d, "solar": "yes"}))["solar"] == "yes"
+    for bad in (lambda: goal_from_dict({**g, "source": "x"}), lambda: device_from_dict({**d, "solar": "maybe"})):
+        try:
+            bad()
+            assert False
+        except ValidationError:
+            pass
+
+
+def test_grid_order_setting_and_battery_meter_flag():
+    from core.serde import ValidationError, device_from_dict, device_to_dict
+    from core.settings import SettingsError, build, clean
+    assert build({}).grid_order == ["sensor", "battery", "glow", "cloud"]
+    assert build(clean({"grid_order": " glow , sensor,glow"})).grid_order == ["glow", "sensor"]       # order kept, duplicates dropped
+    for bad in ("", "wind", "sensor,x"):
+        try:
+            clean({"grid_order": bad})
+            assert False, bad
+        except SettingsError:
+            pass
+    base = {"device_id": "a", "connection": {"host": "10.0.0.2"}, "capacity_wh": 10000, "max_charge_w": 3000, "max_discharge_w": 3000}
+    plug = device_from_dict({**base, "kind": "anker_e5000_pro"})
+    x1 = device_from_dict({**base, "kind": "anker_x1"})
+    assert plug.extra["house_meter"] is False and x1.extra["house_meter"] is True                     # what 'auto' means per model
+    assert device_to_dict(device_from_dict({**base, "kind": "anker_e5000_pro", "grid_meter": "yes"}))["grid_meter"] == "yes"
+    try:
+        device_from_dict({**base, "kind": "anker_x1", "grid_meter": "maybe"})
+        assert False
+    except ValidationError:
+        pass

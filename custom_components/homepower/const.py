@@ -1,5 +1,6 @@
 """Constants for HomePower."""
 DOMAIN = "homepower"
+SIGNAL_UPDATE = "homepower_update"   # sent after every control cycle (the panel's live feed listens)
 
 CONF_IMPORT_LIMIT_W = "import_limit_w"
 CONF_COOLDOWN_S = "cooldown_s"

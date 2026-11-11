@@ -106,3 +106,33 @@ jobs:
             old=$(gh release list --limit 200 --json tagName,isPrerelease -q '.[]|select(.isPrerelease)|.tagName' | grep "^v${{ steps.v.outputs.base }}-beta\." || true)
           fi
           for t in $old; do gh release delete "$t" --yes --cleanup-tag || true; done
+
+      - name: Start the next version on develop
+        # After a real release, develop still carries the version that was just released, and its next pre-release
+        # would be refused. Move it on by one patch number (edit manifest.json yourself for a bigger jump).
+        if: steps.v.outputs.skip != 'true' && steps.v.outputs.pre == 'false'
+        run: |
+          git checkout -- .
+          git fetch origin develop || { echo "no develop branch: nothing to do"; exit 0; }
+          git checkout -B develop origin/develop
+          next=$(python3 - <<'PY'
+          import json, re
+          p = "custom_components/homepower/manifest.json"
+          released = "${{ steps.v.outputs.base }}"
+          key = lambda v: [int(x) for x in re.findall(r"\d+", v)[:3]]
+          text = open(p).read()
+          cur = json.loads(text)["version"]
+          if key(cur) > key(released):
+              print("")                                   # develop is already ahead
+          else:
+              a, b, c = (key(released) + [0, 0, 0])[:3]
+              new = f"{a}.{b}.{c + 1}"
+              open(p, "w").write(re.sub(r'("version"\s*:\s*")[^"]+(")', rf"\g<1>{new}\g<2>", text, count=1))
+              print(new)
+          PY
+          )
+          if [ -z "$next" ]; then echo "develop is already on a newer version"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Start version $next"
+          git push origin develop
