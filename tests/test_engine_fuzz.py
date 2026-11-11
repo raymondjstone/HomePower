@@ -22,7 +22,7 @@ def rand_world(rng: random.Random) -> World:
         soc = rng.choice([None, 0, 5, 10, 12, 30, 50, 79, 80, 95, 100]) if online else None
         act = Actual(online=online, soc=soc, power_w=rng.uniform(-3000, 3000), mode=rng.choice(list(Mode)),
                      set_power_w=rng.choice([None, 0, 500, 2000]), grid_w=None)
-        devs.append(DevIn(DeviceConfig(f"d{i}", f"d{i}", "x", caps, priority=rng.randint(-2, 2), extra={}), act,
+        devs.append(DevIn(DeviceConfig(f"d{i}", f"d{i}", "x", caps, priority=rng.randint(-2, 2), extra={"role": rng.choice(["normal", "normal", "reserve"])}), act,
                           release_pending=rng.random() < 0.2, guard_held=rng.random() < 0.3,
                           controllable=rng.random() > 0.2))
     ids = [d.config.device_id for d in devs]
@@ -43,11 +43,12 @@ def rand_world(rng: random.Random) -> World:
     st = Settings(charge_cap_w=rng.choice([None, 2000, 6000]), discharge_cap_w=rng.choice([None, 2500]),
                   import_limit_w=rng.choice([None, 7000, 3000]), export_limit_w=rng.choice([None, 2000]),
                   zero_import_device=rng.choice([None] + ids), peak_shaving=rng.random() < 0.5,
-                  backup_pct=rng.choice([30, 50]))
+                  backup_pct=rng.choice([30, 50]), save_for_peak=rng.random() < 0.4)
     return World(
         now=now, devices=devs, settings=st, schedules=scheds, goals=goals,
         overrides={rng.choice(ids): Desired(rng.choice(list(Mode)), rng.choice([None, 800]))} if rng.random() < 0.15 else {},
         grid_w=rng.choice([None, -6000, -1500, 0, 800, 4000, 9000]), backup_active=rng.random() < 0.2, away=rng.random() < 0.3,
+        cheap_now=rng.choice([None, True, False]),
         load_blocks=set(rng.sample(["charge", "discharge"], rng.randint(0, 2))),
         rates=rng.choice([None, RateTable(peak=30.0, offpeak=7.5, offpeak_start=time(23, 30), offpeak_end=time(5, 30))]),
         forecast_kwh=rng.choice([None, 4.0, 20.0]),
@@ -82,6 +83,9 @@ def test_engine_invariants_hold_for_random_worlds():
                 assert r.reasons[did] in ("manual override", "backup reserve"), f"{ctx}: charge despite load rule"
             if want.mode is not Mode.AUTO and r.reasons[did] in ("peak shaving", "export limit"):
                 assert d.controllable and d.actual.online, f"{ctx}: guard used an unusable battery"
+            if r.reasons[did].startswith(("kept in reserve", "saving charge")):
+                assert want.mode is Mode.HOLD and d.controllable and d.actual.online, f"{ctx}: hold-back on an unusable battery"
+                assert (d.actual.pv_w or 0) <= 50
             assert r.reasons.get(did), f"{ctx}: no reason for {did}"
         if w.settings.discharge_cap_w is not None:
             assert tot_d <= w.settings.discharge_cap_w + 1, f"{ctx}: discharge total {tot_d} over cap"

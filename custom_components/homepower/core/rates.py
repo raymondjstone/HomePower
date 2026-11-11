@@ -75,19 +75,31 @@ class RateTable:
     """Prices from parsed slots, with an optional fixed two-rate tariff as the fallback."""
 
     def __init__(self, slots: list[Slot] | None = None, peak: float | None = None, offpeak: float | None = None,
-                 offpeak_start: time | None = None, offpeak_end: time | None = None) -> None:
+                 offpeak_start: time | None = None, offpeak_end: time | None = None,
+                 extra_windows: list[tuple[time, time]] | None = None) -> None:
         self.slots = slots or []
         self.peak, self.offpeak = peak, offpeak
         self.offpeak_start, self.offpeak_end = offpeak_start, offpeak_end
+        # every cheap period of the day (tariffs such as Cosy have several); end <= start crosses midnight
+        self.windows: list[tuple[time, time]] = ([(offpeak_start, offpeak_end)] if offpeak_start and offpeak_end else []) + list(extra_windows or [])
+
+    def in_cheap_window(self, tt: time) -> bool:
+        return any((a <= tt < b) if a < b else (tt >= a or tt < b) for a, b in self.windows)
+
+    def minutes_to_cheap(self, tt: time) -> tuple[int, time] | None:
+        """Minutes from `tt` until the next cheap window starts (0 = it starts right now), and that start time."""
+        best = None
+        for a, _ in self.windows:
+            m = (a.hour * 60 + a.minute - tt.hour * 60 - tt.minute) % 1440
+            if best is None or m < best[0]:
+                best = (m, a)
+        return best
 
     def _fixed(self, t: datetime) -> float | None:
         if self.peak is None and self.offpeak is None:
             return None
-        if self.offpeak is not None and self.offpeak_start and self.offpeak_end:
-            tt, a, b = t.time(), self.offpeak_start, self.offpeak_end
-            inside = (a <= tt < b) if a < b else (tt >= a or tt < b)
-            if inside:
-                return self.offpeak
+        if self.offpeak is not None and self.in_cheap_window(t.time()):
+            return self.offpeak
         return self.peak if self.peak is not None else self.offpeak
 
     def price_at(self, t: datetime) -> float | None:

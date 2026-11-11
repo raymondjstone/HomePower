@@ -58,6 +58,8 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .banner .t{flex:1;min-width:200px}
 .scenes{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .presets{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}
+.chk{display:grid;gap:6px}.chk .it{display:grid;grid-template-columns:24px 1fr auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--divider-color)}
+.chk .it:last-child{border-bottom:0}.chk .ok{color:#16a34a}.chk .no{color:#d97706}.chk small{display:block;color:var(--secondary-text-color)}
 @media(max-width:700px){header{flex-wrap:wrap;padding:10px 12px;gap:8px}header h1{flex-basis:100%;order:-1;font-size:18px}header .btn{padding:6px 10px;font-size:12px}
  main{padding:10px}.hb{grid-template-columns:1fr;justify-items:center;text-align:center}.plot-y{width:46px}.card{padding:14px}nav button{padding:12px 10px}.durs{margin-left:0;margin-top:6px;display:flex}}
 .tl{margin:8px 0 14px}
@@ -318,7 +320,7 @@ class HomePowerPanel extends HTMLElement {
   // Cheap-rate hours are the single most important setting for planning: nudge until they are entered.
   _tariffBanner() {
     const s = this.data.settings || {};
-    if (s.offpeak_start && s.offpeak_end) return "";
+    if ((s.offpeak_start && s.offpeak_end) || s.offpeak_extra || (this.live.setup || []).length) return "";   // the setup check covers it
     const inf = this.live.tariff_inferred;
     if (!inf && this.live.price_now != null) return "";   // per-slot prices (Agile, Nord Pool...): no fixed cheap hours to enter
     const msg = inf ? `Your cheap-rate hours are being <b>estimated</b> as ${inf.start}-${inf.end} from price history, which can run up to an hour late.`
@@ -388,7 +390,7 @@ class HomePowerPanel extends HTMLElement {
       ${this.live.price_now != null ? tile("Price now", `${this.live.currency || "£"}${this.live.price_now.toFixed(3)}/kWh`, "From your rates") : ""}
     </div>`;
     const cards = ds.map((d, i) => this._batCard(d, rd[i], i)).join("");
-    return `${this._alertsBanner()}${this._tariffBanner()}${this._homeBattery()}${tiles}
+    return `${this._alertsBanner()}${this._setupCard(false)}${this._tariffBanner()}${this._homeBattery()}${tiles}
       <h2 style="margin:22px 0 10px;font-size:18px">Batteries</h2>
       <div class="grid g-cards">${cards}</div>
       ${this._scenesCard()}
@@ -755,7 +757,9 @@ class HomePowerPanel extends HTMLElement {
           <div class="f"><label>Max charge (W)</label><input type="number" id="b-mc" value="${d.max_charge_w ?? ""}" placeholder="from the battery"></div>
           <div class="f"><label>Max discharge (W)</label><input type="number" id="b-md" value="${d.max_discharge_w ?? ""}" placeholder="from the battery"></div></div>
         <div class="two"><div class="f"><label>Minimum SOC (%)</label><input type="number" id="b-min" min="0" max="100" value="${d.min_soc ?? ""}" placeholder="from the battery"></div>
-          <div class="f"><label>Priority (lower = discharges first)</label><input type="number" id="b-prio" value="${d.priority ?? 0}"></div></div></details>
+          <div class="f"><label>Priority (lower = discharges first)</label><input type="number" id="b-prio" value="${d.priority ?? 0}"></div></div>
+        <div class="f"><label>Role</label><select id="b-role"><option value="normal" ${d.role !== "reserve" ? "selected" : ""}>Everyday: used whenever the house needs it</option><option value="reserve" ${d.role === "reserve" ? "selected" : ""}>Reserve: held back until the other batteries have run down</option></select>
+          <span class="hint">A reserve battery needs control allowed and a battery that supports Hold. Solar still charges it.</span></div></details>
       <h3>4 · Control</h3>
       <label style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="b-control" ${d.control_enabled ? "checked" : ""} style="margin-top:3px"><span>Let HomePower send commands to this battery.<br><span class="hint" style="font-size:12px;color:var(--secondary-text-color)">Leave off at first: HomePower only reads and shows it. Turn on once the test readings above look right.</span></span></label>
       <div class="err" id="m-err"></div>
@@ -852,7 +856,7 @@ class HomePowerPanel extends HTMLElement {
     const out = {
       device_id: origId || slug(name) || "battery_" + Date.now().toString(36),
       name, kind: pid,
-      capacity_wh: v("b-cap"), max_charge_w: v("b-mc"), max_discharge_w: v("b-md"), min_soc: v("b-min"), priority: v("b-prio"),
+      capacity_wh: v("b-cap"), max_charge_w: v("b-mc"), max_discharge_w: v("b-md"), min_soc: v("b-min"), priority: v("b-prio"), role: (r.getElementById("b-role") || {}).value || "normal",
       control_enabled: !!(r.getElementById("b-control") || {}).checked,
     };
     if (prof.driver === "entities") {
@@ -926,6 +930,38 @@ class HomePowerPanel extends HTMLElement {
   }
 
   // ---- plan tab: goals, 24h preview, conflicts ----------------------------------
+  // Prices for the next 24 hours as bars, with the half-hours HomePower plans to charge in picked out.
+  _priceChart() {
+    const pv = this._preview, pr = (pv && pv.prices) || [];
+    if (pr.length < 2) return "";
+    const cur = this.live.currency || "£", W = 800, H = 200;
+    const t0 = Date.parse(pr[0].start), t1 = Date.parse(pr[pr.length - 1].end), span = Math.max(1, t1 - t0);
+    const nt = this._niceTicks(Math.min(0, ...pr.map((x) => x.price)), Math.max(...pr.map((x) => x.price), 0.01), 4);
+    const X = (t) => ((t - t0) / span) * W, Y = (v) => H - ((v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo)) * H;
+    const planned = (a, b) => (pv.plan || []).some((x) => Date.parse(x.start) < b && Date.parse(x.end) > a)
+      || Object.values(pv.segments || {}).some((l) => l.some((g) => g.mode === "charge" && Date.parse(g.start) < b && Date.parse(g.end) > a));
+    const bars = pr.map((x) => {
+      const a = Date.parse(x.start), b = Date.parse(x.end), y = Y(Math.max(x.price, 0)), h = Math.abs(Y(x.price) - Y(0)), chg = planned(a, b);
+      return `<rect x="${(X(a) + 0.6).toFixed(1)}" y="${Math.min(y, Y(0)).toFixed(1)}" width="${Math.max(1, X(b) - X(a) - 1.2).toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" fill="${chg ? MODES.charge.color : x.cheap ? "#60a5fa" : "var(--disabled-text-color,#9ca3af)"}" opacity="${chg ? 1 : 0.75}"><title>${new Date(a).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: ${cur}${x.price.toFixed(3)}/kWh${chg ? " · charging planned" : ""}</title></rect>`;
+    }).join("");
+    const grid = nt.ticks.map((v) => `<line x1="0" x2="${W}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--divider-color)" stroke-opacity=".5" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>`).join("");
+    const now = Date.now(), nowLine = now > t0 && now < t1 ? `<line x1="${X(now).toFixed(1)}" x2="${X(now).toFixed(1)}" y1="0" y2="${H}" stroke="var(--primary-color)" stroke-width="2" vector-effect="non-scaling-stroke"/>` : "";
+    const ylab = nt.ticks.map((v) => `<span style="top:${((1 - (v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo)) * 100).toFixed(2)}%">${cur}${v.toFixed(2)}</span>`).join("");
+    const xlab = [0, 0.25, 0.5, 0.75, 1].map((f, i) => `<span style="left:${i * 25}%">${this._fmtT(t0 + f * span, span)}</span>`).join("");
+    return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-bar"></ha-icon>Prices and planned charging (per kWh)</h2>
+      <div class="plot"><div class="plot-y" style="height:190px">${ylab}</div><div class="plot-main"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:190px" role="img" aria-label="Electricity prices for the next 24 hours">${grid}${bars}${nowLine}</svg><div class="plot-x">${xlab}</div></div></div>
+      <div class="legend"><span><i class="sw" style="background:${MODES.charge.color}"></i>Charging planned</span><span><i class="sw" style="background:#60a5fa"></i>Cheap rate</span><span><i class="sw" style="background:var(--disabled-text-color,#9ca3af)"></i>Standard rate</span><span>Line = now</span></div></div>`;
+  }
+
+  // Is everything set up? Shown on Overview until all is done, and always on Diagnostics.
+  _setupCard(always) {
+    const items = this.live.setup || [], missing = items.filter((x) => !x.ok);
+    if (!items.length || (!always && !missing.length)) return "";
+    const btn = (x) => x.ok || !x.action ? "<span></span>" : x.action === "test" ? `<button class="btn sm" data-act="setup-test" data-id="${esc(x.target)}">Test now</button>` : `<button class="btn sm" data-tab="${esc(x.target)}">Fix</button>`;
+    const list = (always ? items : missing).map((x) => `<div class="it"><ha-icon class="${x.ok ? "ok" : "no"}" icon="${x.ok ? "mdi:check-circle" : "mdi:alert-circle-outline"}"></ha-icon><div>${esc(x.title)}${x.detail ? `<small>${esc(x.detail)}</small>` : ""}</div>${btn(x)}</div>`).join("");
+    return `<div class="card" style="margin-bottom:16px"><h2><ha-icon icon="mdi:clipboard-check-outline"></ha-icon>Setup check <span class="sub" style="font-weight:400;font-size:13px">${items.length - missing.length} of ${items.length} done</span></h2><div class="chk">${list}</div></div>`;
+  }
+
   _planView() {
     const goals = this.data.goals || [];
     const names = (g) => !g.device_ids.length ? "All batteries" : g.device_ids.map((id) => (this.data.devices.find((d) => d.device_id === id) || {}).name || id).join(", ");
@@ -956,6 +992,7 @@ class HomePowerPanel extends HTMLElement {
     }
     return `<div class="bar-actions"><h2>Goals</h2><button class="btn pri" data-act="add-goal"><ha-icon icon="mdi:plus"></ha-icon>Add goal</button></div>
       ${goals.length ? `<div class="grid g-cards">${gcards}</div>` : `<div class="card empty"><ha-icon icon="mdi:target"></ha-icon><h3>No goals yet</h3>"Be at 90% by 07:00": HomePower charges in the cheapest half-hours to get there. It needs prices: set a rates entity or a cheap-rate tariff in Settings.<br><br><button class="btn pri" data-act="add-goal">Add a goal</button></div>`}
+      ${this._priceChart()}
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:timeline-clock"></ha-icon>What will happen next (24 hours)</h2>${this._tabError ? `<div class="err">${esc(this._tabError)}</div>` : ""}${timeline}</div>`;
   }
 
@@ -1067,7 +1104,7 @@ class HomePowerPanel extends HTMLElement {
       <div class="steps" id="test-${esc(id)}" style="margin-top:8px">${this._tests && this._tests[id] ? this._tests[id] : ""}</div></div>`).join("");
     const ev = (dg.events || []).slice().reverse().slice(0, 40).map(([t, id, m]) => `<div><span class="t">${esc(new Date(t).toLocaleTimeString())}</span> <b>${esc(id)}</b> ${esc(m)}</div>`).join("");
     return `<div class="bar-actions"><h2>Diagnostics</h2><button class="btn" data-act="copy-debug"><ha-icon icon="mdi:content-copy" style="--mdc-icon-size:16px"></ha-icon>Copy debug info</button></div>
-      ${(dg.alerts || []).length ? `<div class="banner warn">Active alerts: ${esc(dg.alerts.join(", "))}</div>` : ""}${rows || '<div class="card empty">No batteries yet.</div>'}
+      ${(dg.alerts || []).length ? `<div class="banner warn">Active alerts: ${esc(dg.alerts.join(", "))}</div>` : ""}${this._setupCard(true)}${rows || '<div class="card empty">No batteries yet.</div>'}
       <div class="card"><h2>Recent activity</h2><div class="log">${ev || "Nothing yet."}</div></div>`;
   }
 
@@ -1107,6 +1144,8 @@ class HomePowerPanel extends HTMLElement {
         num("price_peak", "Standard rate", "Used when there is no rates entity, or to fill gaps.", "any"), num("price_offpeak", "Cheap rate", "", "any"),
         { k: "offpeak_auto", t: "bool", label: "Work out the night/cheap period from the tariff's price history" + (this.live.tariff_inferred ? ` (estimated ${this.live.tariff_inferred.start}-${this.live.tariff_inferred.end} from ${this.live.tariff_inferred.days} days of readings, which can run up to an hour late: type your exact times below to be sure)` : "") },
         { k: "offpeak_start", t: "time", label: "Cheap rate starts", hint: "Leave both times empty to use the period found from history." }, { k: "offpeak_end", t: "time", label: "Cheap rate ends" },
+        { k: "offpeak_extra", t: "text", label: "More cheap periods (optional)", hint: "For tariffs with several cheap periods a day, e.g. 13:00-16:00, 22:00-00:00" },
+        { k: "save_for_peak", t: "bool", label: "Save the battery for peak hours: don't let it discharge during cheap-rate periods" },
         { k: "currency", t: "text", label: "Currency symbol" }]],
       ["Solar forecast", "mdi:weather-sunny", [
         { k: "forecast_entity", t: "entity", dom: ["sensor"], label: "Tomorrow's solar forecast (kWh)", hint: "Solcast or Forecast.Solar 'tomorrow' sensor." },
@@ -1120,7 +1159,12 @@ class HomePowerPanel extends HTMLElement {
         { k: "notify_full", t: "bool", label: "Tell me when the home battery is full" },
         num("notify_low_pct", "Tell me when the charge falls to (%, 0 = never)"),
         { k: "notify_cheap_soon", t: "bool", label: "Warn me 30 minutes before the cheap rate starts if the battery is below..." },
-        num("cheap_soon_below_pct", "...this charge (%)")]],
+        num("cheap_soon_below_pct", "...this charge (%)"),
+        { k: "daily_summary_time", t: "time", label: "Send a daily summary at", hint: "Battery level, yesterday's charging, savings and solar use. Leave empty for none." }]],
+      ["Solar surplus", "mdi:water-boiler", [
+        { k: "divert_entity", t: "entity", dom: ["switch", "input_boolean"], label: "Switch this on when the batteries are full and you are exporting", hint: (this.live.divert ? `Currently ${this.live.divert.on ? "ON" : "off"}. ` : "") + "For example an immersion heater. Switched off again when it would need grid power. Leave empty for none." },
+        num("divert_export_w", "Export needed to switch it on (W)", "Roughly the power the device uses."),
+        num("divert_min_soc", "Only when the home battery is at least (%)")]],
       ["EcoFlow", "mdi:flash", [{ k: "ecoflow_live", t: "bool", label: "Use EcoFlow's live feed for faster readings (seconds instead of 30 s)" },
         { k: "ecoflow_live_note", t: "note", label: "Off by default: it opens a second connection to EcoFlow with your keys, which could disturb another EcoFlow integration using the same account (such as EcoFlow Cloud). If readings stop updating after turning it on, turn it off again." }]],
       ["Backup & restore", "mdi:backup-restore", [{ k: "backup_restore", t: "backup", label: "" }]],
@@ -1131,8 +1175,8 @@ class HomePowerPanel extends HTMLElement {
       if (f.t === "select") return `<div class="f"><label>${esc(f.label)}</label><select id="st-${f.k}">${f.options.map(([val, l]) => `<option value="${val}" ${(v || "auto") === val ? "selected" : ""}>${l}</option>`).join("")}</select></div>`;
       if (f.t === "device") return `<div class="f"><label>${esc(f.label)}</label><select id="st-${f.k}"><option value="">None</option>${this.data.devices.map((d) => `<option value="${esc(d.device_id)}" ${v === d.device_id ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</select></div>`;
       if (f.t === "note") return `<p class="hint" style="margin:0 0 8px">${esc(f.label)}</p>`;
-      if (f.t === "presets") return `<div class="presets">${[["Octopus Go", "00:30", "05:30"], ["Intelligent Octopus Go", "23:30", "05:30"], ["Economy 7 (check your bill)", "00:30", "07:30"], ["23:30 - 07:30", "23:30", "07:30"]]
-        .map(([n, a, b]) => `<button class="btn sm" data-act="tariff-preset" data-a="${a}" data-b="${b}">${esc(n)} ${a}-${b}</button>`).join("")}</div><span class="hint">Fills the two time boxes below. Prices differ by tariff, so also enter the standard and cheap rate (or a rates sensor).</span>`;
+      if (f.t === "presets") return `<div class="presets">${[["Octopus Go", "00:30", "05:30", ""], ["Intelligent Octopus Go", "23:30", "05:30", ""], ["Economy 7 (check your bill)", "00:30", "07:30", ""], ["23:30 - 07:30", "23:30", "07:30", ""], ["Cosy Octopus (3 periods)", "04:00", "07:00", "13:00-16:00, 22:00-00:00"]]
+        .map(([n, a, b, x]) => `<button class="btn sm" data-act="tariff-preset" data-a="${a}" data-b="${b}" data-x="${x}">${esc(n)}${x ? "" : ` ${a}-${b}`}</button>`).join("")}</div><span class="hint">Fills the two time boxes below. Prices differ by tariff, so also enter the standard and cheap rate (or a rates sensor).</span>`;
       if (f.t === "backup") return `<p class="hint" style="margin-top:0">Save everything (batteries, schedules, goals, scenes and settings) to a file, or restore it later, for example after rebuilding Home Assistant.</p>
         <label style="display:flex;gap:8px;align-items:center;margin:6px 0"><input type="checkbox" id="bk-secrets">Include EcoFlow access keys in the file (keep the file private)</label>
         <div class="presets"><button class="btn sm" data-act="do-export"><ha-icon icon="mdi:download"></ha-icon>Download backup</button></div>
@@ -1296,10 +1340,12 @@ class HomePowerPanel extends HTMLElement {
         await this._call({ type: "homepower/goal/delete", goal_id: id });
         await this._reload(); this._closeModal(); return this._tabLoad();
       case "range": this._range = t.dataset.r; return this._tabLoad();
+      case "setup-test": this.tab = "diagnostics"; this._render(); await this._tabLoad(); return this._runTest(id);
       case "goto-tariff": this.tab = "settings"; this._render(); return this._tabLoad();
       case "tariff-preset": {
         const r = this.shadowRoot;
         r.getElementById("st-offpeak_start").value = t.dataset.a; r.getElementById("st-offpeak_end").value = t.dataset.b;
+        r.getElementById("st-offpeak_extra").value = t.dataset.x || "";
         const auto = r.getElementById("st-offpeak_auto"); if (auto) auto.checked = false;
         return;
       }

@@ -22,7 +22,7 @@ from .core.goals import Goal
 from .core.models import Actual, Desired, Mode
 from .core.preview import find_conflicts, preview as build_preview
 from .core.meter import MeterReader
-from .core.insights import BatteryFigures, DailyStats, Health, LoadProfile, combine
+from .core.insights import BatteryFigures, DailyStats, Diverter, Health, LoadProfile, combine
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
@@ -88,7 +88,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.profile = LoadProfile(manager.profile_data)   # the household's usual load by time of day
         self.daily = DailyStats(manager.daily_data)         # self-consumption / cheap-rate share per day
         self.health = Health(manager.health_data)           # weekly round-trip efficiency per battery
-        self._event_state: dict[str, bool] = {}
+        self._event_state: dict[str, bool] = dict(manager.event_state)   # which heads-up messages are showing (survives restarts)
+        self.diverter = Diverter()                           # solar-surplus load
+        self._divert_entity = ""                             # the entity we switched on, to switch the same one off
         self.alerts = AlertTracker()
         self.last_result = Result()
         self.last_grid: float | None = None
@@ -224,7 +226,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             off = inf.offpeak if off is None else off
         if not slots and peak is None and off is None:
             return None
-        return RateTable(slots, peak, off, a, b)
+        if (a is None or b is None) and s.offpeak_extra:      # only the extra windows were entered: the first is the main one
+            (a, b), rest = s.offpeak_extra[0], s.offpeak_extra[1:]
+            return RateTable(slots, peak, off, a, b, rest)
+        return RateTable(slots, peak, off, a, b, s.offpeak_extra)
 
     async def _refresh_tariff(self) -> None:
         """Learn the cheap (night) window from the rates sensor's recorded price history (every few hours)."""
@@ -373,18 +378,95 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 self._event_state[key] = False
                 await self._notify(f"event_{key}", msg, False)
 
-        for k in [k for k in self._event_state if k.startswith("cheap_") and k != f"cheap_{now:%Y%m%d}"]:
-            del self._event_state[k]            # yesterday's "cheap rate soon" markers
+        today = f"{now:%Y%m%d}"
+        for k in [k for k in self._event_state if k.startswith(("cheap_", "summary_")) and today not in k]:
+            del self._event_state[k]            # yesterday's once-a-day markers
         if soc is None:
             return
         # "Full" is 95%: many batteries stop at their own charge ceiling below 100. Switching a heads-up off clears it.
         await edge("full", s.notify_full and soc >= 95, not s.notify_full or soc < 88, f"The home battery is full ({soc:g}%).")
         await edge("low", bool(s.notify_low_pct) and soc <= s.notify_low_pct, not s.notify_low_pct or soc > s.notify_low_pct + 5,
                    f"The home battery is low ({soc:g}%).")
-        if s.notify_cheap_soon and rates is not None and rates.offpeak_start is not None:
-            mins = (rates.offpeak_start.hour * 60 + rates.offpeak_start.minute - now.hour * 60 - now.minute) % 1440
-            await edge(f"cheap_{now:%Y%m%d}", 0 < mins <= 30 and soc < s.cheap_soon_below_pct, False,
-                       f"Cheap rate starts at {rates.offpeak_start:%H:%M} and the battery is at {soc:g}%.")
+        nxt = rates.minutes_to_cheap(now.time()) if rates is not None else None
+        if s.notify_cheap_soon and nxt is not None:
+            await edge(f"cheap_{now:%Y%m%d}_{nxt[1]:%H%M}", 0 < nxt[0] <= 30 and soc < s.cheap_soon_below_pct, False,
+                       f"Cheap rate starts at {nxt[1]:%H:%M} and the battery is at {soc:g}%.")
+        if s.daily_summary_time is not None:
+            due = now.time() >= s.daily_summary_time and (now.hour * 60 + now.minute) - (s.daily_summary_time.hour * 60 + s.daily_summary_time.minute) < 30
+            await edge(f"summary_{now:%Y%m%d}", due, False, self._daily_summary(now, fig))
+
+    def _daily_summary(self, now: datetime, fig: dict) -> str:
+        """One message a day: where the battery is and how yesterday went."""
+        y = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        led, cur = self.ledger.days.get(y), self.settings.currency
+        parts = [f"Home battery {fig['soc']:g}% ({fig['stored_kwh']:g} kWh stored)."]
+        if led:
+            parts.append(f"Yesterday: charged {led['charged']:.1f} kWh, discharged {led['discharged']:.1f} kWh, "
+                         f"saved about {cur}{led['value'] - led['cost']:.2f}.")
+        sc, ch = self.daily.self_consumption(y), self.daily.cheap_share(y)
+        if sc is not None:
+            parts.append(f"{sc:g}% of your solar was used at home.")
+        if ch is not None:
+            parts.append(f"{ch:g}% of grid energy was bought at the cheap rate.")
+        if fig.get("runtime_h") is not None:
+            parts.append(f"At the current draw the battery lasts about {fig['runtime_h']:g} h.")
+        return " ".join(parts)
+
+    async def _divert(self, now_s: float, actuals: dict[str, Actual], grid: float | None) -> None:
+        """Solar surplus: run a chosen load while the batteries are full and power is being exported."""
+        s = self.settings
+        if self._divert_entity and self._divert_entity != s.divert_entity:      # setting changed or cleared: release the old load
+            if self.diverter.on:
+                await self._switch(self._divert_entity, False)
+            self.diverter = Diverter()
+        self._divert_entity = s.divert_entity
+        if not s.divert_entity:
+            return
+        act = self.diverter.decide(now_s, self._combined(actuals)["soc"], grid, s.divert_export_w, s.divert_min_soc)
+        if act:
+            await self._switch(s.divert_entity, act == "on")
+            self._log("divert", f"{s.divert_entity} switched {act} ({'surplus solar' if act == 'on' else 'no surplus'})")
+
+    async def _switch(self, entity_id: str, on: bool) -> None:
+        try:
+            await self.hass.services.async_call("homeassistant", "turn_on" if on else "turn_off", {"entity_id": entity_id})
+        except Exception:  # noqa: BLE001 - a missing entity must not affect battery control
+            _LOGGER.debug("could not switch %s", entity_id, exc_info=True)
+
+    def setup_check(self) -> list[dict]:
+        """Is everything set up? A plain checklist for the panel (ok / what is missing / where to fix it)."""
+        s, items = self.settings, []
+
+        def add(key: str, ok: bool, title: str, detail: str = "", action: str = "", target: str = "") -> None:
+            items.append({"key": key, "ok": bool(ok), "title": title, "detail": detail, "action": action, "target": target})
+
+        add("batteries", bool(self.adapters), "At least one battery added", "" if self.adapters else "Add your first battery.", "tab", "batteries")
+        for a in self.adapters:
+            did, name, st = a.config.device_id, a.config.name, self._snap.devices.get(a.config.device_id)
+            act = st.actual if st else None
+            reading = bool(act and act.online and act.soc is not None)
+            add(f"reading:{did}", reading, f"{name} is reporting", "" if reading else
+                ("It is offline or unreachable." if not (act and act.online) else "It is online but sends no charge level."), "tab", "diagnostics")
+            modes = a.config.caps.supported_modes
+            if len(modes) > 1:
+                allowed = bool(a.config.extra.get("control_enabled", True))
+                add(f"control:{did}", allowed, f"{name}: control allowed", "" if allowed else
+                    "Monitor-only: HomePower reads it but sends no commands. Allow control on the Batteries tab when you are ready.", "tab", "batteries")
+                if allowed:
+                    t = self.manager.tests.get(did)
+                    add(f"tested:{did}", bool(t and t.get("ok")), f"{name}: control tested",
+                        "" if t and t.get("ok") else ("The last test failed." if t else "Run Test control once to check the battery follows commands."),
+                        "test", did)
+        rates = self._rates()
+        add("prices", rates is not None, "Electricity prices known", "" if rates is not None else
+            "Pick a rates sensor or type your standard and cheap rate.", "tab", "settings")
+        slots = bool(rates and rates.slots and len(rates.slots) > 2)
+        exact = bool(s.offpeak_start and s.offpeak_end) or bool(s.offpeak_extra)
+        add("tariff", exact or slots, "Cheap-rate hours confirmed", "" if exact or slots else
+            ("They are only estimated from price history." if self._tariff else "Enter when your cheap rate starts and ends."), "tab", "settings")
+        add("grid", self.last_grid is not None, "Grid meter reading available", "" if self.last_grid is not None else
+            "Needed for peak shaving, the export limit and savings. Pick a grid sensor in Settings.", "tab", "settings")
+        return items
 
     def _combined(self, actuals: dict[str, Actual]) -> dict:
         items = []
@@ -447,7 +529,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             now=now, settings=self.settings.engine, schedules=self.schedules, goals=self.goals,
             overrides=self._active_overrides(now), grid_w=grid, condition_ok=self._condition_ok, usage_wh=self.profile.expected_wh,
             backup_active=self.backup_active, away=self.away, load_blocks=self._load_blocks(),
-            rates=rates, forecast_kwh=self._forecast_kwh(),
+            rates=rates, forecast_kwh=self._forecast_kwh(), cheap_now=self._is_cheap(rates, now, self._price_now(rates, now)),
             devices=[DevIn(a.config, actuals[a.config.device_id],
                            self._snap.devices[a.config.device_id].release_pending,
                            self._snap.devices[a.config.device_id].guard_held,
@@ -493,7 +575,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             await self._keepalive(mono, adapters)
         self.last_grid = grid
         for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters),
-                     lambda: self._check_events(now, wall, actuals, rates)):
+                     lambda: self._check_events(now, wall, actuals, rates),
+                     lambda: self._divert(wall, actuals, grid)):
             try:   # accounting / alerts are secondary: a bug there must not stop control
                 r = step()
                 if asyncio.iscoroutine(r):
@@ -615,7 +698,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 pass
         finally:
             self.testing.discard(device_id)
-        return {"ok": all(s["ok"] for s in steps), "steps": steps}
+        result = {"ok": all(s["ok"] for s in steps), "steps": steps}
+        self.manager.tests[device_id] = {"ok": result["ok"], "at": dt_util.now().isoformat()}   # shown in the setup check
+        self.hass.async_create_task(self.manager.save_runtime())
+        return result
 
     # ------------------------------------------------------------------ views for the UI
     def preview_view(self, hours: int = 24) -> dict:
@@ -631,7 +717,17 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             "plan": [{"device_id": p.device_id, "start": p.start.isoformat(), "end": p.end.isoformat(),
                       "power_w": p.power_w, "price": p.price} for p in self.last_result.allocs],
             "notes": self.last_result.notes,
+            "prices": self._price_slots(now, hours),
         }
+
+    def _price_slots(self, now: datetime, hours: int) -> list[dict]:
+        rates = self._rates()
+        if rates is None:
+            return []
+        lo = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
+        return [{"start": x.start.isoformat(), "end": x.end.isoformat(), "price": round(to_main_units(x.price, self.settings.rates_unit), 4),
+                 "cheap": rates.in_cheap_window(x.start.astimezone(now.tzinfo).time()) if rates.windows else None}
+                for x in rates.slots_between(lo, lo + timedelta(hours=hours))]
 
     def diagnostics(self) -> dict:
         out = {}
@@ -701,7 +797,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             "alerts": sorted(self.alerts.active()), "notes": self.last_result.notes,
             "price_now": self._price_now(rates, now),
             "meter_entity": self._grid_entity(), "rates_entity": self._rates_entity(),
-            "combined": self._combined(actuals),
+            "combined": self._combined(actuals), "setup": self.setup_check(),
+            "divert": {"entity": self.settings.divert_entity, "on": self.diverter.on} if self.settings.divert_entity else None,
             "daily": {"self_consumption": self.daily.self_consumption(day_key), "cheap_share": self.daily.cheap_share(day_key)},
             "health": {a.config.device_id: {"efficiency": self.health.efficiency(a.config.device_id)[-8:],
                                              "warning": self.health.degraded(a.config.device_id)} for a in self.adapters},

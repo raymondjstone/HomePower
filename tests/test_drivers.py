@@ -199,7 +199,7 @@ def test_ecoflow_read_and_commands():
         a = await d.read()
         assert a.soc == 71 and a.power_w == -450 and a.mode is Mode.AUTO and a.grid_w == 120
         await d.apply(Desired(Mode.HOLD))
-        assert d.api.sent == [{"cfgBackupReverseSoc": 95}]
+        assert d.api.sent == [{"cfgBackupReverseSoc": 71}]        # held at its current level: no grid top-up
         d.api.sent.clear()
         await d.apply(Desired(Mode.AUTO))
         assert d.api.sent == [{"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}},
@@ -208,6 +208,16 @@ def test_ecoflow_read_and_commands():
             await d.apply(Desired(Mode.CHARGE, 1000))
         d.api._q = {"backupReverseSoc": 95}
         assert (await d.read()).mode is Mode.HOLD
+        d._cache = None
+        d.api._q = {"soc": 71, "backupReverseSoc": 71}
+        assert (await d.read()).mode is Mode.HOLD            # reserve at the charge level = holding
+        d._cache = None
+        d.api._q = {"soc": 10.5, "backupReverseSoc": 10}
+        assert (await d.read()).mode is Mode.AUTO            # just an empty battery resting on its normal floor
+        e = eco({"backupReverseSoc": 10})
+        await e.read()
+        with pytest.raises(ValueError):
+            await e.apply(Desired(Mode.HOLD))                # no charge level known: refuse rather than guess
     asyncio.run(go())
 
 
@@ -425,7 +435,7 @@ def test_ecoflow_live_messages_and_driver_merge():
         d = EcoFlowStreamDriver.__new__(EcoFlowStreamDriver)
         d.sn, d.hub, d.last_quota, d.last_error, d._cache = "SN1", hub, {}, None, None
         d._state, d._pushed, d._polled = {}, 0.0, 0.0
-        d.config = type("C", (), {"device_id": "x"})()
+        d.config = type("C", (), {"device_id": "x", "caps": type("K", (), {"min_soc": 10})()})()
         hub.register("SN1", d.merge_push)
         hub._dispatch("/open/a/SN1/quota", b'{"params": {"soc": 70}}')     # before the first full reading: ignored
         assert d._state == {}

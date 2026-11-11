@@ -28,7 +28,7 @@ minimum charge are read from the battery itself where it reports them.
 
 **EcoFlow limitation:** EcoFlow's developer API has no charge/discharge power setpoint, and the ES5000's own commands are not
 published there (it is read-only here). Auto = self-powered; Hold = backup reserve
-raised to 95% (no discharge; solar still charges).
+raised to the battery's current charge level (it stops discharging and is not told to top up from the grid).
 
 **Regions:** Anker control is local (works in any region); grid feed-in is off by default in IT/ES/TH/VN/PH. For EcoFlow
 pick your account's region (`api-e.ecoflow.com` Europe, `api-a.ecoflow.com` Americas, `api.ecoflow.com` elsewhere).
@@ -72,6 +72,14 @@ Every decision has a visible reason ("Why" chip on each battery).
   same keys, so readings are seconds old. It is off by default because it opens a second connection on your EcoFlow account,
   which could disturb another EcoFlow integration (such as EcoFlow Cloud). If it cannot connect, polling continues unchanged.
   Untested against a live EcoFlow account.
+- **Save for peak hours:** optionally hold the batteries during cheap-rate periods so their charge is kept for the expensive
+  hours (never while solar is producing).
+- **Reserve battery:** give a battery the *Reserve* role and it is held back until the everyday batteries have run down.
+- **Several cheap periods:** tariffs with more than one cheap window a day (Cosy Octopus...) are supported.
+- **Prices and plan chart:** the Plan tab shows the next 24 hours of prices with the half-hours HomePower will charge in.
+- **Solar-surplus load:** switch on a chosen device (immersion heater...) while the batteries are full and you are exporting.
+- **Daily summary:** one message a day with the battery level, yesterday's charging, savings and solar use.
+- **Setup check:** a checklist (Overview until done, always on Diagnostics) of what is working and what still needs setting up.
 - **Manual override:** "charge now for 2 hours", beats everything else.
 - **Safety:** device limits always apply; software SOC limits with hysteresis; overall charge/discharge caps; house import
   limit caps charging; pause switch; batteries we forced are handed back when no longer managed, on shutdown, and after

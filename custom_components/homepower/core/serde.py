@@ -128,6 +128,10 @@ def device_from_dict(d: dict) -> DeviceConfig:
         extra.update(connection=connection,
                      restore_mode=int(profile.get("restore_mode", 0)), watchdog=bool(profile.get("watchdog", False)),
                      control_enabled=bool(d.get("control_enabled", False)))  # monitor-only until the user opts in
+    role = str(d.get("role") or "normal")
+    if role not in ("normal", "reserve"):
+        raise ValidationError("role must be normal or reserve")
+    extra["role"] = role
     return DeviceConfig(
         device_id=did, name=name, kind=kind, caps=caps,
         priority=_int(d.get("priority"), "priority", -100, 100, 0), extra=extra,
@@ -144,7 +148,7 @@ def device_to_dict(c: DeviceConfig) -> dict:
         "driver": e.get("driver", "entities"), "connection": e.get("connection", {}),
         "control_enabled": bool(e.get("control_enabled", True)),
         "entities": e.get("entities", {}), "mode_map": e.get("mode_map", {}),
-        "invert_power": bool(e.get("invert_power", False)),
+        "invert_power": bool(e.get("invert_power", False)), "role": e.get("role", "normal"),
     }
 
 

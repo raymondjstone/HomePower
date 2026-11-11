@@ -46,6 +46,7 @@ class Settings:
     zero_import_device: str | None = None
     peak_shaving: bool = False
     backup_pct: int = 50
+    save_for_peak: bool = False   # during cheap hours, hold batteries instead of letting them discharge
     forecast_share: float = 0.5
 
 
@@ -64,6 +65,7 @@ class World:
     load_blocks: set[str] = field(default_factory=set)
     rates: RateTable | None = None
     forecast_kwh: float | None = None
+    cheap_now: bool | None = None                  # is this a cheap-rate period? None = unknown / flat tariff
     usage_wh: Callable[[datetime, float], float | None] | None = None   # learned household use: (from, hours) -> Wh
 
 
@@ -98,10 +100,9 @@ def _auto_target(w: World, g: Goal, devs: list[DevIn], deadline: datetime, res: 
     """The goal's target follows the household's usual use after the deadline (up to the next cheap period),
     never above the target the user set. Falls back to that target until the usage has been learned."""
     hours = 16.0
-    start = w.rates.offpeak_start if w.rates is not None else None
-    if start is not None:
-        hours = (start.hour * 60 + start.minute - deadline.hour * 60 - deadline.minute) % 1440 / 60
-        hours = max(4.0, min(24.0, hours or 24.0))
+    nxt = w.rates.minutes_to_cheap(deadline.time()) if w.rates is not None else None
+    if nxt is not None:
+        hours = max(4.0, min(24.0, (nxt[0] or 1440) / 60))
     use = w.usage_wh(deadline, hours) if w.usage_wh else None
     cap = sum(d.config.caps.capacity_wh for d in devs)
     floor = max((_floor(d.config.caps, w) for d in devs), default=0)
@@ -110,7 +111,7 @@ def _auto_target(w: World, g: Goal, devs: list[DevIn], deadline: datetime, res: 
         res.notes.append(f"goal '{g.id}': still learning your usual use, so it aims for {g.target_soc}% for now")
         return g.target_soc
     target = min(g.target_soc, auto)
-    res.notes.append(f"goal '{g.id}': auto target {target}% (about {use / 1000:.1f} kWh of usual use over the {hours:g} h after the deadline)")
+    res.notes.append(f"goal '{g.id}': auto target {target}% (about {use / 1000:.1f} kWh of usual use over the {hours:.0f} h after the deadline)")
     return target
 
 
@@ -246,6 +247,22 @@ def compute(w: World) -> Result:
             for did, p in charges.items():
                 res.wants[did] = Desired(Mode.CHARGE, p, target_soc=100)
                 res.reasons[did] = "export limit"
+
+    # ---- 4b. hold charge back: a battery kept as reserve, and everything during cheap-rate hours
+    def others_have_charge(margin: int) -> bool:
+        return any(o.config.extra.get("role") != "reserve" and o.actual.online and o.actual.soc is not None
+                   and o.actual.soc > _floor(o.config.caps, w) + SOC_MARGIN + margin for o in w.devices)
+
+    for d in w.devices:
+        did, caps = d.config.device_id, d.config.caps
+        if (did in res.wants or not d.controllable or not d.actual.online or Mode.HOLD not in caps.supported_modes
+                or (d.actual.pv_w or 0) > 50):          # never get in the way of solar charging
+            continue
+        # A reserve battery already being held is released a little later than it is taken (no flapping at the edge).
+        if d.config.extra.get("role") == "reserve" and others_have_charge(1 if d.release_pending else 3):
+            res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "kept in reserve while other batteries have charge"
+        elif S.save_for_peak and w.cheap_now:
+            res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "saving charge for peak-rate hours"
 
     # ---- 5. hand back batteries we forced earlier and nothing wants any more
     for d in w.devices:

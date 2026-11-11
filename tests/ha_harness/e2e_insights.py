@@ -3,7 +3,7 @@ import os, sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path[:0] = [ROOT, os.path.join(ROOT, "tests")]
 
-import asyncio, tempfile, datetime as dtm
+import asyncio, json, tempfile, datetime as dtm
 from types import SimpleNamespace
 import conftest  # noqa: F401
 from test_drivers import FakeAnker
@@ -104,7 +104,78 @@ async def main():
     notes = coord.last_result.notes
     print("auto goal:", [n for n in notes if "auto" in n or "learning" in n])
     assert any("auto target" in n or "still learning" in n for n in notes)
+    # --- setup check, price slots, several cheap windows
+    coord.apply_settings({"price_peak": 30.0, "price_offpeak": 7.5, "offpeak_start": "04:00", "offpeak_end": "07:00",
+                          "offpeak_extra": "13:00-16:00, 22:00-00:00"})
+    await coord._async_update_data()
+    chk = {i["key"]: i for i in coord.view()["setup"]}
+    print("setup    :", {k: v["ok"] for k, v in chk.items()})
+    assert chk["batteries"]["ok"] and chk["reading:a"]["ok"] and chk["prices"]["ok"] and chk["tariff"]["ok"] and not chk["control:a"]["ok"]
+    pv = coord.preview_view(24)
+    cheap = sum(1 for x in pv["prices"] if x["cheap"])
+    assert len(pv["prices"]) == 48 and cheap == 16, (len(pv["prices"]), cheap)          # 3 h + 3 h + 2 h of half-hours
+    json.dumps(pv)
+
+    # --- reserve role is saved and reaches the engine; control test result is remembered
+    await mgr.save_device({**mgr.devices["a"], "role": "reserve", "control_enabled": True})
+    assert mgr.devices["a"]["role"] == "reserve" and coord.adapters[0].config.extra["role"] == "reserve"
+    try:
+        await mgr.save_device({**mgr.devices["a"], "role": "boss"}); assert False
+    except ValidationError:
+        pass
+    mgr.tests["a"] = {"ok": True, "at": "x"}
+    assert {i["key"]: i for i in coord.setup_check()}["tested:a"]["ok"]
+
+    # --- save for peak: in a cheap window the battery is held, outside it is handed back
+    now = dt_util.now()
+    hhmm = lambda d: d.strftime("%H:%M")
+    await mgr.save_device({**mgr.devices["a"], "role": "normal"})
+    await mgr.delete_goal("Auto"); await mgr.delete_goal("G")
+    coord.apply_settings({"price_peak": 30.0, "price_offpeak": 7.5, "save_for_peak": True,
+                          "offpeak_start": hhmm(now - dtm.timedelta(hours=1)), "offpeak_end": hhmm(now + dtm.timedelta(hours=1))})
+    dev.inp[10002], dev.inp[10003] = 0, 0          # no solar
+    coord._snap.devices["a"].last_applied = None
+    await coord._async_update_data()
+    v = coord.view()["devices"]["a"]
+    print("save peak:", v["desired_mode"], "|", v["reason"], "| mode reg", dev.hold[10064])
+    assert v["desired_mode"] == "hold" and "peak" in v["reason"] and dev.hold[10064] == 3
+    coord.apply_settings({"price_peak": 30.0, "price_offpeak": 7.5, "save_for_peak": True,
+                          "offpeak_start": hhmm(now + dtm.timedelta(hours=2)), "offpeak_end": hhmm(now + dtm.timedelta(hours=3))})
+    coord._snap.devices["a"].last_applied = None
+    await coord._async_update_data()
+    assert dev.hold[10064] == 0 and not mgr.forced, "handed back when the cheap period is over"
+
+    # --- solar-surplus diverter: full battery + export -> the chosen switch goes on, then off when importing
+    calls = []
+    hass.services.async_register("homeassistant", "turn_on", lambda call: calls.append(("on", call.data["entity_id"])))
+    hass.services.async_register("homeassistant", "turn_off", lambda call: calls.append(("off", call.data["entity_id"])))
+    coord.apply_settings({"divert_entity": "switch.immersion", "divert_export_w": 500, "divert_min_soc": 50})
+    acts = {"a": coord._snap.devices["a"].actual}
+    await coord._divert(1000.0, acts, -900.0); await coord._divert(1130.0, acts, -900.0)
+    await coord._divert(1200.0, acts, 400.0); await coord._divert(1330.0, acts, 400.0)
+    await asyncio.sleep(0.2)
+    print("divert   :", calls)
+    assert calls == [("on", "switch.immersion"), ("off", "switch.immersion")]
+    await coord._divert(2000.0, acts, -900.0); await coord._divert(2130.0, acts, -900.0)
+    coord.apply_settings({"divert_entity": ""})                                   # cleared while on: the load is released
+    await coord._divert(2140.0, acts, -900.0); await asyncio.sleep(0.2)
+    assert calls[-1] == ("off", "switch.immersion") and not coord.diverter.on
+
+    # --- daily summary fires once, and heads-up state survives a restart
+    sent.clear()
+    coord.apply_settings({"daily_summary_time": hhmm(dt_util.now() - dtm.timedelta(minutes=2))})
+    await coord._async_update_data(); await coord._async_update_data(); await asyncio.sleep(0.2)
+    summ = [x for x in sent if x[1].startswith("homepower_alert_event_summary_")]
+    print("summary  :", summ, "|", coord._daily_summary(dt_util.now(), coord._combined(acts))[:60])
+    assert len(summ) == 1
     await coord.async_close()
+    mgr2 = HomePowerManager(hass); await mgr2.async_load()
+    assert any(k.startswith("summary_") for k in mgr2.event_state) and mgr2.tests["a"]["ok"]
+    coord2 = HomePowerCoordinator(hass, entry, mgr2, *mgr2.build()); mgr2.coordinator = coord2
+    sent.clear()
+    await coord2._async_update_data(); await asyncio.sleep(0.2)
+    assert not [x for x in sent if "summary" in x[1]], "not sent again after a restart"
+    await coord2.async_close()
     srv.close(); await srv.wait_closed()
     print("E2E7 OK")
 

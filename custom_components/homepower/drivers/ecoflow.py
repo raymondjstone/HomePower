@@ -24,7 +24,7 @@ HOSTS = {"eu": "api-e.ecoflow.com", "america": "api-a.ecoflow.com", "global": "a
 SIGN_ERRORS = ("8521", "7000")
 QUOTAS = ("backupReverseSoc", "f32ShowSoc", "soc", "cmsBattSoc", "powGetBpCms", "powGetSysGrid", "gridConnectionPower",
           "powGetPvSum", "powGetSysLoad", "cmsBattFullEnergy", "productName")
-HOLD_RESERVE = 95  # STREAM accepts a backup reserve of 3-95 %
+HOLD_RESERVE = 95  # STREAM accepts a backup reserve of 3-95 %; Hold raises the reserve to the current charge level
 
 
 class EcoFlowError(Exception):
@@ -171,7 +171,7 @@ class EcoFlowStreamDriver:
         self._pushed = time.monotonic()
 
     @staticmethod
-    def _decode(q: dict) -> Actual:
+    def _decode(q: dict, min_soc: float | None = None) -> Actual:
         reserve = _first(q, "backupReverseSoc")
         soc = next((float(q[k]) for k in ("f32ShowSoc", "soc", "cmsBattSoc") if isinstance(q.get(k), (int, float)) and q[k] > 0), None)
         if soc is None:
@@ -188,7 +188,9 @@ class EcoFlowStreamDriver:
             soc=soc,
             power_w=power,  # EcoFlow: discharge negative, charge positive
             # Models without backupReverseSoc (AC 5000) are read-only and always run their own logic, so report Auto.
-            mode=Mode.HOLD if reserve is not None and reserve >= HOLD_RESERVE else Mode.AUTO,
+            # Hold = the backup reserve sits at (or above) the charge level, so the battery will not discharge.
+            mode=Mode.HOLD if reserve is not None and (reserve >= HOLD_RESERVE or (
+                soc is not None and reserve >= soc - 1.5 and reserve > (min_soc or 0) + 2)) else Mode.AUTO,
             grid_w=_first(q, "powGetSysGrid", "gridPwr", "gridConnectionPower"),
             pv_w=_first(q, "powGetPvSum", "pvPwr"), load_w=_first(q, "powGetSysLoad", "loadPwr"),
         )
@@ -198,14 +200,14 @@ class EcoFlowStreamDriver:
         if self.hub is not None:
             self.hub.register(self.sn, self.merge_push)   # no-op once registered; retries a failed connection later
         if self._pushed and now - self._pushed < 120 and now - self._polled < 300 and self._state:
-            return self._decode(self._state)             # live data is flowing: no need to poll
+            return self._decode(self._state, self.config.caps.min_soc)             # live data is flowing: no need to poll
         if self._cache and now - self._cache[0] < 30:
             return self._cache[1]
         try:
             q = normalise(await self.api.quota(self.sn))
             self._state, self._polled, self._pushed = dict(q), time.monotonic(), 0.0
             self.last_quota, self.last_error = q, None
-            actual = self._decode(q)
+            actual = self._decode(q, self.config.caps.min_soc)
             if actual.soc is None and q:
                 _LOGGER.warning("%s: EcoFlow returned no charge level; readings it did return: %s",
                                 self.config.device_id, ", ".join(sorted(q)[:60]))
@@ -234,7 +236,12 @@ class EcoFlowStreamDriver:
                 return
             raise ValueError("this EcoFlow model's settings are not known to HomePower: read-only for now")
         if desired.mode is Mode.HOLD:
-            await self.api.command(self.sn, {"cfgBackupReverseSoc": HOLD_RESERVE})
+            # Raise the reserve to where the battery is now: it stops discharging, and is not told to charge from the grid
+            # (a reserve above the charge level could make it top up at whatever the price is).
+            soc = self._decode(self._state or self.last_quota).soc
+            if soc is None:
+                raise ValueError("cannot hold: the battery's charge level is not known yet")
+            await self.api.command(self.sn, {"cfgBackupReverseSoc": int(max(3, min(HOLD_RESERVE, soc)))})
         elif desired.mode is Mode.AUTO:
             await self.api.command(self.sn, {"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}})
             await self.api.command(self.sn, {"cfgBackupReverseSoc": max(3, self.config.caps.min_soc)})

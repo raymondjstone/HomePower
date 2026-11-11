@@ -249,3 +249,37 @@ def clean_scene(raw: dict) -> dict:
             except (TypeError, ValueError) as err:
                 raise SceneError(f"{k} is not a number") from err
     return out
+
+
+# ---------------- solar-surplus diverter
+
+
+class Diverter:
+    """Switch a chosen load on while the batteries are full and power is being exported; off again when it would
+    need the grid. Both directions must hold for HOLD_S so a passing cloud or a kettle does not toggle it."""
+
+    HOLD_S = 120
+
+    def __init__(self) -> None:
+        self.on = False
+        self._since: float | None = None
+        self._want: bool | None = None
+
+    def decide(self, now_s: float, soc: float | None, grid_w: float | None, export_w: int, min_soc: int) -> str | None:
+        """Returns "on" / "off" when the switch should change, else None. grid_w: + importing, - exporting."""
+        if soc is None or grid_w is None:
+            want = False if self.on else None          # no data: release the load rather than leave it running blind
+        elif not self.on:
+            want = True if (soc >= min_soc and -grid_w >= export_w) else None
+        else:
+            want = False if (grid_w > 100 or soc < min_soc - 5) else None
+        if want is None or want == self.on:
+            self._since = self._want = None
+            return None
+        if self._want != want:
+            self._want, self._since = want, now_s
+            return None
+        if self._since is None or now_s - self._since < self.HOLD_S:
+            return None
+        self.on, self._since, self._want = want, None, None
+        return "on" if want else "off"

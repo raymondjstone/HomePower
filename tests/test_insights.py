@@ -106,3 +106,83 @@ def test_scenes_validate():
             assert False
         except SceneError:
             pass
+
+
+# ---------------------------------------------------------------- hold back for peak, reserve batteries, windows, diverter
+def _hold_world(devs, **kw):
+    return World(now=TUE_22, devices=devs, settings=Settings(import_limit_w=None, save_for_peak=kw.pop("save", False)), **kw)
+
+
+def test_save_for_peak_holds_only_in_cheap_hours_and_never_blocks_solar():
+    r = compute(_hold_world([dev("a", soc=80)], save=True, cheap_now=True))
+    assert r.wants["a"].mode is Mode.HOLD and "peak" in r.reasons["a"]
+    assert "a" not in compute(_hold_world([dev("a", soc=80)], save=True, cheap_now=False)).wants
+    assert "a" not in compute(_hold_world([dev("a", soc=80)], save=True, cheap_now=None)).wants      # flat tariff: unknown
+    assert "a" not in compute(_hold_world([dev("a", soc=80)], save=False, cheap_now=True)).wants
+    import dataclasses
+    sunny = dev("a", soc=80)
+    sunny.actual = dataclasses.replace(sunny.actual, pv_w=900)
+    assert "a" not in compute(_hold_world([sunny], save=True, cheap_now=True)).wants
+    mon = dev("a", soc=80, controllable=False)
+    assert "a" not in compute(_hold_world([mon], save=True, cheap_now=True)).wants                    # monitor-only is never touched
+
+
+def test_save_for_peak_does_not_override_a_schedule_or_goal():
+    from test_engine import sched
+    w = _hold_world([dev("a", soc=50)], save=True, cheap_now=True, schedules=[sched()])
+    assert compute(w).wants["a"].mode is Mode.CHARGE
+
+
+def test_reserve_battery_is_held_until_the_others_run_down():
+    res = dev("r", soc=90)
+    res.config.extra["role"] = "reserve"
+    r = compute(_hold_world([dev("a", soc=60), res]))
+    assert r.wants["r"].mode is Mode.HOLD and "reserve" in r.reasons["r"] and "a" not in r.wants
+    r = compute(_hold_world([dev("a", soc=12), res]))                 # the daily battery is at its floor (10%): reserve released
+    assert "r" not in r.wants
+    r = compute(_hold_world([dev("a", soc=60, online=False), res]))   # nothing else available: reserve is free to work
+    assert "r" not in r.wants
+    held = dev("r", soc=90, release=True)
+    held.config.extra["role"] = "reserve"
+    r = compute(_hold_world([dev("a", soc=12), held]))
+    assert r.wants["r"].mode is Mode.AUTO                             # and it is handed back, not left on hold
+
+
+def test_rate_table_with_several_cheap_windows():
+    rt = RateTable(peak=30, offpeak=10, offpeak_start=time(4), offpeak_end=time(7), extra_windows=[(time(13), time(16)), (time(22), time(0))])
+    at = lambda h, m=0: datetime(2026, 11, 10, h, m, tzinfo=UTC)
+    assert [rt.price_at(at(h)) for h in (3, 4, 6, 7, 13, 15, 16, 22, 23)] == [30, 10, 10, 30, 10, 10, 30, 10, 10]
+    assert rt.price_at(datetime(2026, 11, 11, 0, 0, tzinfo=UTC)) == 30
+    assert rt.minutes_to_cheap(time(12, 30)) == (30, time(13)) and rt.minutes_to_cheap(time(23)) == (300, time(4))
+    assert RateTable(peak=30, offpeak=10).minutes_to_cheap(time(1)) is None
+
+
+def test_settings_cheap_windows_parse_and_reject():
+    from core.settings import SettingsError, build, clean, parse_windows
+    assert parse_windows("13:00-16:00, 22:00 - 00:00") == [(time(13), time(16)), (time(22), time(0))]
+    assert parse_windows("") == []
+    for bad in ("13:00", "13:00-13:00", "x-y", "25:00-26:00"):
+        try:
+            clean({"offpeak_extra": bad})
+            assert False, bad
+        except SettingsError:
+            pass
+    s = build(clean({"offpeak_extra": "13:00-16:00", "save_for_peak": True, "daily_summary_time": "07:45", "divert_entity": "switch.immersion"}))
+    assert s.offpeak_extra == [(time(13), time(16))] and s.engine.save_for_peak and s.daily_summary_time == time(7, 45)
+
+
+def test_diverter_waits_then_switches_and_releases():
+    from core.insights import Diverter
+    d = Diverter()
+    assert d.decide(0, 97, -800, 500, 95) is None            # surplus seen: start timing
+    assert d.decide(60, 97, -800, 500, 95) is None
+    assert d.decide(130, 97, -900, 500, 95) == "on"
+    assert d.decide(140, 97, -50, 500, 95) is None           # the load now uses the surplus: stays on
+    assert d.decide(150, 97, 300, 500, 95) is None           # importing: start timing
+    assert d.decide(200, 97, -100, 500, 95) is None          # recovered: timer cancelled
+    assert d.decide(210, 97, 300, 500, 95) is None
+    assert d.decide(340, 97, 300, 500, 95) == "off"
+    assert d.decide(350, 60, -900, 500, 95) is None          # not full: never on
+    d2 = Diverter()
+    d2.on = True
+    assert d2.decide(0, None, None, 500, 95) is None and d2.decide(130, None, None, 500, 95) == "off"   # no data: release the load

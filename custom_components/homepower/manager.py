@@ -53,6 +53,8 @@ class HomePowerManager:
         self.daily_data: dict = {}               # daily self-consumption / cheap-rate figures
         self.health_data: dict = {}              # weekly battery efficiency
         self.scenes: dict[str, dict] = {}        # saved combinations of modes and limits
+        self.event_state: dict[str, bool] = {}   # heads-up messages currently showing
+        self.tests: dict[str, dict] = {}         # last control-test result per battery
         self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
         self._live_on = False                       # opt-in setting: EcoFlow live (MQTT) updates
@@ -72,6 +74,7 @@ class HomePowerManager:
         self.ledger_days = dict(data.get("ledger", {}))
         self.profile_data, self.daily_data = dict(data.get("profile", {})), dict(data.get("daily", {}))
         self.health_data = dict(data.get("health", {}))
+        self.event_state, self.tests = dict(data.get("event_state", {})), dict(data.get("tests", {}))
         scenes = data.get("scenes")
         self.scenes = {s["name"]: s for s in (scenes if scenes is not None else DEFAULT_SCENES)}
 
@@ -84,6 +87,7 @@ class HomePowerManager:
             "energy": c.meter.totals if c else self.energy, "ledger": c.ledger.dump() if c else self.ledger_days,
             "profile": c.profile.dump() if c else self.profile_data, "daily": c.daily.dump() if c else self.daily_data,
             "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
+            "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests,
         })
 
     async def save_runtime(self) -> None:

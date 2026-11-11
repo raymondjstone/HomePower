@@ -109,7 +109,7 @@ VENDORS: dict[str, dict] = {
 
 _ANKER = ("Connects directly over Modbus TCP. Control uses the device's third-party control mode and a signed power "
           "setpoint; HomePower hands the battery back to its previous mode when no schedule applies.")
-_EF = ("Uses EcoFlow's developer API. Auto = self-powered; Hold = backup reserve raised to 95% so the battery will "
+_EF = ("Uses EcoFlow's developer API. Auto = self-powered; Hold = backup reserve raised to the current charge level so the battery will "
        "not discharge (solar can still charge it). No force charge/discharge is available.")
 
 

@@ -37,3 +37,21 @@ p._goalModal({ id: "", device_ids: [], target_soc: 90, by: "07:30", days: [0,1,2
 must("goal modal has auto target", els.modal.innerHTML.includes('id="gl-auto" checked'));
 const ov = p._overview();
 must("overview assembles", ov.includes("Home battery") && ov.includes("Scenes") && ov.includes("Power, last"));
+
+// ---- setup check, price chart, battery role, new settings
+p.live.setup = [{ key: "batteries", ok: true, title: "At least one battery added", detail: "", action: "tab", target: "batteries" },
+  { key: "tested:a", ok: false, title: "A: control tested", detail: "Run Test control once.", action: "test", target: "a" },
+  { key: "tariff", ok: false, title: "Cheap-rate hours confirmed", detail: "Enter them.", action: "tab", target: "settings" }];
+const su = p._setupCard(false);
+must("setup card lists only what is missing", su.includes("1 of 3 done") && su.includes("setup-test") && su.includes('data-tab="settings"') && !su.includes("At least one battery"));
+must("setup card (full) lists everything", p._setupCard(true).includes("At least one battery"));
+p.live.setup = p.live.setup.map((i) => ({ ...i, ok: true }));
+must("setup card hides when all done", p._setupCard(false) === "" && p._setupCard(true) !== "");
+const t0 = Date.now() - 600e3, slot = (i, price, cheap) => ({ start: new Date(t0 + i * 1800e3).toISOString(), end: new Date(t0 + (i + 1) * 1800e3).toISOString(), price, cheap });
+p._preview = { segments: { a: [] }, conflicts: [], notes: [], plan: [{ device_id: "a", start: new Date(t0 + 2 * 1800e3).toISOString(), end: new Date(t0 + 3 * 1800e3).toISOString(), power_w: 2000, price: 0.07 }],
+  prices: Array.from({ length: 48 }, (_, i) => slot(i, i < 16 ? 0.07 : 0.29, i < 16)) };
+const pc = p._priceChart();
+must("price chart: 48 bars, 1 planned, axes", (pc.match(/<rect/g) || []).length === 48 && (pc.match(/charging planned<\/title>/g) || []).length === 1 && pc.includes("£0.30") && pc.includes("plot-x"));
+p._preview.prices = []; must("price chart hidden without prices", p._priceChart() === "");
+const st2 = p._settingsView();
+must("settings: more windows, save for peak, summary, diverter, Cosy", ["st-offpeak_extra", "st-save_for_peak", "st-daily_summary_time", "st-divert_entity", "Cosy Octopus"].every((k) => st2.includes(k)));
