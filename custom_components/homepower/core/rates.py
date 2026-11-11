@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
+from statistics import median
 from typing import Any
 
 SLOT = timedelta(minutes=30)
@@ -118,3 +119,78 @@ def to_main_units(price: float, unit: str = "auto") -> float:
     if unit == "pence" or (unit == "auto" and abs(price) >= 5):
         return price / 100
     return price
+
+
+@dataclass(frozen=True, slots=True)
+class InferredTariff:
+    start: time
+    end: time          # end <= start means the cheap window crosses midnight
+    offpeak: float
+    peak: float
+    days: float        # how much history the guess is based on
+
+
+def _bucket(t: datetime) -> int:
+    return t.hour * 2 + t.minute // 30
+
+
+def infer_offpeak(samples: list[tuple[datetime, float]], until: datetime, tz=None, min_days: float = 1.0,
+                  min_spread: float = 0.2) -> InferredTariff | None:
+    """Find the recurring cheap (night) window from a price sensor's history.
+
+    `samples` are (changed_at, price) pairs; each price holds until the next change (the last until `until`).
+    The history is read half-hour by half-hour in local time, the median price per time of day is taken, and the
+    longest run (it may wrap midnight) of below-midpoint half-hours is the cheap window. Returns None for a
+    flat tariff, too little history, or prices that do not repeat as one block (e.g. a fully dynamic tariff)."""
+    pts = sorted(((_dt(t, tz), p) for t, p in samples if _dt(t, tz) is not None and p is not None), key=lambda x: x[0])
+    if len(pts) < 2:
+        return None
+    span = until - pts[0][0]
+    if span < timedelta(days=min_days):
+        return None
+    if tz is not None:
+        pts = [(t.astimezone(tz), p) for t, p in pts]
+        until = until.astimezone(tz)
+    per: list[list[float]] = [[] for _ in range(48)]
+    t = pts[0][0].replace(minute=(pts[0][0].minute // 30) * 30, second=0, microsecond=0)
+    i = 0
+    while t < until:
+        while i + 1 < len(pts) and pts[i + 1][0] <= t:
+            i += 1
+        if pts[i][0] <= t:
+            per[_bucket(t)].append(pts[i][1])
+        t += SLOT
+    if any(not b for b in per):
+        return None
+    med = [median(b) for b in per]
+    lo, hi = min(med), max(med)
+    if hi <= 0 or (hi - lo) / abs(hi) < min_spread:
+        return None
+    mid = (lo + hi) / 2
+    cheap = [m < mid for m in med]
+    for k in range(48):                           # a single odd half-hour inside a block is noise
+        if not cheap[k] and cheap[k - 1] and cheap[(k + 1) % 48]:
+            cheap[k] = True
+    if all(cheap):
+        return None
+    # longest circular run of cheap half-hours
+    first_off = next(k for k in range(48) if not cheap[k])
+    best, best_start, run, run_start = 0, 0, 0, 0
+    for n in range(1, 49):
+        k = (first_off + n) % 48
+        if cheap[k]:
+            if run == 0:
+                run_start = k
+            run += 1
+            if run > best:
+                best, best_start = run, run_start
+        else:
+            run = 0
+    if best == 0 or best < 0.6 * sum(cheap):      # cheap half-hours scattered about: not a fixed window
+        return None
+    idx = {(best_start + n) % 48 for n in range(best)}
+    off = median([med[k] for k in idx])
+    on = median([med[k] for k in range(48) if k not in idx and not cheap[k]] or [hi])
+    end_b = (best_start + best) % 48
+    return InferredTariff(time(best_start // 2, (best_start % 2) * 30), time(end_b // 2, (end_b % 2) * 30),
+                          float(off), float(on), span.total_seconds() / 86400)

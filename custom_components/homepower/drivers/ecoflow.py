@@ -170,7 +170,8 @@ class EcoFlowStreamDriver:
             # Ultra / Ultra X report cmsBattSoc as 0 and publish the real value as soc / f32ShowSoc.
             soc=soc,
             power_w=power,  # EcoFlow: discharge negative, charge positive
-            mode=(Mode.HOLD if reserve is not None and reserve >= HOLD_RESERVE else Mode.AUTO) if reserve is not None else None,
+            # Models without backupReverseSoc (AC 5000) are read-only and always run their own logic, so report Auto.
+            mode=Mode.HOLD if reserve is not None and reserve >= HOLD_RESERVE else Mode.AUTO,
             grid_w=_first(q, "powGetSysGrid", "gridPwr", "gridConnectionPower"),
             pv_w=_first(q, "powGetPvSum", "pvPwr"), load_w=_first(q, "powGetSysLoad", "loadPwr"),
         )

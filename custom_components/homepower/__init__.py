@@ -89,7 +89,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
             hass,
             webcomponent_name="homepower-panel",
             frontend_url_path=PANEL_URL,
-            module_url=f"{STATIC_URL}/homepower-panel.js?v=0.1.2",
+            module_url=f"{STATIC_URL}/homepower-panel.js?v=0.1.3",
             sidebar_title="HomePower",
             sidebar_icon="mdi:home-battery",
             require_admin=True,

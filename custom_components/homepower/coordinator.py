@@ -21,7 +21,8 @@ from .core.engine import DevIn, Result, World, compute
 from .core.goals import Goal
 from .core.models import Actual, Desired, Mode
 from .core.preview import find_conflicts, preview as build_preview
-from .core.rates import RateTable, parse_rates, to_main_units
+from .core.meter import MeterReader
+from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
 from .core.settings import AppSettings, build as build_settings
@@ -29,6 +30,9 @@ from .core.settings import AppSettings, build as build_settings
 _LOGGER = logging.getLogger(__name__)
 READ_TIMEOUT_S = 20
 PERSIST_EVERY_S = 300
+TARIFF_REFRESH_S = 6 * 3600
+TARIFF_HISTORY_DAYS = 14
+GLOW_DOMAIN = "hildebrandglow_dcc"  # ha-hildebrandglow-dcc (raymondjstone fork and HandyHat original)
 KEEPALIVE_EVERY_S = 60
 OFFLINE_ALERT_AFTER_S = 180
 PROTECT_ALERT_AFTER_S = 60
@@ -73,6 +77,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.overrides: dict[str, tuple[Desired, datetime]] = {}   # manual "charge now" etc.
         self.testing: set[str] = set()                              # batteries under a control test
         self.meter = EnergyMeter(manager.energy)
+        self._meter = MeterReader()   # smart-meter sensors -> watts
+        self._tariff = None           # cheap window learnt from the rates sensor's history
+        self._tariff_key, self._tariff_checked, self._tariff_busy = None, 0.0, False
+        self._glow_cache: dict[str, str] = {}
+        self._glow_at = -1e9
         self.ledger = Ledger(manager.ledger_days)
         self.alerts = AlertTracker()
         self.last_result = Result()
@@ -147,15 +156,99 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
     def _condition_ok(self, entity_id: str) -> bool:
         return self._entity_on(entity_id)
 
+    def _glow(self) -> dict[str, str]:
+        """Entities of the Hildebrand Glow (DCC) integration, if it is set up: its live electricity power sensor
+        and its electricity unit-rate sensor. Used when the user has not picked a sensor themselves."""
+        if _time.monotonic() - self._glow_at < 60:
+            return self._glow_cache
+        found: dict[str, str] = {}
+        try:
+            from homeassistant.helpers import device_registry as dr, entity_registry as er
+            ereg, dreg = er.async_get(self.hass), dr.async_get(self.hass)
+            for e in ereg.entities.values():
+                if e.platform != GLOW_DOMAIN or e.domain != "sensor" or e.disabled_by:
+                    continue
+                uid = str(e.unique_id or "")
+                dev = dreg.async_get(e.device_id) if e.device_id else None
+                elec = dev is not None and "electric" in str(dev.name_by_user or dev.name or "").lower()
+                if uid.endswith("-power") and (e.device_class or e.original_device_class) in ("power", None):
+                    if elec or "power" not in found:
+                        found["power"] = e.entity_id
+                elif uid.endswith("-rate") and elec:
+                    found["rate"] = e.entity_id
+                elif elec and (e.device_class or e.original_device_class) == "energy" and uid and "-" not in uid[-12:]:
+                    found["usage"] = e.entity_id   # HandyHat original: only a daily kWh counter, no live power
+        except Exception as err:  # noqa: BLE001 - registries unavailable: no auto-detection
+            _LOGGER.debug("glow lookup failed: %s", err)
+        self._glow_cache, self._glow_at = found, _time.monotonic()
+        return found
+
+    def _grid_entity(self) -> str:
+        g = self._glow()
+        return self.settings.grid_entity or g.get("power", "") or g.get("usage", "")
+
+    def _rates_entity(self) -> str:
+        return self.settings.rates_entity or self._glow().get("rate", "")
+
     def _rates(self) -> RateTable | None:
         s = self.settings
         slots = []
-        st = self.hass.states.get(s.rates_entity) if s.rates_entity else None
+        ent = self._rates_entity()
+        st = self.hass.states.get(ent) if ent else None
         if st is not None:
             slots = parse_rates(dict(st.attributes), dt_util.DEFAULT_TIME_ZONE)
-        if not slots and s.price_peak is None and s.price_offpeak is None:
+            if not slots:  # a plain price sensor: its state is the price right now
+                try:
+                    now = dt_util.now()
+                    lo = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
+                    slots = [Slot(lo, lo + SLOT, float(st.state))]
+                except (TypeError, ValueError):
+                    pass
+        peak, off, a, b = s.price_peak, s.price_offpeak, s.offpeak_start, s.offpeak_end
+        inf = self._tariff if s.offpeak_auto and ent else None
+        if inf is not None:   # anything the user typed in wins; history only fills the blanks
+            if a is None or b is None:
+                a, b = inf.start, inf.end
+            peak = inf.peak if peak is None else peak
+            off = inf.offpeak if off is None else off
+        if not slots and peak is None and off is None:
             return None
-        return RateTable(slots, s.price_peak, s.price_offpeak, s.offpeak_start, s.offpeak_end)
+        return RateTable(slots, peak, off, a, b)
+
+    async def _refresh_tariff(self) -> None:
+        """Learn the cheap (night) window from the rates sensor's recorded price history (every few hours)."""
+        s, ent = self.settings, self._rates_entity()
+        key = (ent, s.offpeak_auto)
+        if not (ent and s.offpeak_auto):
+            self._tariff, self._tariff_key = None, key
+            return
+        if (key == self._tariff_key and _time.monotonic() - self._tariff_checked < TARIFF_REFRESH_S) or self._tariff_busy:
+            return
+        self._tariff_busy, self._tariff_key, self._tariff_checked = True, key, _time.monotonic()
+        try:
+            from homeassistant.components.recorder import get_instance, history
+            end = dt_util.utcnow()
+
+            def load():
+                return history.get_significant_states(self.hass, end - timedelta(days=TARIFF_HISTORY_DAYS), end, [ent],
+                                                      include_start_time_state=True, significant_changes_only=False,
+                                                      no_attributes=True).get(ent, [])
+
+            samples = []
+            for st in await get_instance(self.hass).async_add_executor_job(load):
+                try:
+                    samples.append((st.last_changed, float(st.state)))
+                except (TypeError, ValueError):
+                    continue
+            found = infer_offpeak(samples, end, dt_util.DEFAULT_TIME_ZONE)
+            if found != self._tariff:
+                self._log("tariff", (f"cheap window from price history: {found.start:%H:%M}-{found.end:%H:%M} "
+                                     f"({found.offpeak:g} vs {found.peak:g})") if found else "no repeating cheap window in the price history")
+            self._tariff = found
+        except Exception as err:  # noqa: BLE001 - recorder missing/unavailable: keep what we had
+            _LOGGER.debug("tariff history unavailable: %s", err)
+        finally:
+            self._tariff_busy = False
 
     def _forecast_kwh(self) -> float | None:
         st = self.hass.states.get(self.settings.forecast_entity) if self.settings.forecast_entity else None
@@ -184,19 +277,29 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
 
     def _grid_w(self, actuals: dict[str, Actual]) -> float | None:
         """House grid power (+ importing): the user's sensor if set, else a battery that sees the meter."""
-        ent = self.settings.grid_entity
-        st = self.hass.states.get(ent) if ent else None
-        try:
-            v = float(st.state)  # type: ignore[union-attr]
+        v = self._meter_w()
+        if v is not None:
             return -v if self.settings.grid_invert else v
-        except (AttributeError, TypeError, ValueError):
-            pass
         # Local meter readings first: a cloud-reported "grid" figure (EcoFlow) is a slow, cached value.
         cloud = {x.config.device_id for x in self.adapters if x.config.extra.get("driver") == "ecoflow_stream"}
         for did, a in sorted(actuals.items(), key=lambda kv: kv[0] in cloud):
             if a.online and a.grid_w is not None:
                 return a.grid_w
         return None
+
+    def _meter_w(self) -> float | None:
+        """Smart-meter reading in W (+ importing): an import sensor, less an optional export sensor. Each may be
+        a power sensor (W/kW) or a cumulative energy counter (Wh/kWh)."""
+        s, now = self.settings, _time.monotonic()
+        imp_ent = self._grid_entity()
+        out = []
+        for key, ent in (("imp", imp_ent), ("exp", s.grid_export_entity)):
+            st = self.hass.states.get(ent) if ent else None
+            out.append(None if st is None else self._meter.read(key, st.state, st.attributes.get("unit_of_measurement"), now))
+        imp, exp = out
+        if imp is None:
+            return None if exp is None or imp_ent else -exp
+        return imp - (exp or 0.0)
 
     def _price_now(self, rates: RateTable | None, now: datetime) -> float | None:
         p = rates.price_at(now) if rates else None
@@ -263,6 +366,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             if act.online:
                 self._snap.devices[did].last_read_ok = wall
 
+        self.hass.async_create_task(self._refresh_tariff())
         grid = self._grid_w(actuals)
         rates = self._rates()
         world = World(
@@ -514,7 +618,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             "now": now.isoformat(),
             "paused": self.paused, "backup": self.backup_active, "away": self.away,
             "alerts": sorted(self.alerts.active()), "notes": self.last_result.notes,
-            "price_now": self._price_now(rates, now), "currency": self.settings.currency,
+            "price_now": self._price_now(rates, now),
+            "meter_entity": self._grid_entity(), "rates_entity": self._rates_entity(),
+            "tariff_inferred": ({"start": self._tariff.start.strftime("%H:%M"), "end": self._tariff.end.strftime("%H:%M"),
+                                 "offpeak": self._tariff.offpeak, "peak": self._tariff.peak, "days": round(self._tariff.days, 1)}
+                                if self._tariff else None), "currency": self.settings.currency,
             "savings": {"today": round(self.ledger.saved(day), 2) + 0.0, "month": round(self.ledger.saved(month), 2) + 0.0},
             "energy": {k: round(v, 3) for k, v in self.meter.totals.items()},
         }

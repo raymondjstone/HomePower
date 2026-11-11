@@ -17,8 +17,8 @@ from .core.profiles import DRIVERS, PROFILE_BY_ID, PROFILES
 from .core.serde import ValidationError, fill_from_probe
 from .core.settings import DEFAULTS, SettingsError, clean
 
-FLOW_SETTING_KEYS = ("import_limit_w", "peak_shaving", "export_limit_w", "grid_import_entity", "rates_entity", "price_peak",
-                     "price_offpeak", "offpeak_start", "offpeak_end", "forecast_entity", "backup_reserve_pct", "storm_entity",
+FLOW_SETTING_KEYS = ("import_limit_w", "peak_shaving", "export_limit_w", "grid_import_entity", "grid_export_entity", "rates_entity", "price_peak",
+                     "price_offpeak", "offpeak_start", "offpeak_end", "offpeak_auto", "forecast_entity", "backup_reserve_pct", "storm_entity",
                      "away_entity", "notify_service")
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 MODE_OPTIONS = [
@@ -362,7 +362,9 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             opt("peak_shaving", bool): bool,
             opt("export_limit_w", _num(0, 100000, "W", 100)): _num(0, 100000, "W", 100),
             opt("grid_import_entity", ent(["sensor"])): ent(["sensor"]),
+            opt("grid_export_entity", ent(["sensor"])): ent(["sensor"]),
             opt("rates_entity", ent(["sensor", "event"])): ent(["sensor", "event"]),
+            opt("offpeak_auto", bool, True): bool,
             opt("price_peak", _num(0, 1000, None, 0.01)): _num(0, 1000, None, 0.01),
             opt("price_offpeak", _num(0, 1000, None, 0.01)): _num(0, 1000, None, 0.01),
             opt("offpeak_start", sel.TimeSelector()): sel.TimeSelector(),

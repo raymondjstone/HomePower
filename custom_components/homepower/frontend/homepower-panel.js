@@ -208,8 +208,9 @@ class HomePowerPanel extends HTMLElement {
   }
   _gridW() {
     const s = this.data.settings || {};
+    if (this.live.grid_w != null) return this.live.grid_w;  // worked out server-side (meter sensors, units, export, Glow)
     const v = this._num(s.grid_import_entity);
-    if (v == null) return this.live.grid_w ?? null;  // fall back to what the batteries can see
+    if (v == null) return null;
     return s.grid_invert ? -v : v;
   }
   _sample() {
@@ -927,7 +928,8 @@ class HomePowerPanel extends HTMLElement {
     const num = (k, label, hint, step = 1) => ({ k, t: "num", label, hint, step });
     const SEC = [
       ["Grid meter", "mdi:transmission-tower", [
-        { k: "grid_import_entity", t: "entity", dom: ["sensor"], label: "Grid power sensor (W) - optional", hint: "Leave empty to use the grid reading your batteries report." },
+        { k: "grid_import_entity", t: "entity", dom: ["sensor"], label: "Smart meter import sensor - optional", hint: (this.live.meter_entity && !s.grid_import_entity ? `Using ${this.live.meter_entity} automatically. ` : "") + "Power (W/kW) or a cumulative energy counter (kWh). Leave empty to use Hildebrand Glow (if set up) or the grid reading your batteries report." },
+        { k: "grid_export_entity", t: "entity", dom: ["sensor"], label: "Smart meter export sensor - optional", hint: "Subtracted from import. Power or energy counter." },
         { k: "grid_invert", t: "bool", label: "Sensor is positive when exporting" }]],
       ["Limits", "mdi:shield-check", [
         num("import_limit_w", "House import limit (W)", "Caps total charging; with peak shaving on, batteries also discharge to stay under it."),
@@ -937,10 +939,11 @@ class HomePowerPanel extends HTMLElement {
         num("cooldown_s", "Re-apply cooldown (s)", "Stops the same command being re-sent too often.")]],
       ["Zero-import battery", "mdi:scale-balance", [{ k: "zero_import_device", t: "device", label: "Keeps grid import at 0 W when nothing else applies" }]],
       ["Tariff & prices", "mdi:cash", [
-        { k: "rates_entity", t: "entity", dom: ["sensor", "event"], label: "Rates entity (Octopus, Agile, Nord Pool...)", hint: "Anything with a list of {start, end, value} in its attributes." },
+        { k: "rates_entity", t: "entity", dom: ["sensor", "event"], label: "Tariff sensor (Octopus, Agile, Nord Pool, Glow rate...)", hint: (this.live.rates_entity && !s.rates_entity ? `Using ${this.live.rates_entity} automatically. ` : "") + "A list of {start, end, value} in its attributes, or a plain price sensor." },
         { k: "rates_unit", t: "select", label: "Rates are in", options: [["auto", "Detect automatically"], ["pence", "Pence (or cents)"], ["main", "Pounds (or euros)"]] },
         num("price_peak", "Standard rate", "Used when there is no rates entity, or to fill gaps.", "any"), num("price_offpeak", "Cheap rate", "", "any"),
-        { k: "offpeak_start", t: "time", label: "Cheap rate starts" }, { k: "offpeak_end", t: "time", label: "Cheap rate ends" },
+        { k: "offpeak_auto", t: "bool", label: "Work out the night/cheap period from the tariff's price history" + (this.live.tariff_inferred ? ` (found ${this.live.tariff_inferred.start}-${this.live.tariff_inferred.end} from ${this.live.tariff_inferred.days} days)` : "") },
+        { k: "offpeak_start", t: "time", label: "Cheap rate starts", hint: "Leave both times empty to use the period found from history." }, { k: "offpeak_end", t: "time", label: "Cheap rate ends" },
         { k: "currency", t: "text", label: "Currency symbol" }]],
       ["Solar forecast", "mdi:weather-sunny", [
         { k: "forecast_entity", t: "entity", dom: ["sensor"], label: "Tomorrow's solar forecast (kWh)", hint: "Solcast or Forecast.Solar 'tomorrow' sensor." },
