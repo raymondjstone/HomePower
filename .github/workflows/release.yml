@@ -1,0 +1,26 @@
+name: Release
+
+# Push a tag such as v0.1.0 to publish a GitHub release (HACS needs a real release, not only a tag).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the integration version
+        run: |
+          v=$(python3 -c "import json;print(json.load(open('custom_components/homepower/manifest.json'))['version'])")
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} != manifest version v$v"; exit 1; }
+      - name: Zip the integration
+        run: cd custom_components/homepower && zip -r ../../homepower.zip . -x "__pycache__/*" "*/__pycache__/*"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "${GITHUB_REF_NAME}" homepower.zip --title "HomePower ${GITHUB_REF_NAME}" --generate-notes
