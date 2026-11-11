@@ -10,6 +10,7 @@
     "persistent_notification",
     "recorder"
   ],
+  "categories": ["energy.solar_batteries"],
   "codeowners": ["@raymondjstone"],
   "config_flow": true,
   "dependencies": [],
