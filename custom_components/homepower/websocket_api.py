@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from ._schema import vol
-from .const import DOMAIN
+from .const import DOMAIN, SIGNAL_UPDATE
 from .core.profiles import catalogue
 from .core.serde import ValidationError
 from .core.settings import DEFAULTS, SettingsError, clean
@@ -68,18 +69,17 @@ def ws_get(hass, connection, msg):
 @websocket_api.async_response
 async def ws_subscribe(hass, connection, msg):
     """Push the live view whenever the control loop finishes a cycle."""
-    mgr = hass.data.get(DOMAIN, {}).get("manager")
-    coord = mgr.coordinator if mgr else None
-
     @callback
     def push() -> None:
-        connection.send_message(websocket_api.event_message(msg["id"], coord.view()))
+        # Looked up every time: after the integration is reloaded there is a new control loop to follow.
+        mgr = hass.data.get(DOMAIN, {}).get("manager")
+        coord = mgr.coordinator if mgr else None
+        if coord:
+            connection.send_message(websocket_api.event_message(msg["id"], coord.view()))
 
-    if coord:
-        connection.subscriptions[msg["id"]] = coord.async_add_listener(push)
+    connection.subscriptions[msg["id"]] = async_dispatcher_connect(hass, SIGNAL_UPDATE, push)
     connection.send_result(msg["id"])
-    if coord:
-        push()
+    push()
 
 
 def _guard(fn):

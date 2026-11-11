@@ -840,18 +840,14 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             }
         return out
 
-    def view(self) -> dict:
-        """JSON-safe live view for the panel."""
-        now = dt_util.now()
-        day_key = now.strftime("%Y-%m-%d")
+    def devices_view(self, now: datetime | None = None) -> dict:
+        """Per-battery part of the live view (also what the sensors' attributes are built from)."""
+        now = now or dt_util.now()
         out = {}
-        actuals = {}
         for a in self.adapters:
             did = a.config.device_id
             st = self._snap.devices.get(did) or DeviceStatus()
             act, want = st.actual, st.desired
-            if act:
-                actuals[did] = act
             active = [s.id for s in self.schedules if s.applies(did, now)
                       and (not s.condition_entity or self._condition_ok(s.condition_entity))]
             ov = self.overrides.get(did)
@@ -873,6 +869,14 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "guard_held": st.guard_held,
                 "last_error": st.last_error,
             }
+        return out
+
+    def view(self) -> dict:
+        """JSON-safe live view for the panel."""
+        now = dt_util.now()
+        day_key = now.strftime("%Y-%m-%d")
+        out = self.devices_view(now)
+        actuals = {did: st.actual for did, st in self._snap.devices.items() if st.actual}
         day, month = now.strftime("%Y-%m-%d"), now.strftime("%Y-%m")
         rates = self._rates()
         return {

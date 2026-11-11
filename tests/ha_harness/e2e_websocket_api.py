@@ -116,6 +116,10 @@ async def main():
     await asyncio.sleep(0.3)
     print("subscribe:", out.get("events", [{}])[0].get("event", {}).get("devices", {}).keys())
     assert out["events"] and out["events"][0]["event"]["devices"]["a"]["soc"] == 62
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+    from custom_components.homepower.const import SIGNAL_UPDATE
+    had = len(out["events"]); async_dispatcher_send(hass, SIGNAL_UPDATE); await asyncio.sleep(0.1)
+    assert len(out["events"]) > had, "the live feed did not follow the update signal"
     # testing an already-connected battery reuses the live connection (single-client devices)
     await must("homepower/device/save", device={"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "connection": conn_cfg})
     live = mgr._adapters["a"][1].driver.client

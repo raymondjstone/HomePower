@@ -63,7 +63,32 @@ async def main():
     print("shutdown : mode reg", dev.hold[10064])
     assert dev.hold[10064] == 0
 
+    # an unknown scene is a clear service error, not a stack trace
+    from homeassistant.exceptions import ServiceValidationError
+    try:
+        await hass.services.async_call(DOMAIN, "apply_scene", {"name": "no such scene"}, blocking=True)
+        raise AssertionError("unknown scene accepted")
+    except ServiceValidationError as err:
+        print("bad scene:", err)
+
+    # every control cycle sends the signal the panel's live feed follows (so the feed survives a reload)
+    from homeassistant.helpers.dispatcher import async_dispatcher_connect
+    from custom_components.homepower.const import SIGNAL_UPDATE
+    seen = []
+    off = async_dispatcher_connect(hass, SIGNAL_UPDATE, lambda: seen.append(1))
+    unsub = coord.async_add_listener(lambda: None)
+    await coord.async_refresh(); await asyncio.sleep(0.1)
+    unsub(); off()
+    assert seen, "no update signal after a control cycle"
+
+    # unloading (reload / disable / remove) hands a forced battery back too
+    from hp.core.models import Desired, Mode
+    coord.set_override(["a"], Desired(Mode.CHARGE, 700), 30)      # a new instruction, so it is sent at once
+    await coord._async_update_data()
+    assert dev.hold[10064] == 3
     ok = await HP.async_unload_entry(hass, entry)
+    print("unload   : mode reg", dev.hold[10064])
+    assert dev.hold[10064] == 0
     print("unload   :", ok, unloaded, "| manager gone:", "manager" not in hass.data[DOMAIN])
     assert ok and unloaded == [["sensor", "switch"]] and "manager" not in hass.data[DOMAIN]
     srv.close(); await srv.wait_closed()

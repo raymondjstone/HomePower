@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import ServiceValidationError
 
 from ._schema import vol
 from .const import DOMAIN
@@ -49,7 +50,10 @@ def async_register(hass: HomeAssistant) -> None:
 
     async def scene(call: ServiceCall) -> None:
         if m := _mgr(hass):
-            await m.apply_scene(call.data["name"])
+            try:
+                await m.apply_scene(call.data["name"])
+            except ValueError as err:   # e.g. no scene with that name: a clear message, not a stack trace in the log
+                raise ServiceValidationError(str(err)) from err
 
     async def test_control(call: ServiceCall):
         m = _mgr(hass)
