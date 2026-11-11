@@ -197,7 +197,8 @@ class BatteryFigures:
 def combine(items: list[BatteryFigures], load_w: float | None = None) -> dict:
     """Totals across every online battery: charge level (capacity weighted), stored and usable energy, flow, and how long
     the battery would last at the current draw / take to fill."""
-    on = [b for b in items if b.online and b.soc is not None and b.capacity_wh > 0]
+    on = [BatteryFigures(b.capacity_wh, max(0.0, min(100.0, b.soc)), b.online, b.power_w, b.min_soc, b.load_w, b.max_charge_w)
+          for b in items if b.online and b.soc is not None and b.capacity_wh > 0]    # a bad reading cannot push totals out of range
     if not on:
         return {"online": 0, "total": len(items), "soc": None, "stored_kwh": None, "usable_kwh": None, "capacity_kwh": None,
                 "flow_w": None, "load_w": load_w, "runtime_h": None, "full_in_h": None}
@@ -239,7 +240,7 @@ def clean_scene(raw: dict) -> dict:
     out = {"name": name[:40]}
     for k in SCENE_FLAGS:
         out[k] = bool(raw.get(k, False))
-    st = raw.get("settings") or {}
+    st = raw.get("settings") if isinstance(raw.get("settings"), dict) else {}
     out["settings"] = {}
     for k in SCENE_SETTINGS:
         if k in st and st[k] not in (None, ""):
