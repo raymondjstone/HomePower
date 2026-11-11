@@ -91,6 +91,16 @@ async def main():
     assert dev.hold[10064] == 0
     print("unload   :", ok, unloaded, "| manager gone:", "manager" not in hass.data[DOMAIN])
     assert ok and unloaded == [["sensor", "switch"]] and "manager" not in hass.data[DOMAIN]
+    # removing HomePower keeps the saved data unless the user chose to erase it
+    from homeassistant.helpers.storage import Store
+    from custom_components.homepower.const import STORAGE_KEY, STORAGE_VERSION
+    await HP.async_remove_entry(hass, entry)
+    kept = await Store(hass, STORAGE_VERSION, STORAGE_KEY).async_load()
+    assert kept and kept["devices"], "data was erased without being asked"
+    object.__setattr__(entry, "options", {"erase_on_remove": True})
+    await HP.async_remove_entry(hass, entry)
+    assert await Store(hass, STORAGE_VERSION, STORAGE_KEY).async_load() is None, "data was not erased"
+    print("remove   : kept by default, erased when chosen")
     srv.close(); await srv.wait_closed()
     print("E2E6 OK")
 

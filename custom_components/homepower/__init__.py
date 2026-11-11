@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from . import services
-from .const import DOMAIN, SIGNAL_UPDATE
+from .const import DOMAIN, SIGNAL_UPDATE, STORAGE_KEY, STORAGE_VERSION
 from .coordinator import HomePowerCoordinator
 from .manager import HomePowerManager
 
@@ -142,6 +142,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         data.pop(entry.entry_id, None)
         data.pop("manager", None)
     return ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """HomePower was deleted. Its batteries, schedules and history are kept (so adding it again restores everything)
+    unless the user ticked 'erase everything when HomePower is removed' in Settings."""
+    if not entry.options.get("erase_on_remove"):
+        _LOGGER.info("HomePower removed; its saved batteries, schedules and history were kept")
+        return
+    from homeassistant.helpers.storage import Store
+
+    await Store(hass, STORAGE_VERSION, STORAGE_KEY).async_remove()
+    _LOGGER.info("HomePower removed; its saved batteries, keys, schedules and history were erased")
 
 
 async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:

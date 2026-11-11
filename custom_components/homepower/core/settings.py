@@ -17,13 +17,13 @@ DEFAULTS: dict = {
     "forecast_entity": "", "forecast_share": 0.5,
     "storm_entity": "", "backup_reserve_pct": 50, "away_entity": "", "notify_service": "",
     "load_rules": [],
-    "ecoflow_live": False, "notify_full": False, "offpeak_extra": "", "save_for_peak": False,
+    "ecoflow_live": False, "erase_on_remove": False, "notify_full": False, "offpeak_extra": "", "save_for_peak": False,
     "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
             "notify_low_pct", "cheap_soon_below_pct", "divert_export_w", "divert_min_soc")
 FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price")
-BOOL_KEYS = ("peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "save_for_peak", "notify_full", "notify_cheap_soon")
+BOOL_KEYS = ("peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "save_for_peak", "notify_full", "notify_cheap_soon")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
             "forecast_entity", "storm_entity", "away_entity", "notify_service",
             "offpeak_extra", "daily_summary_time", "divert_entity", "grid_order")

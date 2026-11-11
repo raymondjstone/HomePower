@@ -141,6 +141,13 @@ Savings = value of discharged energy at the price then (avoided import) minus th
 from the grid (all of it for scheduled/goal/override charging, otherwise estimated from the grid reading). Rates in
 pence/cents or pounds/euros are detected automatically. It is an estimate, not a bill.
 
+## Removing HomePower
+
+Deleting HomePower in Settings > Devices & services hands any battery it is controlling back to its own control. Your
+batteries, EcoFlow keys, schedules, goals, scenes and history stay saved, so adding HomePower again restores everything.
+To erase all of it instead, tick **Erase everything when HomePower is deleted** (HomePower panel > Settings > If you remove
+HomePower) before deleting. Home Assistant cannot ask at the moment of deleting, so the choice is made there.
+
 ## Known limits
 
 - The Anker Modbus and EcoFlow API drivers have only been run against simulators, not real hardware. New batteries are

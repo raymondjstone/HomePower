@@ -1186,6 +1186,8 @@ class HomePowerPanel extends HTMLElement {
       ["EcoFlow", "mdi:flash", [{ k: "ecoflow_live", t: "bool", label: "Use EcoFlow's live feed for faster readings (seconds instead of 30 s)" },
         { k: "ecoflow_live_note", t: "note", label: "Off by default: it opens a second connection to EcoFlow with your keys, which could disturb another EcoFlow integration using the same account (such as EcoFlow Cloud). If readings stop updating after turning it on, turn it off again." }]],
       ["Backup & restore", "mdi:backup-restore", [{ k: "backup_restore", t: "backup", label: "" }]],
+      ["If you remove HomePower", "mdi:delete-outline", [{ k: "erase_on_remove", t: "bool", label: "Erase everything when HomePower is deleted from Home Assistant" },
+        { k: "erase_on_remove_note", t: "note", label: "Off: your batteries, EcoFlow keys, schedules, goals, scenes and history stay saved, so adding HomePower again brings everything back. On: all of it is erased when you delete HomePower in Settings > Devices & services. Home Assistant cannot ask at the moment of deleting, so choose here first." }]],
     ];
     const field = (f) => {
       const v = s[f.k] ?? "";
