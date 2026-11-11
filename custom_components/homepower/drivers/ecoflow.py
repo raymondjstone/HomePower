@@ -74,6 +74,8 @@ class EcoFlowApi:
                 data = await resp.json(content_type=None)
         except Exception as err:  # noqa: BLE001 - network / JSON problems all mean "can't reach"
             raise EcoFlowError(f"cannot reach EcoFlow: {err!r}") from err
+        if not isinstance(data, dict):
+            raise EcoFlowError("EcoFlow sent an unexpected reply")
         if str(data.get("code")) != "0":
             err = EcoFlowError(f"EcoFlow error {data.get('code')}: {data.get('message')}")
             err.code = str(data.get("code"))
@@ -124,7 +126,8 @@ _BAD_SOC = re.compile(r"backup|reserve|min|max|lim|cfg|set|charge|discharge|uppe
 def _guess(q: dict, pattern: str, bad: re.Pattern | None = None, positive: bool = False) -> float | None:
     rx = re.compile(pattern, re.I)
     for k, v in q.items():
-        if isinstance(v, (int, float)) and not isinstance(v, bool) and rx.search(k) and not (bad and bad.search(k))                 and not (positive and v <= 0):
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and rx.search(k) and not (bad and bad.search(k)) \
+                and not (positive and v <= 0):
             return float(v)
     return None
 

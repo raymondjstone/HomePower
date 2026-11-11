@@ -1,6 +1,7 @@
 """Control loop: read batteries -> decide (core.engine) -> apply -> verify -> account -> alert."""
 from __future__ import annotations
 
+import re
 import asyncio
 import logging
 import time as _time
@@ -56,6 +57,9 @@ class DeviceStatus:
 class Snapshot:
     devices: dict[str, DeviceStatus] = field(default_factory=dict)
     events: deque = field(default_factory=lambda: deque(maxlen=200))  # diagnostics log
+
+
+_PRIVATE_KEY = re.compile(r"ssid|wifi|pass|mac|^sn$|serial|lat|lon|addr|ip$|token", re.I)
 
 
 class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
@@ -187,7 +191,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             return -v if self.settings.grid_invert else v
         except (AttributeError, TypeError, ValueError):
             pass
-        for a in actuals.values():
+        # Local meter readings first: a cloud-reported "grid" figure (EcoFlow) is a slow, cached value.
+        cloud = {x.config.device_id for x in self.adapters if x.config.extra.get("driver") == "ecoflow_stream"}
+        for did, a in sorted(actuals.items(), key=lambda kv: kv[0] in cloud):
             if a.online and a.grid_w is not None:
                 return a.grid_w
         return None
@@ -463,7 +469,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "unconfirmed": st.unconfirmed if st else 0, "release_pending": bool(st and st.release_pending),
                 "word_order": getattr(getattr(a, "driver", None), "_order", None),
                 "driver_error": getattr(getattr(a, "driver", None), "last_error", None),
-                "raw_readings": getattr(getattr(a, "driver", None), "last_quota", None) or None,
+                "raw_readings": {k: v for k, v in (getattr(getattr(a, "driver", None), "last_quota", None) or {}).items()
+                                 if not _PRIVATE_KEY.search(k)} or None,
             }
         return out
 
