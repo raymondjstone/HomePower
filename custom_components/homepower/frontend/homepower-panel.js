@@ -42,6 +42,15 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
 .ring text{fill:var(--primary-text-color)}
 .spark{width:100%;height:46px;margin-top:10px}
+.plot{display:flex;margin:8px 0 2px}
+.plot-y{position:relative;width:58px;flex:none}
+.plot-y span{position:absolute;right:6px;transform:translateY(-50%);font-size:11px;color:var(--secondary-text-color);white-space:nowrap}
+.plot-main{flex:1;min-width:0}
+.plot-main svg{display:block;width:100%;border-left:1px solid var(--divider-color);border-bottom:1px solid var(--divider-color)}
+.plot-x{position:relative;height:18px;margin-top:4px}
+.plot-x span{position:absolute;transform:translateX(-50%);font-size:11px;color:var(--secondary-text-color);white-space:nowrap}
+.plot-x span:first-child{transform:none}.plot-x span:last-child{transform:translateX(-100%)}
+.durs{display:inline-flex;gap:4px;flex-wrap:wrap;margin-left:12px;vertical-align:middle}
 .tl{margin:8px 0 14px}
 .tl .row{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;margin:8px 0}
 .tl .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -221,11 +230,11 @@ class HomePowerPanel extends HTMLElement {
       const r = this._reading(d);
       const h = (this._hist[d.device_id] ||= []);
       h.push({ t: now, p: r.power });
-      if (h.length > 360) h.shift();
+      while (h.length && h[0].t < now - 24 * 3600e3) h.shift();
     }
     const g = this._gridW();
     (this._hist.__grid ||= []).push({ t: now, p: g });
-    if (this._hist.__grid.length > 360) this._hist.__grid.shift();
+    while (this._hist.__grid.length && this._hist.__grid[0].t < now - 24 * 3600e3) this._hist.__grid.shift();
   }
   _tick(force) {
     if (this._modal || !this._loaded) return;
@@ -311,7 +320,7 @@ class HomePowerPanel extends HTMLElement {
     return `${this._alertsBanner()}${tiles}
       <h2 style="margin:22px 0 10px;font-size:18px">Batteries</h2>
       <div class="grid g-cards">${cards}</div>
-      <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-areaspline"></ha-icon>Power, last 30 minutes</h2>${this._flowChart()}</div>
+      <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-areaspline"></ha-icon>Power, last ${this._durLabel(this._flowMin())}<span class="durs">${this._durButtons()}</span></h2>${this._flowChart()}</div>
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:timeline-clock"></ha-icon>Today's plan</h2>${this._timeline()}</div>
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:text-box-outline"></ha-icon>Activity</h2>${this._log()}</div>`;
   }
@@ -369,23 +378,92 @@ class HomePowerPanel extends HTMLElement {
       <path d="${line}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`;
   }
 
+  // ---- chart helpers: nice axis ticks, a plot with labelled Y and X axes, adjustable live duration ----
+  _niceTicks(lo, hi, n = 4) {
+    const span = Math.max(hi - lo, 1e-9), raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = ([1, 2, 2.5, 5, 10].map((m) => m * mag).find((x) => x >= raw)) || 10 * mag;
+    const a = Math.floor(lo / step + 1e-9) * step, b = Math.ceil(hi / step - 1e-9) * step, ticks = [];
+    for (let v = a; v <= b + step / 2; v += step) ticks.push(Math.round(v / step) * step);
+    return { lo: a, hi: b, ticks };
+  }
+  _downsample(pts, maxN = 300) {
+    if (pts.length <= maxN) return pts;
+    const k = Math.ceil(pts.length / maxN), out = [];
+    for (let i = 0; i < pts.length; i += k) {
+      const c = pts.slice(i, i + k);
+      out.push({ t: c.reduce((a, x) => a + x.t, 0) / c.length, v: c.reduce((a, x) => a + x.v, 0) / c.length });
+    }
+    return out;
+  }
+  _fmtT(t, span) {
+    const d = new Date(t);
+    if (span <= 36 * 3600e3) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (span <= 3 * 86400e3) return d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  // series: [{pts:[{t,v}], color, width}]; o: {lo, hi, ticks, tmin, tmax, fmtY, height, ariaLabel}
+  _plot(series, o) {
+    const W = 800, H = 200, { lo, hi, ticks, tmin, tmax } = o, height = o.height || 210;
+    const X = (t) => ((t - tmin) / Math.max(1, tmax - tmin)) * W;
+    const Y = (v) => H - ((v - lo) / Math.max(1e-9, hi - lo)) * H;
+    const xt = [0, 0.25, 0.5, 0.75, 1].map((f) => tmin + f * (tmax - tmin));
+    const grid = ticks.map((v) => `<line x1="0" x2="${W}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--divider-color)" stroke-opacity="${v === 0 && lo < 0 ? 1 : 0.5}" ${v === 0 && lo < 0 ? "" : 'stroke-dasharray="3 4"'} vector-effect="non-scaling-stroke"/>`).join("")
+      + xt.slice(1, -1).map((t) => `<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="0" y2="${H}" stroke="var(--divider-color)" stroke-opacity=".3" vector-effect="non-scaling-stroke"/>`).join("");
+    const lines = series.map((s) => s.pts.length < 2 ? "" : `<path d="${s.pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Math.min(H, Math.max(0, Y(p.v))).toFixed(1)}`).join("")}" fill="none" stroke="${s.color}" stroke-width="${s.width || 2.2}" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`).join("");
+    const ylab = ticks.map((v) => `<span style="top:${((1 - (v - lo) / Math.max(1e-9, hi - lo)) * 100).toFixed(2)}%">${o.fmtY(v)}</span>`).join("");
+    const xlab = xt.map((t, i) => `<span style="left:${i * 25}%">${this._fmtT(t, tmax - tmin)}</span>`).join("");
+    return `<div class="plot"><div class="plot-y" style="height:${height}px">${ylab}</div>
+      <div class="plot-main"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:${height}px" role="img" aria-label="${esc(o.ariaLabel || "Chart")}">${grid}${lines}</svg>
+      <div class="plot-x">${xlab}</div></div></div>`;
+  }
+
+  _flowMin() {
+    let v = this._flowMinV;
+    if (!v) { try { v = parseInt(localStorage.getItem("homepower.flowMin"), 10); } catch (e) { /* storage unavailable */ } }
+    return (this._flowMinV = [15, 30, 60, 180, 360, 720, 1440].includes(v) ? v : 30);
+  }
+  _durLabel(m) { return m < 60 ? `${m} minutes` : m === 60 ? "hour" : `${m / 60} hours`; }
+  _durButtons() {
+    const cur = this._flowMin();
+    return [[15, "15m"], [30, "30m"], [60, "1h"], [180, "3h"], [360, "6h"], [720, "12h"], [1440, "24h"]]
+      .map(([m, l]) => `<button class="btn sm ${m === cur ? "pri" : ""}" data-act="flowdur" data-m="${m}">${l}</button>`).join("");
+  }
+  // History older than this page has been open comes from Home Assistant's own statistics (5-minute averages).
+  async _backfillFlow() {
+    const mins = this._flowMin(), ids = (this.data.entity_ids || {}).devices || {};
+    const list = Object.values(ids).map((e) => e && e.power).filter(Boolean);
+    const key = `${mins}:${list.join(",")}`;
+    if (!list.length || mins <= 30 || (this._flowBack && this._flowBack.key === key && Date.now() - this._flowBack.at < 120000)) return;
+    this._flowBack = { key, at: Date.now(), data: (this._flowBack && this._flowBack.key === key) ? this._flowBack.data : {} };
+    try {
+      const end = new Date(), start = new Date(end - mins * 60e3);
+      const res = await this._hass.callWS({ type: "recorder/statistics_during_period", start_time: start.toISOString(), end_time: end.toISOString(),
+        statistic_ids: list, period: "5minute", types: ["mean"] });
+      this._flowBack.data = res || {};
+      if (this.tab === "overview" && !this._modal) this._render();
+    } catch (e) { /* recorder statistics are optional: the live samples still draw */ }
+  }
+
   _flowChart() {
-    const ds = this.data.devices;
-    const series = ds.map((d, i) => ({ d, i, pts: (this._hist[d.device_id] || []).filter((x) => x.p != null) })).filter((s) => s.pts.length > 1);
+    const ds = this.data.devices, mins = this._flowMin(), now = Date.now(), tmin = now - mins * 60e3;
+    this._backfillFlow();
+    const back = (this._flowBack && this._flowBack.data) || {}, ids = (this.data.entity_ids || {}).devices || {};
+    const series = ds.map((d, i) => {
+      const live = (this._hist[d.device_id] || []).filter((x) => x.p != null && x.t >= tmin).map((x) => ({ t: x.t, v: x.p }));
+      const first = live.length ? live[0].t : now;
+      const eid = (ids[d.device_id] || {}).power;
+      const old = mins > 30 && eid ? (back[eid] || []).filter((r) => r.mean != null).map((r) => ({ t: typeof r.start === "number" ? r.start : Date.parse(r.start), v: r.mean })).filter((x) => x.t >= tmin && x.t < first) : [];
+      return { d, i, pts: this._downsample([...old, ...live]), color: this._color(i), width: 2.4 };
+    }).filter((s) => s.pts.length > 1);
     if (!series.length) return `<div class="sub" style="color:var(--secondary-text-color)">Collecting live data… the chart fills in as readings arrive.</div>`;
-    const W = 800, H = 200;
     const all = series.flatMap((s) => s.pts);
-    const max = Math.max(500, ...all.map((x) => Math.abs(x.p)));
-    const t0 = Math.min(...all.map((x) => x.t)), t1 = Math.max(...all.map((x) => x.t));
-    const X = (t) => ((t - t0) / Math.max(1, t1 - t0)) * W;
-    const Y = (p) => H / 2 - (p / max) * (H / 2 - 6);
-    const lines = series.map((s) => `<path d="${s.pts.map((x, k) => `${k ? "L" : "M"}${X(x.t).toFixed(1)},${Y(x.p).toFixed(1)}`).join("")}" fill="none" stroke="${this._color(s.i)}" stroke-width="2.5" vector-effect="non-scaling-stroke"/>`).join("");
-    const mins = Math.round((t1 - t0) / 60000);
-    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:210px" preserveAspectRatio="none" role="img" aria-label="Battery power over time">
-        <line x1="0" x2="${W}" y1="${H / 2}" y2="${H / 2}" stroke="var(--divider-color)"/>${lines}</svg>
-      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--secondary-text-color)"><span>${mins} min ago</span><span>now</span></div>
-      <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${this._color(s.i)}"></i>${esc(s.d.name)}</span>`).join("")}
-      <span>Above line = charging (up to ${fmtW(max)}), below = discharging</span></div>`;
+    const m = Math.max(500, ...all.map((x) => Math.abs(x.v)));
+    const nt = this._niceTicks(-m, m, 4);
+    const t0 = Math.min(tmin, ...all.map((x) => x.t));
+    const covered = Math.round((now - Math.min(...all.map((x) => x.t))) / 60e3);
+    return `${this._plot(series, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin: t0, tmax: now, fmtY: (v) => (v === 0 ? "0" : fmtW(v)), ariaLabel: "Battery power over time" })}
+      <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.d.name)}</span>`).join("")}
+      <span>Above 0 = charging, below = discharging${covered < mins - 2 ? ` · showing the last ${covered} min so far (the page records while open${mins > 30 ? "; older data comes from Home Assistant history" : ""})` : ""}</span></div>`;
   }
 
   _segmentsToday(s) {
@@ -841,7 +919,7 @@ class HomePowerPanel extends HTMLElement {
     if (ids.battery_power) list.push(ids.battery_power);
     if (ids.grid_power) list.push(ids.grid_power);
     for (const d of this.data.devices) { const e = (ids.devices || {})[d.device_id]; if (e && e.soc) list.push(e.soc); }
-    const hours = { "24h": 24, "7d": 168, "30d": 720 }[this._range || "24h"];
+    const hours = { "6h": 6, "12h": 12, "24h": 24, "3d": 72, "7d": 168, "30d": 720 }[this._range || "24h"];
     if (!list.length) { this._hist2 = {}; return; }
     const end = new Date(), start = new Date(end - hours * 3600e3);
     this._hist2 = await this._hass.callWS({ type: "recorder/statistics_during_period", start_time: start.toISOString(), end_time: end.toISOString(),
@@ -851,14 +929,12 @@ class HomePowerPanel extends HTMLElement {
   _lineChart(series, unit) {
     const all = series.flatMap((s) => s.pts);
     if (all.length < 2) return `<div class="sub" style="color:var(--secondary-text-color)">No history yet. It fills in as Home Assistant records the sensors.</div>`;
-    const W = 800, H = 200, t0 = Math.min(...all.map((p) => p.t)), t1 = Math.max(...all.map((p) => p.t));
-    let lo = Math.min(0, ...all.map((p) => p.v)), hi = Math.max(1, ...all.map((p) => p.v));
-    if (unit === "%") { lo = 0; hi = 100; }
-    const X = (t) => ((t - t0) / Math.max(1, t1 - t0)) * W, Y = (v) => H - ((v - lo) / (hi - lo)) * (H - 8) - 4;
-    const lines = series.map((s) => `<path d="${s.pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Y(p.v).toFixed(1)}`).join("")}" fill="none" stroke="${s.color}" stroke-width="2" vector-effect="non-scaling-stroke"/>`).join("");
-    const zero = lo < 0 ? `<line x1="0" x2="${W}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--divider-color)"/>` : "";
-    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:220px" preserveAspectRatio="none" role="img">${zero}${lines}</svg>
-      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--secondary-text-color)"><span>${new Date(t0).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span><span>${unit === "%" ? "0–100%" : fmtW(lo) + " … " + fmtW(hi)}</span><span>now</span></div>
+    const tmin = Math.min(...all.map((p) => p.t)), tmax = Math.max(...all.map((p) => p.t));
+    let nt;
+    if (unit === "%") nt = { lo: 0, hi: 100, ticks: [0, 25, 50, 75, 100] };
+    else { const m = Math.max(500, ...all.map((p) => Math.abs(p.v))); nt = this._niceTicks(Math.min(0, ...all.map((p) => p.v)) < 0 ? -m : 0, m, 4); }
+    const ser = series.map((s) => ({ color: s.color, pts: this._downsample(s.pts) }));
+    return `${this._plot(ser, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin, tmax, fmtY: (v) => (unit === "%" ? `${v}%` : v === 0 ? "0" : fmtW(v)), height: 220, ariaLabel: unit === "%" ? "Charge level history" : "Power history" })}
       <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div>`;
   }
 
@@ -874,7 +950,7 @@ class HomePowerPanel extends HTMLElement {
       const cin = E[`bat:${d.device_id}_in`] || 0, out = E[`bat:${d.device_id}_out`] || 0;
       return `<tr><td>${esc(d.name)}</td><td>${kwh(`bat:${d.device_id}_in`)} kWh</td><td>${kwh(`bat:${d.device_id}_out`)} kWh</td><td>${cin >= 1 ? Math.round((out / cin) * 100) + "%" : "–"}</td><td>${(out / Math.max(d.capacity_wh / 1000, 0.1)).toFixed(1)}</td></tr>`;
     }).join("");
-    const rng = ["24h", "7d", "30d"].map((r) => `<button class="btn sm ${((this._range || "24h") === r) ? "pri" : ""}" data-act="range" data-r="${r}">${r}</button>`).join(" ");
+    const rng = ["6h", "12h", "24h", "3d", "7d", "30d"].map((r) => `<button class="btn sm ${((this._range || "24h") === r) ? "pri" : ""}" data-act="range" data-r="${r}">${r}</button>`).join(" ");
     const tile = (l, v, sub) => `<div class="card tile"><div class="lbl">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`;
     return `<div class="bar-actions"><h2>Insights</h2></div>
       <div class="grid g-tiles">
@@ -1118,6 +1194,10 @@ class HomePowerPanel extends HTMLElement {
         await this._call({ type: "homepower/goal/delete", goal_id: id });
         await this._reload(); this._closeModal(); return this._tabLoad();
       case "range": this._range = t.dataset.r; return this._tabLoad();
+      case "flowdur":
+        this._flowMinV = parseInt(t.dataset.m, 10);
+        try { localStorage.setItem("homepower.flowMin", String(this._flowMinV)); } catch (e) { /* optional */ }
+        return this._render();
       case "test-control": return this._runTest(id);
       case "copy-debug": {
         const txt = JSON.stringify(this._diag, null, 2);
