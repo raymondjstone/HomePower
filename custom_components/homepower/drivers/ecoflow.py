@@ -105,7 +105,7 @@ def normalise(q: Any) -> dict:
         q = q["quotaMap"]
     out: dict = {}
     for k, v in (q or {}).items() if isinstance(q, dict) else []:
-        k = str(k).rsplit(".", 1)[-1]
+        k = str(k).rsplit(".", 1)[-1].rsplit("-", 1)[-1]   # "20_1.soc" / "sysEnergyStreamReport-bpSoc"
         if isinstance(v, str):
             try:
                 v = float(v)
@@ -156,7 +156,10 @@ class EcoFlowStreamDriver:
         soc = next((float(q[k]) for k in ("f32ShowSoc", "soc", "cmsBattSoc") if isinstance(q.get(k), (int, float)) and q[k] > 0), None)
         if soc is None:
             soc = _guess(q, r"soc", _BAD_SOC, positive=True)
-        power = _first(q, "powGetBpCms")
+        # Newer STREAM models (e.g. the AC 5000) report sysEnergyStreamReport-bpSoc / bpPwr / gridPwr / pvPwr / loadPwr.
+        if soc is None:
+            soc = _first(q, "bpSoc", positive=True)
+        power = _first(q, "powGetBpCms", "bpPwr")
         if power is None:
             power = _guess(q, r"(bp|batt|bat).*(pow|pwr|watt)|(pow|pwr).*(bp|batt)", re.compile(r"cfg|set|max|lim|volt|temp", re.I))
         return Actual(
@@ -165,8 +168,8 @@ class EcoFlowStreamDriver:
             soc=soc,
             power_w=power,  # EcoFlow: discharge negative, charge positive
             mode=(Mode.HOLD if reserve is not None and reserve >= HOLD_RESERVE else Mode.AUTO) if reserve is not None else None,
-            grid_w=_first(q, "powGetSysGrid", "gridConnectionPower"),
-            pv_w=_first(q, "powGetPvSum"), load_w=_first(q, "powGetSysLoad"),
+            grid_w=_first(q, "powGetSysGrid", "gridPwr", "gridConnectionPower"),
+            pv_w=_first(q, "powGetPvSum", "pvPwr"), load_w=_first(q, "powGetSysLoad", "loadPwr"),
         )
 
     async def read(self) -> Actual:
@@ -198,6 +201,11 @@ class EcoFlowStreamDriver:
 
     async def apply(self, desired: Desired) -> None:
         self._cache = None  # next read must show the effect of this command
+        if self.last_quota and "backupReverseSoc" not in self.last_quota:
+            # A model that reports different settings (e.g. AC 5000): its command format is not known, so never guess.
+            if desired.mode is Mode.AUTO:
+                return
+            raise ValueError("this EcoFlow model's settings are not known to HomePower: read-only for now")
         if desired.mode is Mode.HOLD:
             await self.api.command(self.sn, {"cfgBackupReverseSoc": HOLD_RESERVE})
         elif desired.mode is Mode.AUTO:

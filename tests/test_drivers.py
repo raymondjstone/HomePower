@@ -385,3 +385,21 @@ def test_ecoflow_prefixed_and_string_readings_still_decode():
     odd = normalise({"data": {"bpSoc": 70, "bpPowerWatts": 300, "socMax": 100}})
     b = EcoFlowStreamDriver._decode(odd)
     assert b.soc == 70 and b.power_w == 300
+
+
+def test_ecoflow_ac5000_style_readings_decode_and_stay_read_only():
+    import asyncio
+    from hp.core.models import Desired, Mode
+    from hp.drivers.ecoflow import EcoFlowStreamDriver, normalise
+    q = normalise({"sysEnergyStreamReport-bpSoc": 54, "sysEnergyStreamReport-bpPwr": -789, "sysEnergyStreamReport-gridPwr": 11,
+                   "sysEnergyStreamReport-loadPwr": 800, "sysEnergyStreamReport-pvPwr": 0, "workMode": "TIMER_TASK"})
+    a = EcoFlowStreamDriver._decode(q)
+    assert (a.soc, a.power_w, a.grid_w, a.load_w, a.pv_w) == (54, -789, 11, 800, 0)
+    d = EcoFlowStreamDriver.__new__(EcoFlowStreamDriver)
+    d.last_quota, d._cache = q, None
+    asyncio.run(d.apply(Desired(Mode.AUTO)))                      # nothing to hand back: fine
+    try:
+        asyncio.run(d.apply(Desired(Mode.HOLD)))
+        assert False
+    except ValueError:
+        pass
