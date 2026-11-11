@@ -375,3 +375,13 @@ def test_generic_driver_clamps_to_limits():
             assert sp(dev) == -3600
             await d.close()
     asyncio.run(go())
+
+
+def test_ecoflow_prefixed_and_string_readings_still_decode():
+    from hp.drivers.ecoflow import EcoFlowStreamDriver, normalise
+    q = normalise({"20_1.cmsBattSoc": "0", "20_1.f32ShowSoc": "64.5", "20_1.powGetBpCms": "-1200", "20_1.backupReverseSoc": 10})
+    a = EcoFlowStreamDriver._decode(q)
+    assert a.soc == 64.5 and a.power_w == -1200
+    odd = normalise({"data": {"bpSoc": 70, "bpPowerWatts": 300, "socMax": 100}})
+    b = EcoFlowStreamDriver._decode(odd)
+    assert b.soc == 70 and b.power_w == 300

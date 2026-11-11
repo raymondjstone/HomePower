@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import logging
 import secrets
 import time
@@ -98,6 +99,36 @@ class EcoFlowApi:
             "needAck": True, "params": params})
 
 
+def normalise(q: Any) -> dict:
+    """Quota keys may carry a prefix ('20_1.soc') and numbers may be strings: return a flat {key: value}."""
+    if isinstance(q, dict) and isinstance(q.get("quotaMap"), dict):
+        q = q["quotaMap"]
+    out: dict = {}
+    for k, v in (q or {}).items() if isinstance(q, dict) else []:
+        k = str(k).rsplit(".", 1)[-1]
+        if isinstance(v, str):
+            try:
+                v = float(v)
+            except ValueError:
+                pass
+        if isinstance(v, dict):
+            out.update(normalise(v))
+        else:
+            out.setdefault(k, v)
+    return out
+
+
+_BAD_SOC = re.compile(r"backup|reserve|min|max|lim|cfg|set|charge|discharge|upper|lower|ctrl", re.I)
+
+
+def _guess(q: dict, pattern: str, bad: re.Pattern | None = None, positive: bool = False) -> float | None:
+    rx = re.compile(pattern, re.I)
+    for k, v in q.items():
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and rx.search(k) and not (bad and bad.search(k))                 and not (positive and v <= 0):
+            return float(v)
+    return None
+
+
 def _first(q: dict, *keys: str, positive: bool = False) -> float | None:
     for k in keys:
         v = q.get(k)
@@ -112,6 +143,8 @@ class EcoFlowStreamDriver:
         c = config.extra["connection"]
         self.sn = c["sn"]
         self.api = EcoFlowApi(session, c.get("region", "global"), c["access_key"], c["secret_key"])
+        self.last_quota: dict = {}
+        self.last_error: str | None = None
         self._cache: tuple[float, Actual] | None = None  # the cloud API is rate limited: poll at most every 30 s
 
     async def close(self) -> None:
@@ -121,11 +154,16 @@ class EcoFlowStreamDriver:
     def _decode(q: dict) -> Actual:
         reserve = _first(q, "backupReverseSoc")
         soc = next((float(q[k]) for k in ("f32ShowSoc", "soc", "cmsBattSoc") if isinstance(q.get(k), (int, float)) and q[k] > 0), None)
+        if soc is None:
+            soc = _guess(q, r"soc", _BAD_SOC, positive=True)
+        power = _first(q, "powGetBpCms")
+        if power is None:
+            power = _guess(q, r"(bp|batt|bat).*(pow|pwr|watt)|(pow|pwr).*(bp|batt)", re.compile(r"cfg|set|max|lim|volt|temp", re.I))
         return Actual(
             online=True,
             # Ultra / Ultra X report cmsBattSoc as 0 and publish the real value as soc / f32ShowSoc.
             soc=soc,
-            power_w=_first(q, "powGetBpCms"),  # EcoFlow: discharge negative, charge positive
+            power_w=power,  # EcoFlow: discharge negative, charge positive
             mode=(Mode.HOLD if reserve is not None and reserve >= HOLD_RESERVE else Mode.AUTO) if reserve is not None else None,
             grid_w=_first(q, "powGetSysGrid", "gridConnectionPower"),
             pv_w=_first(q, "powGetPvSum"), load_w=_first(q, "powGetSysLoad"),
@@ -135,15 +173,22 @@ class EcoFlowStreamDriver:
         if self._cache and time.monotonic() - self._cache[0] < 30:
             return self._cache[1]
         try:
-            actual = self._decode(await self.api.quota(self.sn))
+            q = normalise(await self.api.quota(self.sn))
+            self.last_quota, self.last_error = q, None
+            actual = self._decode(q)
+            if actual.soc is None and q:
+                _LOGGER.warning("%s: EcoFlow returned no charge level; readings it did return: %s",
+                                self.config.device_id, ", ".join(sorted(q)[:60]))
             self._cache = (time.monotonic(), actual)
             return actual
         except EcoFlowError as err:
-            _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
+            self.last_error = str(err)
+            _LOGGER.warning("%s: EcoFlow read failed: %s", self.config.device_id, err)
             return Actual(online=False)
 
     async def probe(self) -> dict:
-        q = await self.api.quota(self.sn)
+        q = normalise(await self.api.quota(self.sn))
+        self.last_quota = q
         a = self._decode(q)
         return {"soc": a.soc, "power_w": a.power_w, "mode": a.mode.value if a.mode else None,
                 "grid_w": a.grid_w, "pv_w": a.pv_w, "load_w": a.load_w, "model": q.get("productName") or None,

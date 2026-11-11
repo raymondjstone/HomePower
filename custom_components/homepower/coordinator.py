@@ -462,6 +462,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "last_command": st.last_command if st else None, "last_error": st.last_error if st else None,
                 "unconfirmed": st.unconfirmed if st else 0, "release_pending": bool(st and st.release_pending),
                 "word_order": getattr(getattr(a, "driver", None), "_order", None),
+                "driver_error": getattr(getattr(a, "driver", None), "last_error", None),
+                "raw_readings": getattr(getattr(a, "driver", None), "last_quota", None) or None,
             }
         return out
 
