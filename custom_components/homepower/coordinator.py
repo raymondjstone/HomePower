@@ -86,7 +86,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self._tariff_key, self._tariff_checked, self._tariff_busy = None, 0.0, False
         self._glow_cache: dict[str, str] = {}
         self._glow_at = -1e9
-        self.ledger = Ledger(manager.ledger_days)
+        self.ledger = Ledger(manager.ledger_days, manager.ledger_stores)
+        if manager.ledger_stores is None:
+            # Saved by a version that booked charging cost when charging: today's figure would count last night's
+            # charging twice (once then, once as it is used), so today starts again under the new method.
+            self.ledger.days.pop(dt_util.now().strftime("%Y-%m-%d"), None)
         self.profile = LoadProfile(manager.profile_data)   # the household's usual load by time of day
         self.daily = DailyStats(manager.daily_data)         # self-consumption / cheap-rate share per day
         self.health = Health(manager.health_data)           # weekly round-trip efficiency per battery
@@ -387,8 +391,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         exp = self.settings.export_price
         if not exp or rates is None:
             return False
-        ahead = [x.price for x in rates.slots_between(now, now + timedelta(hours=24))]
-        cheapest = min(ahead) if ahead else rates.offpeak
+        cheapest = self._cheapest_price(rates, now)
         if cheapest is None:
             return False
         unit = self.settings.rates_unit
@@ -685,10 +688,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
 
     def _account(self, now: datetime, wall: float, actuals: dict[str, Actual], grid: float | None, rates: RateTable | None) -> None:
         """Energy counters and the savings ledger (an estimate: see core/energy.py)."""
-        charged = discharged = 0.0
+        steps: dict[str, tuple[float, float]] = {}
         for did, act in actuals.items():
-            d_in, d_out = self.meter.add(f"bat:{did}", wall, act.power_w if act.online else None)
-            charged, discharged = charged + d_in, discharged + d_out
+            steps[did] = self.meter.add(f"bat:{did}", wall, act.power_w if act.online else None)
         g_in, g_out = self.meter.add("grid", wall, grid)
         for did, act in actuals.items():
             if act.online and (act.pv_w or 0) > 50 and did not in self.manager.pv_seen:
@@ -700,12 +702,47 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.profile.record(now, self._house_load(actuals, grid, sum(pv) if pv else 0.0))
         self.health.update(now.strftime("%G-W%V"), {did: (self.meter.get(f"bat:{did}_in"), self.meter.get(f"bat:{did}_out"))
                                                      for did in actuals})
-        charging_w = sum(max(0.0, a.power_w or 0.0) for a in actuals.values() if a.online)
-        forced = any(st.reason.startswith(FORCING_REASONS) and "(solar only)" not in st.reason   # solar-only charging costs nothing
-                     and st.desired is not None and st.desired.mode is Mode.CHARGE
-                     for st in self._snap.devices.values())
-        share = 1.0 if forced else (min(1.0, max(0.0, grid) / charging_w) if grid is not None and charging_w > 0 else 0.0)
-        self.ledger.add(now.strftime("%Y-%m-%d"), charged, share, discharged, self._price_now(rates, now))
+        self._account_savings(now, actuals, grid, rates, steps)
+
+    def _account_savings(self, now: datetime, actuals: dict[str, Actual], grid: float | None, rates: RateTable | None,
+                         steps: dict[str, tuple[float, float]]) -> None:
+        """Savings ledger (an estimate: see core/energy.py Ledger)."""
+        on = {did: a for did, a in actuals.items() if a.online}
+        # Batteries told to charge from the grid: all their charging is bought. Solar-only and grid + solar ones, and
+        # batteries charging by themselves, are judged from the grid reading: whatever is imported beyond the forced
+        # charging is shared among them; with no reading their charging is counted as solar.
+        forced = {did for did, st in self._snap.devices.items() if did in on and self._grid_charging(st)}
+        forced_w = sum(max(0.0, on[d].power_w or 0.0) for d in forced)
+        free_w = sum(max(0.0, a.power_w or 0.0) for d, a in on.items() if d not in forced)
+        free_share = min(1.0, max(0.0, grid - forced_w) / free_w) if grid is not None and free_w > 0 else 0.0
+        # Battery energy that went out to the grid replaced no import: it earns the export price (if any) instead.
+        out_w = sum(max(0.0, -(a.power_w or 0.0)) for a in on.values())
+        exp_share = min(1.0, max(0.0, -grid) / out_w) if grid is not None and out_w > 0 else 0.0
+        unit, price = self.settings.rates_unit, self._price_now(rates, now)
+        exp_price = to_main_units(self.settings.export_price, unit) if self.settings.export_price else 0.0
+        cheapest = self._cheapest_price(rates, now)
+        first = None if cheapest is None else to_main_units(cheapest, unit)
+        caps = {a.config.device_id: a.config.caps.capacity_wh for a in self.adapters}
+        day = now.strftime("%Y-%m-%d")
+        for did, act in actuals.items():
+            d_in, d_out = steps.get(did, (0.0, 0.0))
+            stored = act.soc / 100 * caps.get(did, 0) / 1000 if act.online and act.soc is not None and did in caps else None
+            self.ledger.add(day, did, d_in, 1.0 if did in forced else free_share, d_out, exp_share, price, exp_price, stored, first)
+        self.ledger.forget(set(caps))
+
+    @staticmethod
+    def _grid_charging(st: DeviceStatus) -> bool:
+        """Is this battery being told to charge from the grid at a fixed power (schedule, goal, override, backup)?"""
+        return (st.desired is not None and st.desired.mode is Mode.CHARGE and st.reason.startswith(FORCING_REASONS)
+                and "(solar only)" not in st.reason and "(grid + solar)" not in st.reason)
+
+    @staticmethod
+    def _cheapest_price(rates: RateTable | None, now: datetime) -> float | None:
+        """The cheapest import price in the next 24 hours (rates unit)."""
+        if rates is None:
+            return None
+        ahead = [x.price for x in rates.slots_between(now, now + timedelta(hours=24))]
+        return min(ahead) if ahead else rates.offpeak
 
     async def _apply_and_verify(self, a: DeviceAdapter, st: DeviceStatus, want: Desired, diffs) -> None:
         did = a.config.device_id

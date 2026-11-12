@@ -301,9 +301,19 @@ read-only. Types: `u16 i16 u32 i32`; `scale` multiplies the raw value; `word_ord
 
 ## How savings are estimated
 
-Savings = value of discharged energy at the price then (avoided import) minus the cost of the part of charging that came
-from the grid (all of it for scheduled / goal / override charging, none of it for solar-only charging, otherwise estimated
-from the grid reading). It is an estimate, not a bill.
+Savings are counted when the stored energy is **used**, not when it is stored:
+
+- Each battery keeps the average cost of the energy in it. Grid charging adds its price; solar charging adds nothing; the
+  energy lost going in and out raises the average.
+- Each kWh discharged saves the price of the grid energy it replaced (or earns your export price, if it went out to the
+  grid) **minus** what that kWh cost to store.
+
+So a night of cheap charging does not show as a loss the next morning; it shows as savings during the day as the charge is
+used. Today's figure only goes negative if the batteries are discharged at a cheaper rate than they were charged at.
+
+Which charging came from the grid: all of it for a battery told to charge from the grid (schedule, goal, override, backup);
+for other batteries, the grid import beyond that, shared between them; with no grid reading, it is counted as solar. A
+battery first seen part-full is assumed to hold energy bought at the cheapest rate around. It is an estimate, not a bill.
 
 ## Removing HomePower
 
