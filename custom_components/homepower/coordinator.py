@@ -27,12 +27,17 @@ from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_ma
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
 from .core.settings import AppSettings, build as build_settings
+from .core.solar_room import SolarDay, charge_ceiling_pct, split_by_capacity
 
 _LOGGER = logging.getLogger(__name__)
 READ_TIMEOUT_S = 20
 PERSIST_EVERY_S = 300
 TARIFF_REFRESH_S = 6 * 3600
 TARIFF_HISTORY_DAYS = 14
+FORECAST_PLATFORMS = {   # solar forecast integrations found automatically: platform -> (today, tomorrow) unique_id endings
+    "forecast_solar": ("energy_production_today", "energy_production_tomorrow"),
+    "solcast_solar": ("forecast_today", "forecast_tomorrow"),
+}
 GLOW_DOMAIN = "hildebrandglow_dcc"  # ha-hildebrandglow-dcc (raymondjstone fork and HandyHat original)
 KEEPALIVE_EVERY_S = 60
 OFFLINE_ALERT_AFTER_S = 180
@@ -86,6 +91,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self._tariff_key, self._tariff_checked, self._tariff_busy = None, 0.0, False
         self._glow_cache: dict[str, str] = {}
         self._glow_at = -1e9
+        self._fc_cache: dict[str, list[str]] = {}
+        self._fc_at = -1e9
+        self.solar_room: dict = {}       # the room-for-solar working, shown in the panel
         self.ledger = Ledger(manager.ledger_days, manager.ledger_stores)
         if manager.ledger_stores is None:
             # Saved by a version that booked charging cost when charging: today's figure would count last night's
@@ -270,6 +278,114 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             _LOGGER.debug("tariff history unavailable: %s", err)
         finally:
             self._tariff_busy = False
+
+    def _forecast_entities(self) -> dict[str, list[str]]:
+        """Forecast.Solar / Solcast sensors for today's and tomorrow's generation (all planes / sites, to be added up)."""
+        if _time.monotonic() - self._fc_at < 60:
+            return self._fc_cache
+        found: dict[str, list[str]] = {"today": [], "tomorrow": []}
+        try:
+            from homeassistant.helpers import entity_registry as er
+            for e in er.async_get(self.hass).entities.values():
+                ends = FORECAST_PLATFORMS.get(e.platform)
+                if not ends or e.domain != "sensor" or e.disabled_by:
+                    continue
+                uid = str(e.unique_id or "")
+                if uid.endswith(ends[0]):
+                    found["today"].append(e.entity_id)
+                elif uid.endswith(ends[1]):
+                    found["tomorrow"].append(e.entity_id)
+        except Exception as err:  # noqa: BLE001 - registry unavailable: nothing found
+            _LOGGER.debug("forecast lookup failed: %s", err)
+        self._fc_cache, self._fc_at = found, _time.monotonic()
+        return found
+
+    def _kwh(self, entity_id: str) -> float | None:
+        st = self.hass.states.get(entity_id)
+        try:
+            v = float(st.state)  # type: ignore[union-attr]
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return v / 1000 if str(st.attributes.get("unit_of_measurement", "")).lower() == "wh" else v
+
+    def _forecast_by_day(self, now: datetime) -> dict[str, float]:
+        """Solar forecast kWh for today and tomorrow. The sensor picked in Settings is "tomorrow"; what it said yesterday
+        is remembered as today's. Otherwise Forecast.Solar / Solcast are found by themselves."""
+        today, tomorrow = now.date().isoformat(), (now.date() + timedelta(days=1)).isoformat()
+        out: dict[str, float] = {}
+        if (v := self._forecast_kwh()) is not None:
+            out[tomorrow] = v
+        found = self._forecast_entities()
+        for day, key in ((today, "today"), (tomorrow, "tomorrow")):
+            vals = [x for x in (self._kwh(e) for e in found[key]) if x is not None]
+            if vals and day not in out:
+                out[day] = sum(vals)
+        mem = self.manager.forecast_days
+        if out.get(tomorrow) is not None and mem.get(tomorrow) != out[tomorrow]:
+            mem[tomorrow] = out[tomorrow]
+            for k in [k for k in mem if k < today]:
+                del mem[k]
+        if today not in out and today in mem:
+            out[today] = mem[today]
+        return out
+
+    def _sun(self, day) -> tuple[datetime, datetime] | None:
+        """Sunrise and sunset at the home location on a date (what the Sun integration shows, worked out the same way)."""
+        try:
+            from homeassistant.const import SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
+            from homeassistant.helpers.sun import get_astral_event_date
+            rise = get_astral_event_date(self.hass, SUN_EVENT_SUNRISE, day)
+            sset = get_astral_event_date(self.hass, SUN_EVENT_SUNSET, day)
+        except Exception:  # noqa: BLE001 - no location / polar day: no solar day
+            return None
+        if rise is None or sset is None:
+            return None
+        return dt_util.as_local(rise), dt_util.as_local(sset)
+
+    def _solar_ceilings(self, now: datetime, actuals: dict[str, Actual], rates: RateTable | None) -> dict[str, int]:
+        """For batteries with panels: the highest charge to reach before the cheap rate ends so that the coming day's solar,
+        less the base load, never takes them over 100% (see core/solar_room.py). Without a forecast solar counts as zero
+        and nothing is capped."""
+        s = self.settings
+        info: dict = {"enabled": s.solar_room, "base_load_w": s.base_load_w, "batteries": {}}
+        self.solar_room = info
+        cfgs = {a.config.device_id: a.config for a in self.adapters}
+        solar = {did: cfgs[did] for did in cfgs if self._has_solar(cfgs[did])}
+        info["solar_batteries"] = [cfgs[d].name for d in solar]
+        if not s.solar_room or not solar:
+            return {}
+        windows = bool(rates and rates.windows)
+        t0 = (rates.cheap_window_end(now) if windows else None) or now     # charging stops when the cheap rate ends
+        sun = self._sun(t0.date())
+        if sun is not None and t0 >= sun[1]:
+            sun = self._sun(t0.date() + timedelta(days=1))
+        fc = self._forecast_by_day(now)
+        if sun is None:
+            info["missing"] = "sun"
+            return {}
+        day = sun[0].date().isoformat()
+        forecast = fc.get(day)
+        info.update({"day": day, "sunrise": sun[0].strftime("%H:%M"), "sunset": sun[1].strftime("%H:%M"),
+                     "charge_ends": t0.strftime("%H:%M"), "forecast_kwh": forecast})
+        if forecast is None:
+            info["missing"] = "forecast"
+            return {}
+        online = {did: act for did, act in actuals.items() if act.online and did in cfgs}
+        solar_share = split_by_capacity(forecast, {d: cfgs[d].caps.capacity_wh for d in solar})
+        base_share = split_by_capacity(s.base_load_w / 1000, {d: cfgs[d].caps.capacity_wh for d in online})
+
+        def battery_pays(t: datetime) -> bool:
+            return not (windows and rates.in_cheap_window(t.time()))
+
+        out: dict[str, int] = {}
+        for did, cfg in solar.items():
+            cap_kwh = cfg.caps.capacity_wh / 1000
+            pct = charge_ceiling_pct(cap_kwh, cfg.caps.min_soc, t0, SolarDay(sun[0], sun[1], solar_share[did]),
+                                     base_share.get(did, 0.0), battery_pays)
+            info["batteries"][did] = {"name": cfg.name, "solar_kwh": round(solar_share[did], 2), "ceiling": pct}
+            if pct < 100:
+                out[did] = pct
+        return out
 
     def _forecast_kwh(self) -> float | None:
         st = self.hass.states.get(self.settings.forecast_entity) if self.settings.forecast_entity else None
@@ -539,6 +655,13 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         exact = bool(s.offpeak_start and s.offpeak_end) or bool(s.offpeak_extra)
         add("tariff", exact or slots, "Cheap-rate hours confirmed", "" if exact or slots else
             ("They are only estimated from price history." if self._tariff else "Enter when your cheap rate starts and ends."), "tab", "settings")
+        if any(self._has_solar(a.config) for a in self.adapters):
+            fc = self._forecast_by_day(dt_util.now())
+            ok = bool(fc)
+            add("solar_forecast", ok, "Solar forecast available", "" if ok else
+                "Some batteries have solar panels. Add the Forecast.Solar or Solcast integration (Settings > Devices & services > "
+                "Add integration), or pick a forecast sensor in HomePower's Settings, so overnight charging leaves room for "
+                "the next day's solar. Until then solar is counted as zero.", "tab", "settings")
         add("grid", self.last_grid is not None, "Grid meter reading available", "" if self.last_grid is not None else
             "Needed for peak shaving, the export limit, solar-only charging and savings. Pick a grid sensor in Settings.", "tab", "settings")
         if self.last_grid is not None:
@@ -617,6 +740,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                            self._snap.devices[a.config.device_id].guard_held,
                            bool(a.config.extra.get("control_enabled", True)), self._has_solar(a.config)) for a in adapters],
             export_better=self._export_better(rates, now),
+            solar_ceiling=self._solar_ceilings(now, actuals, rates),
         )
         try:
             res = compute(world)
@@ -925,7 +1049,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             "alerts": sorted(self.alerts.active()), "notes": self.last_result.notes,
             "price_now": self._price_now(rates, now),
             "meter_entity": self.grid_source, "rates_entity": self._rates_entity(),
-            "combined": self._combined(actuals), "setup": self.setup_check(), "export_better": self._export_better(rates, now),
+            "combined": self._combined(actuals), "setup": self.setup_check(), "solar_room": self.solar_room, "export_better": self._export_better(rates, now),
             "divert": {"entity": self.settings.divert_entity, "on": self.diverter.on} if self.settings.divert_entity else None,
             "daily": {"self_consumption": self.daily.self_consumption(day_key), "cheap_share": self.daily.cheap_share(day_key)},
             "health": {a.config.device_id: {"efficiency": self.health.efficiency(a.config.device_id)[-8:],

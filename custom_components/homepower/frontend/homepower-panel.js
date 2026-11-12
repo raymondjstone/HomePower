@@ -420,6 +420,8 @@ class HomePowerPanel extends HTMLElement {
     if (want) chips.push(`<span class="chip m" style="background:${want.color}" title="${esc(want.help)}">Target: ${want.label}${lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : ""}</span>`);
     else if (r.online) chips.push(`<span class="chip">Device's own control</span>`);
     if (mode) chips.push(`<span class="chip"><span class="dot" style="background:${mode.color}"></span>Mode: ${mode.label}</span>`);
+    const room = ((this.live.solar_room || {}).batteries || {})[d.device_id];
+    if (room && room.ceiling < 100) chips.push(`<span class="chip" title="Overnight charging stops here so the solar forecast (${room.solar_kwh} kWh for this battery) has room">Room for solar: up to ${room.ceiling}%</span>`);
     if (lv.has_solar || (lv.pv_w || 0) > 0) chips.push(`<span class="chip" title="Solar panels attached to this battery"><ha-icon icon="mdi:solar-power" style="--mdc-icon-size:14px"></ha-icon>Solar${lv.pv_w != null ? " " + fmtW(lv.pv_w) : ""}</span>`);
     if (lv.protected) chips.push(`<span class="chip warn"><ha-icon icon="mdi:shield-alert" style="--mdc-icon-size:14px"></ha-icon>Protection active</span>`);
     if (lv.reason) chips.push(`<span class="chip" title="Why HomePower is doing this">${esc(lv.reason)}</span>`);
@@ -1137,6 +1139,17 @@ class HomePowerPanel extends HTMLElement {
   }
 
   // ---- settings tab (data driven) ---------------------------------------------------
+  // Plain-language state of the room-for-solar calculation (Settings > Solar forecast).
+  _solarRoomText() {
+    const r = this.live.solar_room || {};
+    if (r.enabled === false) return "Off: overnight charging is not limited by the forecast.";
+    if (!(r.solar_batteries || []).length) return "No battery is marked as having solar panels (Batteries tab > edit > Solar panels), so nothing is limited.";
+    if (r.missing === "forecast" || r.forecast_kwh == null) return "No solar forecast found, so solar is counted as zero and batteries charge fully. Add the Forecast.Solar or Solcast integration (Settings > Devices & services > Add integration).";
+    if (r.missing === "sun") return "Sunrise and sunset could not be worked out: check your home location in Home Assistant's settings.";
+    const b = Object.values(r.batteries || {}).map((x) => `${x.name}: up to ${x.ceiling}% (${x.solar_kwh} kWh of solar)`).join("; ");
+    return `Forecast for ${r.day}: ${r.forecast_kwh} kWh, sunrise ${r.sunrise}, sunset ${r.sunset}. Charging ends ${r.charge_ends}. ${b}. Solar is shared between the batteries with panels by capacity; the base load by all batteries' capacity.`;
+  }
+
   _settingsView() {
     const s = this.data.settings || {};
     const num = (k, label, hint, step = 1) => ({ k, t: "num", label, hint, step });
@@ -1166,7 +1179,10 @@ class HomePowerPanel extends HTMLElement {
         { k: "save_for_peak", t: "bool", label: "Save the battery for peak hours: don't let it discharge during cheap-rate periods" },
         { k: "currency", t: "text", label: "Currency symbol" }]],
       ["Solar forecast", "mdi:weather-sunny", [
-        { k: "forecast_entity", t: "entity", dom: ["sensor"], label: "Tomorrow's solar forecast (kWh)", hint: "Solcast or Forecast.Solar 'tomorrow' sensor." },
+        { k: "solar_room", t: "bool", label: "Leave room for the solar forecast: charge batteries with panels overnight only as far as the next day's solar allows" },
+        num("base_load_w", "House base load (W)", "Your steady use (fridge, standby...). Outside cheap hours it is assumed to come from the batteries, which frees room for solar before the sun is strong. 0 = none."),
+        { k: "solar_room_note", t: "note", label: this._solarRoomText() },
+        { k: "forecast_entity", t: "entity", dom: ["sensor"], label: "Tomorrow's solar forecast (kWh) - optional", hint: "Leave empty to use Forecast.Solar or Solcast automatically. If you pick one, use its 'tomorrow' sensor." },
         num("forecast_share", "Share of forecast solar that reaches the battery (0-1)", "", "0.05")]],
       ["Backup & away", "mdi:shield-home", [
         num("backup_reserve_pct", "Backup reserve (%)", "Backup mode tops up to this and never discharges below it."),

@@ -57,6 +57,7 @@ class HomePowerManager:
         self.event_state: dict[str, bool] = {}   # heads-up messages currently showing
         self.tests: dict[str, dict] = {}         # last control-test result per battery
         self.pv_seen: set[str] = set()           # batteries that have reported solar power (so they have panels)
+        self.forecast_days: dict[str, float] = {}   # solar forecast kWh by date, kept so 'tomorrow' is still known after midnight
         self.divert_on: str = ""                 # the solar-surplus load we switched on (to switch it off after a restart)
         self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
@@ -81,6 +82,7 @@ class HomePowerManager:
         self.event_state, self.tests = dict(data.get("event_state", {})), dict(data.get("tests", {}))
         self.divert_on = str(data.get("divert_on") or "")
         self.pv_seen = set(data.get("pv_seen", []))
+        self.forecast_days = dict(data.get("forecast_days", {}))
         scenes = data.get("scenes")
         self.scenes = {s["name"]: s for s in (scenes if scenes is not None else DEFAULT_SCENES)}
 
@@ -94,7 +96,7 @@ class HomePowerManager:
             "ledger_stores": c.ledger.stores if c else (self.ledger_stores or {}),
             "profile": c.profile.dump() if c else self.profile_data, "daily": c.daily.dump() if c else self.daily_data,
             "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
-            "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen),
+            "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen), "forecast_days": self.forecast_days,
         })
 
     async def save_runtime(self) -> None:

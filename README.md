@@ -158,7 +158,25 @@ more than five minutes old is not used to steer solar charging.
 - **Panels per battery:** each battery can be marked as having solar panels (yes / no / detect automatically when it
   reports solar power). Its card shows the solar power.
 - **Solar-only and grid + solar charging** for schedules and goals, described above.
-- **Solar forecast** for goals (Settings > Solar forecast), with the share of forecast solar that reaches the battery.
+- **Leave room for the solar forecast** (on by default). Batteries with panels are charged overnight only as far as the
+  next day's solar allows, so the sun never has to be wasted on a full battery:
+  - The day's forecast (Forecast.Solar or Solcast, found automatically, or a "tomorrow" sensor you pick) is spread over
+    the hours between sunrise and sunset (worked out from your home location, as the Sun integration does), most at
+    midday.
+  - From the end of the cheap rate, the house's **base load** (Settings, in watts) is taken from the batteries outside
+    cheap-rate hours, and from solar first once the sun is up. So the hours between the cheap rate ending and the sun
+    getting strong use some of the battery, which makes room for the afternoon's solar.
+  - HomePower works through the day in 15-minute steps and picks the **highest charge level at which the battery never
+    goes over 100%**. A battery cannot go below its minimum charge; from there the grid runs the house.
+  - The forecast is shared between the batteries with panels by capacity (10 kWh and 5 kWh batteries get 2/3 and 1/3); the
+    base load is shared between all batteries by capacity.
+  - Grid charging from schedules and goals stops at that level (the reason says "room left for solar"), and a battery
+    charging itself from the cheap rate (its own time-of-use setting) is held there. Manual overrides and backup mode are
+    not limited. The battery card shows "Room for solar: up to X%", and Settings > Solar forecast explains the figures.
+  - Without a forecast, solar counts as zero and batteries charge fully; the setup check suggests adding Forecast.Solar or
+    Solcast. Only batteries marked as having panels (or that have reported solar power) are limited.
+- **Solar forecast for goals:** a goal can also charge less when tomorrow's forecast is good, using the share of forecast
+  solar that reaches the battery.
 - **Solar-surplus load:** switch on a chosen switch (an immersion heater, for example) while the home battery is full and
   you are exporting more than a set power, and off again when it would need grid power. It is released while HomePower is
   paused.
@@ -241,7 +259,7 @@ EcoFlow keys are only included if you tick the box.
 | Limits | House import limit, peak shaving, export limit, max total charge, max total discharge, re-apply cooldown |
 | Zero-import battery | Which battery keeps import at 0 W |
 | Tariff & prices | Quick-fill presets, rates sensor, rates unit, standard rate, cheap rate, export price, estimate the cheap period from history, cheap-rate start and end, more cheap periods, save the battery for peak hours, currency symbol |
-| Solar forecast | Tomorrow's forecast sensor, share that reaches the battery |
+| Solar forecast | Leave room for the solar forecast, house base load, tomorrow's forecast sensor (optional), share that reaches the battery (goals) |
 | Backup & away | Backup reserve, entity that turns backup mode on, away entity |
 | Protect loads | Entities that block charging and/or discharging while busy |
 | Alerts & heads-ups | Extra notify service, battery full, battery low level, cheap-rate-soon warning and its level, daily summary time |
