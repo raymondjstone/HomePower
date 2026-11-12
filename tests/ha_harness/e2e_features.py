@@ -4,6 +4,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path[:0] = [ROOT, os.path.join(ROOT, "tests")]
 
 import asyncio, sys, tempfile, datetime as dtm
+import pytest
 from types import SimpleNamespace
 import conftest  # noqa: F401
 from test_drivers import FakeAnker
@@ -81,12 +82,16 @@ async def main():
     # --- accounting: a forced charge at a known price creates cost; energy counters move
     await mgr.save_schedule({"id": "N", "start": hhmm(now - dtm.timedelta(minutes=5)), "end": hhmm(now + dtm.timedelta(hours=1)), "mode": "charge", "power_w": 2000})
     coord.apply_settings({"price_peak": 30.0, "price_offpeak": None})
+    cost_before = coord.ledger.stored_cost("a")      # the energy already in it was costed at the 7.5p cheap rate set earlier
     for _ in range(3):
         coord.meter._last = {k: (t - 120, w) for k, (t, w) in coord.meter._last.items()}
         await coord._async_update_data()
     day = dt_util.now().strftime("%Y-%m-%d")
     print("ledger   :", coord.ledger.days.get(day), "| bat in kWh", round(coord.meter.get("bat:a_in"), 4))
-    assert coord.ledger.days[day]["cost"] > 0 and coord.meter.get("bat:a_in") > 0 and coord.ledger.saved(day) < 0
+    # charging is bought (and remembered as the cost of the stored energy) but is not counted as a loss today
+    assert coord.ledger.days[day]["bought"] > 0 and coord.meter.get("bat:a_in") > 0 and coord.ledger.saved(day) == 0
+    # topping up at 30p raises the cost of the stored energy, but stays a blend (and under the cap of price / 0.75)
+    assert cost_before is not None and cost_before < coord.ledger.stored_cost("a") <= 0.40 + 1e-9, (cost_before, coord.ledger.stored_cost("a"))
     await mgr.delete_schedule("N")
 
     # --- persistence: energy + ledger + flags survive a restart
@@ -94,6 +99,7 @@ async def main():
     await coord.async_close()
     hass2, entry2, mgr2, coord2 = await make(tmp, port)
     print("restart  :", round(mgr2.energy.get("bat:a_in", 0), 4), "kWh in,", bool(mgr2.ledger_days), "ledger, away =", mgr2.away, "devices", list(mgr2.devices))
+    assert mgr2.ledger_stores and "a" in mgr2.ledger_stores
     assert mgr2.energy["bat:a_in"] > 0 and mgr2.ledger_days and mgr2.away and "a" in mgr2.devices and mgr2.goals == {}
     assert round(coord2.meter.get("bat:a_in"), 4) == round(coord.meter.get("bat:a_in"), 4)
 

@@ -35,24 +35,63 @@ class EnergyMeter:
 
 
 class Ledger:
-    """Estimated money saved by the batteries, per day. Prices are in whatever unit the rates use."""
+    """Estimated money saved by the batteries, per day (prices in pounds/euros per kWh).
+
+    Each battery keeps a running average of what the energy now stored in it cost: grid charging adds its price, solar
+    charging adds nothing, and the energy lost going in and out raises the average (the same money buys fewer usable
+    kWh). The money is counted when the energy is *used*: every kWh discharged saves the price of the grid energy it
+    replaced (or earns the export price, when it went out to the grid) minus what that kWh cost to store. So a night of
+    cheap charging does not show as a loss the next morning; it shows as savings through the day as the charge is used."""
 
     KEEP_DAYS = 400
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict | None = None, stores: dict | None = None) -> None:
         self.days: dict[str, dict[str, float]] = {k: dict(v) for k, v in (data or {}).items()}
+        # battery -> [kWh stored, cost per stored kWh]
+        self.stores: dict[str, list[float]] = {k: [float(v[0]), float(v[1])] for k, v in (stores or {}).items()}
 
-    def add(self, day: str, charged_kwh: float, grid_share: float, discharged_kwh: float, price: float | None) -> None:
-        """`grid_share` = fraction of the charging that came from the grid (the rest was free solar)."""
-        if price is None or (charged_kwh <= 0 and discharged_kwh <= 0):
+    def add(self, day: str, device_id: str, charged_kwh: float, grid_share: float, discharged_kwh: float,
+            export_share: float, price: float | None, export_price: float, stored_kwh: float | None,
+            first_cost: float | None = None) -> None:
+        """One step for one battery. `grid_share` = fraction of the charging that came from the grid (the rest was solar);
+        `export_share` = fraction of the discharge that went out to the grid rather than into the house; `stored_kwh` =
+        energy in the battery now, from its charge level (None if unknown); `first_cost` = what to assume the energy
+        already in a battery cost when it is first seen (the cheapest rate around)."""
+        st = self.stores.get(device_id)
+        if price is None:
+            if st is not None and stored_kwh is not None:
+                st[0] = stored_kwh             # follow the level; the cost per kWh is unchanged
+            return
+        if st is None:
+            st = self.stores[device_id] = [stored_kwh or 0.0, price if first_cost is None else first_cost]
+        kwh, avg = st
+        share, exp = max(0.0, min(1.0, grid_share)), max(0.0, min(1.0, export_share))
+        pool = kwh * avg + charged_kwh * share * price - discharged_kwh * avg
+        new_kwh = stored_kwh if stored_kwh is not None else max(0.0, kwh + charged_kwh - discharged_kwh)
+        if new_kwh > 0.05:
+            # bounded: a blend of the old average and today's price, raised at most by charging/discharging losses
+            st[1] = min(max(0.0, pool) / new_kwh, max(avg, price * share) / 0.75)
+        elif charged_kwh > 0 and new_kwh <= 0.05:
+            st[1] = price * share              # empty battery: the next energy in sets the cost
+        st[0] = new_kwh
+        if charged_kwh <= 0 and discharged_kwh <= 0:
             return
         d = self.days.setdefault(day, {"charged": 0.0, "discharged": 0.0, "cost": 0.0, "value": 0.0})
         d["charged"] += charged_kwh
         d["discharged"] += discharged_kwh
-        d["cost"] += charged_kwh * max(0.0, min(1.0, grid_share)) * price
-        d["value"] += discharged_kwh * price
+        d["cost"] += discharged_kwh * avg                                         # what the energy used had cost to store
+        d["value"] += discharged_kwh * ((1 - exp) * price + exp * export_price)   # the import it replaced, or export earnings
+        d["bought"] = d.get("bought", 0.0) + charged_kwh * share * price          # spent on grid charging (shown, not netted)
         for old in sorted(self.days)[:-self.KEEP_DAYS]:
             del self.days[old]
+
+    def forget(self, keep: set[str]) -> None:
+        for did in [d for d in self.stores if d not in keep]:
+            del self.stores[did]
+
+    def stored_cost(self, device_id: str) -> float | None:
+        st = self.stores.get(device_id)
+        return None if st is None else st[1]
 
     def _sum(self, prefix: str, key: str) -> float:
         return sum(v[key] for k, v in self.days.items() if k.startswith(prefix))

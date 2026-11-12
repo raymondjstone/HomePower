@@ -295,16 +295,47 @@ def test_energy_meter_integrates_and_ignores_gaps():
     assert m3.get("k_in") == 5
 
 
-def test_ledger_savings_and_prune():
+def test_ledger_counts_savings_when_the_energy_is_used():
     L = Ledger()
-    L.add("2026-11-10", 2.0, 1.0, 0.0, 7.5)           # bought 2 kWh at 7.5p, all from the grid
-    L.add("2026-11-11", 0.0, 0.0, 1.5, 30.0)          # avoided 1.5 kWh at 30p
-    assert L.saved("2026-11-10") == pytest.approx(-15.0) and L.saved("2026-11-11") == pytest.approx(45.0)
-    assert L.saved("2026-11") == pytest.approx(30.0)
-    L.add("2026-11-12", 1.0, 0.0, 0.0, 30.0)          # charged from free solar: no cost
-    assert L.saved("2026-11-12") == 0
-    L.add("2026-11-12", 1.0, 1.0, 0.0, None)          # no price: ignored
-    assert L.days["2026-11-12"]["charged"] == 1.0
+    # night: an empty battery charges 10 kWh from the grid at 0.13
+    L.add("2026-11-11", "a", 0.0, 1.0, 0.0, 0.0, 0.13, 0.0, 0.0, 0.13)
+    L.add("2026-11-12", "a", 10.0, 1.0, 0.0, 0.0, 0.13, 0.0, 10.0)
+    assert L.saved("2026-11-12") == pytest.approx(0.0)                      # charging alone is not a loss
+    assert L.days["2026-11-12"]["bought"] == pytest.approx(1.3)
+    assert L.stored_cost("a") == pytest.approx(0.13)
+    # day: 2 kWh used in the house at 0.29 -> saves 2 x (0.29 - 0.13)
+    L.add("2026-11-12", "a", 0.0, 0.0, 2.0, 0.0, 0.29, 0.0, 8.0)
+    assert L.saved("2026-11-12") == pytest.approx(2 * (0.29 - 0.13))
+    # discharging at the cheap rate it was bought at saves nothing
+    L.add("2026-11-12", "a", 0.0, 0.0, 1.0, 0.0, 0.13, 0.0, 7.0)
+    assert L.saved("2026-11-12") == pytest.approx(2 * 0.16)
+    assert L.saved("2026-11") == pytest.approx(0.32)
+
+
+def test_ledger_solar_losses_export_and_unknown_price():
+    L = Ledger()
+    L.add("d", "s", 0.0, 0.0, 0.0, 0.0, 0.29, 0.0, 0.0, 0.13)
+    L.add("d", "s", 5.0, 0.0, 0.0, 0.0, 0.29, 0.0, 5.0)                   # 5 kWh of solar: costs nothing
+    assert L.stored_cost("s") == pytest.approx(0.0)
+    L.add("d", "s", 0.0, 0.0, 1.0, 0.0, 0.29, 0.0, 4.0)
+    assert L.saved("d") == pytest.approx(0.29)                              # all of it is saving
+    # half the discharge went out to the grid: that half earns the export price, not the import price
+    L.add("d", "s", 0.0, 0.0, 2.0, 0.5, 0.29, 0.15, 2.0)
+    assert L.saved("d") == pytest.approx(0.29 + 1.0 * 0.29 + 1.0 * 0.15)
+    # losses: 10 kWh bought at 0.10 but only 9 kWh stored -> each stored kWh cost more
+    M = Ledger()
+    M.add("d", "b", 0.0, 1.0, 0.0, 0.0, 0.10, 0.0, 0.0, 0.10)
+    M.add("d", "b", 10.0, 1.0, 0.0, 0.0, 0.10, 0.0, 9.0)
+    assert M.stored_cost("b") == pytest.approx(1.0 / 9.0)
+    # no price known: nothing booked, but the stored level is followed
+    M.add("d", "b", 0.0, 0.0, 1.0, 0.0, None, 0.0, 8.0)
+    assert M.days["d"]["discharged"] == 0.0 and M.stores["b"][0] == 8.0
+    # a battery first seen part full: its energy is assumed to have cost the cheapest rate around
+    N = Ledger()
+    N.add("d", "c", 0.0, 0.0, 1.0, 0.0, 0.30, 0.0, 6.0, 0.12)
+    assert N.saved("d") == pytest.approx(0.30 - 0.12)
+    N.forget(set())
+    assert N.stores == {}
 
 
 def test_alert_tracker_debounces_and_clears():

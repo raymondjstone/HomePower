@@ -49,6 +49,7 @@ class HomePowerManager:
         self.away = False         # manual "away / holiday" mode
         self.energy: dict[str, float] = {}       # lifetime kWh counters
         self.ledger_days: dict[str, dict] = {}   # savings ledger
+        self.ledger_stores: dict | None = None   # cost of the energy stored in each battery (None = saved by an older version)
         self.profile_data: dict = {}             # learned usual household load
         self.daily_data: dict = {}               # daily self-consumption / cheap-rate figures
         self.health_data: dict = {}              # weekly battery efficiency
@@ -74,6 +75,7 @@ class HomePowerManager:
         self.forced = set(data.get("forced", []))
         self.energy = dict(data.get("energy", {}))
         self.ledger_days = dict(data.get("ledger", {}))
+        self.ledger_stores = dict(data["ledger_stores"]) if "ledger_stores" in data else (None if self.ledger_days else {})
         self.profile_data, self.daily_data = dict(data.get("profile", {})), dict(data.get("daily", {}))
         self.health_data = dict(data.get("health", {}))
         self.event_state, self.tests = dict(data.get("event_state", {})), dict(data.get("tests", {}))
@@ -89,6 +91,7 @@ class HomePowerManager:
             "goals": list(self.goals.values()), "paused": self.paused, "backup": self.backup, "away": self.away,
             "forced": sorted(self.forced),
             "energy": c.meter.totals if c else self.energy, "ledger": c.ledger.dump() if c else self.ledger_days,
+            "ledger_stores": c.ledger.stores if c else (self.ledger_stores or {}),
             "profile": c.profile.dump() if c else self.profile_data, "daily": c.daily.dump() if c else self.daily_data,
             "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
             "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen),
