@@ -405,3 +405,49 @@ def test_goal_on_batteries_that_cannot_charge_explains_itself():
     g = Goal("g", frozenset(), 100, time(7))
     r = compute(world([dev(modes={Mode.AUTO, Mode.HOLD})], goals=[g], rates=cheap_night_rates(), now=datetime(2026, 11, 11, 0, 30, tzinfo=UTC)))
     assert not r.wants and any("can charge right now" in n for n in r.notes)
+
+
+def test_dry_run_setting_round_trips_and_defaults_off():
+    from core.settings import build, clean
+    assert build({}).dry_run is False
+    assert clean({"dry_run": True}) == {"dry_run": True} and build(clean({"dry_run": True})).dry_run is True
+
+
+def test_tariff_comparison_parses_prices_and_ranks_tariffs():
+    from core.tariffs import compare, parse_tariffs
+    import pytest
+    ts = parse_tariffs("Flat; peak=0.30; standing=0.50\nGo; peak=0.28; cheap=0.07; window=00:30-05:30; export=0.15")
+    imp, exp = [0.0] * 48, [0.0] * 48
+    imp[2] = 4.0          # 01:00, in the cheap window
+    imp[20] = 2.0         # 10:00, outside it
+    exp[24] = 3.0
+    r = compare({"2026-11-10": {"imp": imp, "exp": exp}}, ts)
+    by = {x["name"]: x for x in r["tariffs"]}
+    assert by["Flat"]["total"] == round(6 * 0.30 + 0.50, 2)
+    assert by["Go"]["import_cost"] == round(4 * 0.07 + 2 * 0.28, 2) and by["Go"]["export_earned"] == 0.45
+    assert r["tariffs"][0]["name"] == "Go" and r["days"] == 1
+    for bad in ("x; peak=abc", "x; cheap=0.1; peak=0.3", "x; speed=3; peak=1", "peak=1"):
+        with pytest.raises(ValueError):
+            parse_tariffs(bad)
+    wrap = parse_tariffs("n; peak=0.3; cheap=0.1; window=23:30-07:30")
+    assert compare({"d": {"imp": [1.0] * 48, "exp": [0.0] * 48}}, wrap)["tariffs"][0]["import_cost"] == round(16 * 0.1 + 32 * 0.3, 2)
+
+
+def test_diverter_runs_in_cheap_hours_and_releases_afterwards():
+    from core.insights import Diverter
+    d = Diverter()
+    assert d.decide(0, 50, 2000, 500, 95, cheap=True) is None          # must hold for HOLD_S first
+    assert d.decide(Diverter.HOLD_S + 1, 50, 2000, 500, 95, cheap=True) == "on"      # importing, battery low: still on, it is cheap
+    assert d.decide(500, 50, 2000, 500, 95, cheap=True) is None          # stays on while cheap
+    assert d.decide(600, 50, 2000, 500, 95, cheap=False) is None         # cheap ended: the normal rule needs HOLD_S
+    assert d.decide(600 + Diverter.HOLD_S + 1, 50, 2000, 500, 95, cheap=False) == "off"
+
+
+def test_usage_history_records_half_hours_and_survives_a_round_trip():
+    from datetime import datetime
+    from core.insights import UsageHistory
+    u = UsageHistory()
+    u.add(datetime(2026, 11, 10, 1, 40), 0.2, 0.0)
+    u.add(datetime(2026, 11, 10, 1, 50), 0.1, 0.05)
+    u2 = UsageHistory(u.dump())
+    assert round(u2.days["2026-11-10"]["imp"][3], 3) == 0.3 and round(u2.days["2026-11-10"]["exp"][3], 3) == 0.05

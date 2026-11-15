@@ -126,6 +126,31 @@ class DailyStats:
         return {k: {kk: round(vv, 4) for kk, vv in v.items()} for k, v in self.days.items()}
 
 
+class UsageHistory:
+    """Grid import / export per half-hour of each day (kWh), kept for the tariff comparison."""
+
+    KEEP_DAYS = 90
+
+    def __init__(self, data: dict | None = None) -> None:
+        self.days: dict[str, dict[str, list[float]]] = {}
+        for k, v in (data or {}).items():
+            if len(v.get("imp", [])) == 48 and len(v.get("exp", [])) == 48:
+                self.days[k] = {"imp": [float(x) for x in v["imp"]], "exp": [float(x) for x in v["exp"]]}
+
+    def add(self, t: datetime, import_kwh: float, export_kwh: float) -> None:
+        if import_kwh <= 0 and export_kwh <= 0:
+            return
+        d = self.days.setdefault(t.strftime("%Y-%m-%d"), {"imp": [0.0] * 48, "exp": [0.0] * 48})
+        i = t.hour * 2 + t.minute // 30
+        d["imp"][i] += import_kwh
+        d["exp"][i] += export_kwh
+        for old in sorted(self.days)[:-self.KEEP_DAYS]:
+            del self.days[old]
+
+    def dump(self) -> dict:
+        return {k: {"imp": [round(x, 4) for x in v["imp"]], "exp": [round(x, 4) for x in v["exp"]]} for k, v in self.days.items()}
+
+
 # ---------------------------------------------------------------- weekly battery health
 
 
@@ -265,9 +290,12 @@ class Diverter:
         self._since: float | None = None
         self._want: bool | None = None
 
-    def decide(self, now_s: float, soc: float | None, grid_w: float | None, export_w: int, min_soc: int) -> str | None:
-        """Returns "on" / "off" when the switch should change, else None. grid_w: + importing, - exporting."""
-        if soc is None or grid_w is None:
+    def decide(self, now_s: float, soc: float | None, grid_w: float | None, export_w: int, min_soc: int, cheap: bool = False) -> str | None:
+        """Returns "on" / "off" when the switch should change, else None. grid_w: + importing, - exporting.
+        `cheap`: it is a cheap-rate period, so the load may run (and keeps running) whatever the sun is doing."""
+        if cheap and soc is not None:
+            want = True if not self.on else None
+        elif soc is None or grid_w is None:
             want = False if self.on else None          # no data: release the load rather than leave it running blind
         elif not self.on:
             want = True if (soc >= min_soc and -grid_w >= export_w) else None

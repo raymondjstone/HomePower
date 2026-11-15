@@ -55,6 +55,7 @@ def rand_world(rng: random.Random) -> World:
         load_blocks=set(rng.sample(["charge", "discharge"], rng.randint(0, 2))),
         rates=rng.choice([None, RateTable(peak=30.0, offpeak=7.5, offpeak_start=time(23, 30), offpeak_end=time(5, 30))]),
         forecast_kwh=rng.choice([None, 4.0, 20.0]),
+        solar_ceiling={i: rng.randint(10, 99) for i in ids if rng.random() < 0.4},
     )
 
 

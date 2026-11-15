@@ -70,6 +70,7 @@ class World:
     export_better: bool = False                    # selling surplus pays more than storing it and buying cheap later
     cheap_now: bool | None = None                  # is this a cheap-rate period? None = unknown / flat tariff
     usage_wh: Callable[[datetime, float], float | None] | None = None   # learned household use: (from, hours) -> Wh
+    solar_ceiling: dict[str, int] = field(default_factory=dict)   # battery -> highest charge that leaves room for the coming solar
 
 
 @dataclass
@@ -143,9 +144,17 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         if g.use_forecast:
             target = adjust_target_for_forecast(
                 target, w.forecast_kwh, sum(d.config.caps.capacity_wh for d in devs) / 1000, w.settings.forecast_share)
+        def tgt(d: DevIn, target: int = target) -> int:
+            # grid charging stops short of the battery's room-for-solar ceiling; solar-only charging may fill it
+            c = w.solar_ceiling.get(d.config.device_id)
+            return target if c is None or g.source == "solar" else min(target, c)
+
+        for d in devs:
+            if tgt(d) < target:
+                res.notes.append(f"goal '{g.id}': {d.config.name} charges to {tgt(d)}% from the grid, leaving room for the solar forecast")
         allocs: list[Alloc] = []
         if g.source != "solar" and w.rates is not None:
-            needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, target)
+            needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d))
                      for d in devs]
             slots = w.rates.slots_between(w.now, deadline)
             if not slots:
@@ -163,7 +172,7 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
             did = d.config.device_id
             p = power_now(allocs, did, w.now)
             if p > 0 and (did not in out or p > (out[did][0].power_w or 0)):
-                out[did] = (Desired(Mode.CHARGE, p, target_soc=target), f"goal '{g.id}'", "both" if g.source == "both" else "grid")
+                out[did] = (Desired(Mode.CHARGE, p, target_soc=tgt(d)), f"goal '{g.id}'", "both" if g.source == "both" else "grid")
             elif (p <= 0 and g.source != "grid" and not w.export_better and did not in out and d.actual.soc < target):
                 # no grid slot right now: take whatever solar would otherwise be exported (and nothing from the grid)
                 out[did] = (Desired(Mode.CHARGE, g.max_power_w, target_soc=target), f"goal '{g.id}'", "solar")
@@ -200,6 +209,10 @@ def compute(w: World) -> Result:
                 continue
             # No charge command on this battery, but Hold stops it discharging while its own panels keep charging it.
             want, reason = Desired(Mode.HOLD, reserve_soc=want.reserve_soc), reason + " (solar only)"
+        ceiling = w.solar_ceiling.get(did)
+        if (ceiling is not None and did in entries and want.mode is Mode.CHARGE and entries[did].source != "solar"
+                and ceiling < (want.target_soc if want.target_soc is not None else 100)):
+            want, reason = replace(want, target_soc=ceiling), f"{reason} (up to {ceiling}%: room left for solar)"
         if want.mode not in caps.supported_modes:
             res.notes.append(f"{did}: {want.mode.value} is not supported by this battery; left alone")
             continue
@@ -327,6 +340,12 @@ def compute(w: World) -> Result:
     for d in w.devices:
         did, caps = d.config.device_id, d.config.caps
         if (did in res.wants or not d.controllable or not d.actual.online or Mode.HOLD not in caps.supported_modes or solar_about):
+            continue
+        ceiling, soc = w.solar_ceiling.get(did), d.actual.soc
+        if (ceiling is not None and w.cheap_now and soc is not None
+                and (soc >= ceiling and (d.actual.power_w or 0) > 50 or d.release_pending and soc >= ceiling - SOC_MARGIN)):
+            # It is charging itself from the cheap rate (its own time-of-use setting): stop at the room-for-solar level.
+            res.wants[did], res.reasons[did] = Desired(Mode.HOLD), f"stopped at {ceiling}% to leave room for solar"
             continue
         # A reserve battery already being held is released a little later than it is taken (no flapping at the edge).
         if d.config.extra.get("role") == "reserve" and others_have_charge(1 if d.release_pending else 3):

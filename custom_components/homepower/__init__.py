@@ -9,6 +9,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
+from datetime import timedelta
 
 from . import services
 from .const import DOMAIN, SIGNAL_UPDATE, STORAGE_KEY, STORAGE_VERSION
@@ -20,6 +22,23 @@ PANEL_URL = "homepower"
 STATIC_URL = "/homepower_static"
 # The one place the version lives is manifest.json; it is also the cache-buster for the panel and card scripts.
 VERSION = json.loads((Path(__file__).parent / "manifest.json").read_text(encoding="utf8")).get("version", "0")
+
+
+def _asset_tag() -> str:
+    """Cache-buster for the panel and card scripts: the version plus a hash of the files, so a beta that keeps the same
+    version number still makes browsers fetch the new script."""
+    import hashlib
+
+    h = hashlib.sha1()
+    for name in ("homepower-panel.js", "homepower-card.js"):
+        try:
+            h.update((Path(__file__).parent / "frontend" / name).read_bytes())
+        except OSError:
+            pass
+    return f"{VERSION}-{h.hexdigest()[:8]}"
+
+
+ASSET_TAG = _asset_tag()
 PLATFORMS = ["sensor", "switch"]
 
 
@@ -63,8 +82,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(coordinator.async_add_listener(_cycle_done))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # A daily safety copy of batteries, schedules, goals, scenes and settings (no secrets), newest 7 kept.
+    async def _backup(_now=None) -> None:
+        try:
+            await hass.async_add_executor_job(_write_backup, hass.config.path("homepower_backups"),
+                                              manager.export_all(dict(entry.options)))
+        except Exception:  # noqa: BLE001 - a failed safety copy must never affect control
+            _LOGGER.warning("could not write the HomePower backup copy", exc_info=True)
+
+    entry.async_on_unload(async_track_time_interval(hass, _backup, timedelta(days=1)))
+
     await _async_register_panel(hass)
     return True
+
+
+BACKUPS_KEPT = 7
+
+
+def _write_backup(folder: str, data: dict) -> None:
+    """Write today's copy and delete the oldest beyond the newest BACKUPS_KEPT."""
+    from datetime import date
+
+    d = Path(folder)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"homepower-{date.today().isoformat()}.json").write_text(json.dumps(data, indent=1), encoding="utf8")
+    for old in sorted(d.glob("homepower-*.json"))[:-BACKUPS_KEPT]:
+        old.unlink(missing_ok=True)
 
 
 def _notify(hass: HomeAssistant, key: str, message: str) -> None:
@@ -104,13 +147,13 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
             hass,
             webcomponent_name="homepower-panel",
             frontend_url_path=PANEL_URL,
-            module_url=f"{STATIC_URL}/homepower-panel.js?v={VERSION}",
-            sidebar_title="HomePower",
+            module_url=f"{STATIC_URL}/homepower-panel.js?v={ASSET_TAG}",
+            sidebar_title="Home Power",
             sidebar_icon="mdi:home-battery",
             require_admin=True,
             config={},
         )
-        frontend.add_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={VERSION}")   # the optional Lovelace card
+        frontend.add_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={ASSET_TAG}")   # the optional Lovelace card
         _LOGGER.info("HomePower panel registered at /%s", PANEL_URL)
     except Exception as err:  # noqa: BLE001 - UI is optional
         _LOGGER.warning("HomePower sidebar panel could not be registered", exc_info=True)
@@ -135,7 +178,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             from homeassistant.components import frontend
 
             frontend.async_remove_panel(hass, PANEL_URL, warn_if_unknown=False)
-            frontend.remove_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={VERSION}")
+            frontend.remove_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={ASSET_TAG}")
         except Exception:  # noqa: BLE001
             pass
         data = hass.data.get(DOMAIN, {})

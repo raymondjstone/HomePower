@@ -43,6 +43,7 @@ The four modes mean: **Auto** = the battery runs its own logic; **Charge** / **D
   it stops discharging and is not told to top up from the grid (its own panels still charge it).
 - **Regions:** Anker control is local and works in any region; grid feed-in is off by default in IT/ES/TH/VN/PH. For EcoFlow
   pick your account's region (`api-e.ecoflow.com` Europe, `api-a.ecoflow.com` Americas, `api.ecoflow.com` elsewhere).
+- **Anker's X1 register list:** Anker publishes the X1's Modbus registers as [Anker SOLIX X1 Series Modbus Protocol V1.0.0](https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf) (PDF). HomePower's X1 support and the register compare names are based on it; on a real X1 its 32-bit numbers come low word first and its text registers hold their characters low byte first, which HomePower handles.
 - **One controller per battery:** an Anker battery accepts one controlling Modbus client. Switch off any other integration
   or tool that talks to it over Modbus.
 - **What has been checked on real hardware:** readings from an Anker E5000 Pro, an EcoFlow STREAM Ultra X and an ES5000.
@@ -158,7 +159,25 @@ more than five minutes old is not used to steer solar charging.
 - **Panels per battery:** each battery can be marked as having solar panels (yes / no / detect automatically when it
   reports solar power). Its card shows the solar power.
 - **Solar-only and grid + solar charging** for schedules and goals, described above.
-- **Solar forecast** for goals (Settings > Solar forecast), with the share of forecast solar that reaches the battery.
+- **Leave room for the solar forecast** (on by default). Batteries with panels are charged overnight only as far as the
+  next day's solar allows, so the sun never has to be wasted on a full battery:
+  - The day's forecast (Forecast.Solar or Solcast, found automatically, or a "tomorrow" sensor you pick) is spread over
+    the hours between sunrise and sunset (worked out from your home location, as the Sun integration does), most at
+    midday.
+  - From the end of the cheap rate, the house's **base load** (Settings, in watts) is taken from the batteries outside
+    cheap-rate hours, and from solar first once the sun is up. So the hours between the cheap rate ending and the sun
+    getting strong use some of the battery, which makes room for the afternoon's solar.
+  - HomePower works through the day in 15-minute steps and picks the **highest charge level at which the battery never
+    goes over 100%**. A battery cannot go below its minimum charge; from there the grid runs the house.
+  - The forecast is shared between the batteries with panels by capacity (10 kWh and 5 kWh batteries get 2/3 and 1/3); the
+    base load is shared between all batteries by capacity.
+  - Grid charging from schedules and goals stops at that level (the reason says "room left for solar"), and a battery
+    charging itself from the cheap rate (its own time-of-use setting) is held there. Manual overrides and backup mode are
+    not limited. The battery card shows "Room for solar: up to X%", and Settings > Solar forecast explains the figures.
+  - Without a forecast, solar counts as zero and batteries charge fully; the setup check suggests adding Forecast.Solar or
+    Solcast. Only batteries marked as having panels (or that have reported solar power) are limited.
+- **Solar forecast for goals:** a goal can also charge less when tomorrow's forecast is good, using the share of forecast
+  solar that reaches the battery.
 - **Solar-surplus load:** switch on a chosen switch (an immersion heater, for example) while the home battery is full and
   you are exporting more than a set power, and off again when it would need grid power. It is released while HomePower is
   paused.
@@ -183,6 +202,14 @@ more than five minutes old is not used to steer solar charging.
 ## Modes, scenes and overrides
 
 - **Pause:** HomePower keeps reading but sends no commands.
+- **Test run (dry run):** Settings > Test run. HomePower works out its plan as normal but sends nothing; each command it would have sent is listed under Events as `DRY RUN: would send ...`. Unlike Pause, the plan keeps being worked out, so it is the safe way to try new schedules, goals or a new battery.
+- **Grid down (Anker X1):** when an X1 reports the grid is lost it is running the house itself, so HomePower sends it no commands until the grid is back, shows a *Grid down* chip and raises an alert. Backup mode is not switched on for you, because it would stop the battery discharging below the reserve during the outage.
+- **Tariff comparison (Insights):** HomePower records your grid import and export every half-hour (90 days). List other tariffs in Settings > Compare tariffs, one per line (`Octopus Go; peak=0.28; cheap=0.07; window=00:30-05:30; export=0.15; standing=0.45`; rates per kWh, standing per day), and Insights prices the same recorded usage on each. It is what your house and battery actually did, so a tariff that suits a different battery schedule could do better than shown.
+- **Surplus load in cheap hours:** the solar-surplus switch can also be switched on during cheap-rate hours (Settings > Solar-surplus load).
+- **Anker X1 own limits (experimental, off by default):** mirrors HomePower's import and export limit into the X1's own limit registers so they hold if Home Assistant is down. It only sets a limit that is stricter than one already active and never switches one off. The addresses come from a community integration, so check them with Registers compare first.
+- **Register compare (Anker, Diagnostics tab):** for finding which register an app setting lives in. *Registers: save baseline* reads the battery's registers (read-only), you change one setting in the Anker app, then *Registers: compare* lists what changed, naming each register from Anker's [register list](https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf) where it is in there (an X1, or the Solarbank limits). Power, energy and temperature readings move by themselves, so they are tucked into a collapsed list; what is left is what you changed. A register listed as *not in Anker's list* is one the document does not cover.
+- **What HomePower reads from Anker batteries:** X1: on-grid / off-grid status, internal temperature, the alarms the X1 reports (inverter, battery or meter communication failure, EEPROM / flash error) and its software version, with an alert if the software changes. Solarbanks (E5000 Pro and others): the battery's own charge limit, discharge limit and backup reserve, shown on its card. All read-only.
+- **Automatic backup copies:** once a day HomePower writes your batteries, schedules, goals, scenes and settings (no secrets) to `homepower_backups/` in the Home Assistant config folder, keeping the newest 7.
 - **Backup mode:** tops up to the backup reserve and never discharges below it. Manual, or automatically while a chosen
   entity (a weather alert, for example) is on.
 - **Away mode:** only schedules marked "away" (or "always") apply. Manual, or from a person / tracker / on-off entity.
@@ -241,7 +268,7 @@ EcoFlow keys are only included if you tick the box.
 | Limits | House import limit, peak shaving, export limit, max total charge, max total discharge, re-apply cooldown |
 | Zero-import battery | Which battery keeps import at 0 W |
 | Tariff & prices | Quick-fill presets, rates sensor, rates unit, standard rate, cheap rate, export price, estimate the cheap period from history, cheap-rate start and end, more cheap periods, save the battery for peak hours, currency symbol |
-| Solar forecast | Tomorrow's forecast sensor, share that reaches the battery |
+| Solar forecast | Leave room for the solar forecast, house base load, tomorrow's forecast sensor (optional), share that reaches the battery (goals) |
 | Backup & away | Backup reserve, entity that turns backup mode on, away entity |
 | Protect loads | Entities that block charging and/or discharging while busy |
 | Alerts & heads-ups | Extra notify service, battery full, battery low level, cheap-rate-soon warning and its level, daily summary time |

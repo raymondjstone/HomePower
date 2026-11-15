@@ -86,6 +86,23 @@ class RateTable:
     def in_cheap_window(self, tt: time) -> bool:
         return any((a <= tt < b) if a < b else (tt >= a or tt < b) for a, b in self.windows)
 
+    def cheap_window_end(self, now: datetime) -> datetime | None:
+        """When the cheap window `now` is in ends (None when `now` is not in one). Back-to-back windows count as one."""
+        t, guard = now, now + timedelta(hours=24)
+        if not self.in_cheap_window(t.time()):
+            return None
+        while t < guard:
+            ends = []
+            for a, b in self.windows:
+                inside = (a <= t.time() < b) if a < b else (t.time() >= a or t.time() < b)
+                if inside:
+                    end = datetime.combine(t.date(), b, tzinfo=t.tzinfo)
+                    ends.append(end if end > t else end + timedelta(days=1))
+            if not ends:
+                return t
+            t = max(ends)
+        return t
+
     def minutes_to_cheap(self, tt: time) -> tuple[int, time] | None:
         """Minutes from `tt` until the next cheap window starts (0 = it starts right now), and that start time."""
         best = None

@@ -50,6 +50,11 @@ class Actual:
     grid_w: float | None = None     # house grid power if the device can see it (+ importing)
     pv_w: float | None = None
     load_w: float | None = None
+    limits: tuple | None = None     # the battery's own (charge limit %, discharge limit %, backup reserve %, backup on) - Solarbank
+    firmware: str | None = None     # software version the device reports (X1)
+    temp_c: float | None = None     # internal temperature (X1)
+    alarms: tuple = ()              # active alarms the device reports, as plain text (X1)
+    off_grid: bool | None = None    # the device reports the grid is lost (None = it cannot tell)
 
 
 @dataclass(slots=True)

@@ -1,0 +1,141 @@
+"""Names for the Anker SOLIX X1's Modbus registers, from Anker's "X1 Series Modbus Protocol" V1.0.0 (2025-08-07),
+https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf
+
+Used by the panel's register compare tool to name what changed and to tell live readings from settings. Only
+registers whose address is unambiguous in the document and agrees with a real X1's readings are listed; anything
+else is reported by number only. (HA-free.)
+
+kind: "live"    a measurement that changes on its own (ignore it when looking for a changed setting)
+      "setting" read/write: something that can be configured
+      "info"    fixed identity / rating / status that rarely changes
+      "alarm"   alarm bit-field
+"""
+from __future__ import annotations
+
+# (first address, number of registers, name, access, kind)
+X1_REGISTERS: tuple[tuple[int, int, str, str, str], ...] = (
+    (10000, 1, "Plant status (1 on-grid, 2 off-grid, 3 standby, 4 fault)", "RO", "info"),
+    (10001, 1, "Battery status", "RO", "live"),
+    (10002, 2, "PV power", "RO", "live"),
+    (10004, 2, "3rd-party PV power", "RO", "live"),
+    (10006, 2, "Active power (PCS AC side)", "RO", "live"),
+    (10008, 2, "Battery power", "RO", "live"),
+    (10010, 2, "Load power", "RO", "live"),
+    (10012, 2, "Grid power", "RO", "live"),
+    (10014, 1, "SOC", "RO", "live"),
+    (10015, 1, "SOH", "RO", "live"),
+    (10016, 2, "Daily PV generation", "RO", "live"),
+    (10018, 2, "Total PV generation", "RO", "live"),
+    (10020, 2, "Daily battery charge energy", "RO", "live"),
+    (10022, 2, "Total battery charge energy", "RO", "live"),
+    (10024, 2, "Daily load consumption", "RO", "live"),
+    (10026, 2, "Total load consumption", "RO", "live"),
+    (10028, 2, "Daily purchased energy", "RO", "live"),
+    (10030, 2, "Total purchased energy", "RO", "live"),
+    (10032, 2, "Daily feed-in energy", "RO", "live"),
+    (10034, 2, "Total feed-in energy", "RO", "live"),
+    (10036, 2, "Rechargeable power", "RO", "live"),
+    (10038, 2, "Dischargeable power", "RO", "live"),
+    (10040, 1, "Number of PCS", "RO", "info"),
+    (10041, 1, "Number of available PCS", "RO", "info"),
+    (10042, 8, "System alarms 1-8", "RO", "alarm"),
+    (10060, 2, "System time", "RW", "live"),
+    (10062, 1, "Time zone", "RW", "setting"),
+    (10063, 1, "DST (1 enable, 2 disable)", "RW", "setting"),
+    (10064, 1, "Work mode (0 self-consumption, 1 time-of-use, 2 backup only, 3 third-party control, 4 user-defined, 5 socket aggregation)", "RW", "setting"),
+    (10069, 1, "Active power control (%)", "RW", "setting"),
+    (10070, 1, "Reactive power control (%)", "RW", "setting"),
+    (10071, 2, "Battery charge/discharge control (+ discharge, - charge; third-party mode only)", "RW", "setting"),
+    (10073, 1, "Switch on/off (write only)", "WO", "setting"),
+    (10074, 1, "Export power limit mode (0 off, 1 percent, 2 fixed W)", "RW", "setting"),
+    (10075, 2, "Export power limit value", "RW", "setting"),
+    (10077, 1, "Import power limit mode (0 off, 1 percent, 2 fixed W)", "RW", "setting"),
+    (10078, 2, "Import power limit value", "RW", "setting"),
+    (10080, 1, "Comms-disconnect time with VPP (s, default 1800)", "RW", "setting"),
+    (10090, 10, "Model name", "RO", "info"),
+    (10100, 12, "Serial number", "RO", "info"),
+    (10112, 6, "Software version", "RO", "info"),
+    (10118, 6, "Hardware version", "RO", "info"),
+    (10124, 2, "Rated power", "RO", "info"),
+    (10126, 2, "Maximum active power", "RO", "info"),
+    (10128, 2, "Maximum apparent power", "RO", "info"),
+    (10130, 1, "Number of MPPT", "RO", "info"),
+    (10131, 1, "Strings per MPPT", "RO", "info"),
+    (10132, 1, "Output mode (1 L/N, 2 L1/L2/N, 3 3P3W, 4 3P4W)", "RO", "info"),
+    (10143, 1, "PCS work status (0 shutdown, 1 on-grid, 2 off-grid, 3 standby, 4 self-check, 5 fault)", "RO", "info"),
+    (10144, 12, "PCS alarms 1-12", "RO", "alarm"),
+    (10156, 1, "Internal temperature", "RO", "live"),
+    (10167, 16, "PV1-PV8 voltage / current", "RO", "live"),
+    (10183, 2, "Total PV power", "RO", "live"),
+    (10185, 2, "Daily PV generation", "RO", "live"),
+    (10187, 2, "Total PV generation", "RO", "live"),
+    (10199, 3, "Grid voltage (Uab / phase A, B, C)", "RO", "live"),
+    (10205, 3, "Grid current (phase A, B, C)", "RO", "live"),
+    (10208, 2, "Grid active power", "RO", "live"),
+    (10210, 2, "Grid reactive power", "RO", "live"),
+    (10212, 1, "Grid power factor", "RO", "live"),
+    (10213, 1, "Grid frequency", "RO", "live"),
+    (10249, 1, "Number of battery packs", "RO", "info"),
+    (10250, 2, "Battery rated capacity", "RO", "info"),
+    (10284, 10, "Pack 1 model name", "RO", "info"),
+    (10294, 12, "Pack 1 serial number", "RO", "info"),
+    (10306, 6, "Pack 1 software version", "RO", "info"),
+    (10320, 1, "Pack 1 status", "RO", "live"),
+    (10328, 2, "Pack 1 maximum / minimum temperature", "RO", "live"),
+    (10620, 10, "Meter model", "RO", "info"),
+    (10631, 1, "Meter status (0 normal, 1 offline, 3 fault)", "RO", "info"),
+    (10632, 40, "Meter readings (voltage, current, power, energy)", "RO", "live"),
+)
+
+# Solarbank (E5000 Pro etc.): the same bank for the live readings, plus its own SOC limits. From Anker's official
+# integration (anker-charging/ha-anker-solix-official, Solarbank 4 E5000 Pro register file).
+SOLARBANK_REGISTERS: tuple[tuple[int, int, str, str, str], ...] = (
+    (10001, 1, "Battery status (0 standby, 1 charging, 2 discharging, 3 sleep)", "RO", "live"),
+    (10002, 2, "PV power", "RO", "live"),
+    (10004, 2, "3rd-party PV power", "RO", "live"),
+    (10008, 2, "Battery power", "RO", "live"),
+    (10010, 2, "Load power", "RO", "live"),
+    (10012, 2, "Grid power", "RO", "live"),
+    (10014, 1, "SOC", "RO", "live"),
+    (10018, 2, "PV generation, lifetime", "RO", "live"),
+    (10036, 2, "Maximum charge power", "RO", "live"),
+    (10038, 2, "Maximum discharge power", "RO", "live"),
+    (10064, 1, "Work mode (0 self-consumption, 1 time-of-use, 3 third-party control, 4 custom, 5 socket overlay, 6 smart, 7 dynamic pricing)", "RW", "setting"),
+    (10071, 2, "Battery charge/discharge setpoint (+ discharge, - charge; third-party mode only)", "RW", "setting"),
+    (10100, 12, "Serial number", "RO", "info"),
+    (10112, 6, "Software version", "RO", "info"),
+    (10208, 2, "AC grid-side output power", "RO", "live"),
+    (10250, 2, "Rated energy", "RO", "info"),
+    (10262, 2, "Cumulative charge energy", "RO", "live"),
+    (10264, 2, "Cumulative discharge energy", "RO", "live"),
+    (32768, 5, "Model", "RO", "info"),
+    (32774, 1, "Work-mode capability mask", "RO", "info"),
+    (32775, 1, "Capability mask (bit0 charge limit, bit1 discharge limit, bit2 backup reserve, bit3 backup enable)", "RO", "info"),
+    (60000, 1, "Charge limit SOC (%, 80-100)", "RW", "setting"),
+    (60001, 1, "Discharge limit SOC (%, 0-20)", "RW", "setting"),
+    (60002, 1, "Backup reserve SOC (%)", "RW", "setting"),
+    (60003, 1, "Backup reserve enabled (0 off, 1 on)", "RO", "setting"),
+)
+
+# Alarm bits worth telling the user about (System Alarm 1 = register 10042, bit numbers as in the document).
+X1_ALARMS: dict[int, str] = {
+    0: "EEPROM read/write error",
+    1: "flash read/write error",
+    4: "inverter (DC/AC) communication failure",
+    5: "battery (BMS) communication failure",
+    6: "meter 1 communication failure",
+    7: "meter 2 communication failure",
+}
+
+
+def describe_all(x1: bool = True) -> dict[str, list[str]]:
+    """{register address: [name, access, kind]} for every register covered, for the panel."""
+    out: dict[str, list[str]] = {}
+    for addr, n, name, access, kind in (X1_REGISTERS if x1 else SOLARBANK_REGISTERS):
+        for i in range(n):
+            out[str(addr + i)] = [name, access, kind]
+    return out
+
+
+def alarm_texts(register_value: int) -> list[str]:
+    return [text for bit, text in X1_ALARMS.items() if register_value & (1 << bit)]

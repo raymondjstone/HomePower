@@ -51,12 +51,14 @@ class HomePowerManager:
         self.ledger_days: dict[str, dict] = {}   # savings ledger
         self.ledger_stores: dict | None = None   # cost of the energy stored in each battery (None = saved by an older version)
         self.profile_data: dict = {}             # learned usual household load
+        self.usage_data: dict = {}               # grid import/export per half-hour per day (tariff comparison)
         self.daily_data: dict = {}               # daily self-consumption / cheap-rate figures
         self.health_data: dict = {}              # weekly battery efficiency
         self.scenes: dict[str, dict] = {}        # saved combinations of modes and limits
         self.event_state: dict[str, bool] = {}   # heads-up messages currently showing
         self.tests: dict[str, dict] = {}         # last control-test result per battery
         self.pv_seen: set[str] = set()           # batteries that have reported solar power (so they have panels)
+        self.forecast_days: dict[str, float] = {}   # solar forecast kWh by date, kept so 'tomorrow' is still known after midnight
         self.divert_on: str = ""                 # the solar-surplus load we switched on (to switch it off after a restart)
         self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
@@ -77,10 +79,12 @@ class HomePowerManager:
         self.ledger_days = dict(data.get("ledger", {}))
         self.ledger_stores = dict(data["ledger_stores"]) if "ledger_stores" in data else (None if self.ledger_days else {})
         self.profile_data, self.daily_data = dict(data.get("profile", {})), dict(data.get("daily", {}))
+        self.usage_data = dict(data.get("usage", {}))
         self.health_data = dict(data.get("health", {}))
         self.event_state, self.tests = dict(data.get("event_state", {})), dict(data.get("tests", {}))
         self.divert_on = str(data.get("divert_on") or "")
         self.pv_seen = set(data.get("pv_seen", []))
+        self.forecast_days = dict(data.get("forecast_days", {}))
         scenes = data.get("scenes")
         self.scenes = {s["name"]: s for s in (scenes if scenes is not None else DEFAULT_SCENES)}
 
@@ -92,9 +96,9 @@ class HomePowerManager:
             "forced": sorted(self.forced),
             "energy": c.meter.totals if c else self.energy, "ledger": c.ledger.dump() if c else self.ledger_days,
             "ledger_stores": c.ledger.stores if c else (self.ledger_stores or {}),
-            "profile": c.profile.dump() if c else self.profile_data, "daily": c.daily.dump() if c else self.daily_data,
+            "profile": c.profile.dump() if c else self.profile_data, "daily": c.daily.dump() if c else self.daily_data, "usage": c.usage.dump() if c else self.usage_data,
             "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
-            "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen),
+            "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen), "forecast_days": self.forecast_days,
         })
 
     async def save_runtime(self) -> None:
@@ -295,6 +299,20 @@ class HomePowerManager:
         except MapError:
             return False
 
+    async def scan_registers(self, device_id: str) -> dict:
+        """Raw register dump of a connected battery (read-only), for the panel's register compare tool."""
+        cached = self._adapters.get(device_id)
+        driver = getattr(cached[1], "driver", None) if cached else None
+        if driver is None or not hasattr(driver, "scan"):
+            raise ValidationError("this battery does not support a register scan")
+        try:
+            out = await driver.scan()
+        except Exception as err:  # noqa: BLE001 - shown to the user
+            raise ValidationError(f"could not scan: {err}") from err
+        from .core.anker_x1_map import describe_all
+        out["names"] = describe_all(bool(driver.config.extra.get("house_meter")))   # Anker's register lists: names, read/write, live-or-setting
+        return out
+
     async def _hand_back(self, device_id: str) -> None:
         """Best effort: give a battery we are forcing back to its own control before we stop managing it."""
         cached = self._adapters.get(device_id)
@@ -316,6 +334,13 @@ class HomePowerManager:
         self.devices[d["device_id"]] = d
         await self._apply()
         return d
+
+    async def reorder_devices(self, device_ids: list[str]) -> None:
+        """Put the batteries in the given order (ids not listed keep their place at the end)."""
+        order = [i for i in dict.fromkeys(device_ids) if i in self.devices]
+        order += [i for i in self.devices if i not in order]
+        self.devices = {i: self.devices[i] for i in order}
+        await self._apply()
 
     async def delete_device(self, device_id: str) -> None:
         await self._hand_back(device_id)
