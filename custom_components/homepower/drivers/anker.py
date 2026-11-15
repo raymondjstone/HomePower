@@ -65,8 +65,12 @@ class AnkerModbusDriver:
             mode, set_w = Mode.HOLD, 0
         else:
             mode, set_w = (Mode.DISCHARGE if sp > 0 else Mode.CHARGE), abs(sp)
+        # X1: plant status 1 = on-grid, 2 = off-grid. While the grid is lost the inverter runs the house
+        # itself, so HomePower must not fight it (protected makes the engine leave it alone).
+        plant = inp[0] if self.config.extra.get("house_meter") else None
+        off_grid = (plant == 2) if plant in (1, 2) else None
         return Actual(
-            online=True,
+            online=True, off_grid=off_grid, protected=bool(off_grid),
             soc=float(inp[14]),
             power_w=float(-self._i32(inp, 10008)),  # register: negative = charging; we use + charging
             mode=mode, set_power_w=set_w,
@@ -106,6 +110,53 @@ class AnkerModbusDriver:
         except ModbusError:
             pass
         return info
+
+    async def set_grid_limits(self, import_w: int | None, export_w: int | None) -> list[str]:
+        """X1 only: mirror HomePower's house import / export limit into the inverter's own limit registers
+        (10074 export mode, 10075-76 value, 10077 import mode, 10078-79 value; mode 0 off, 2 fixed watts), so the
+        limit also holds if Home Assistant is down. Cautious by design: it only ever sets a limit that is lower than
+        one already active (an installer's grid-code limit is never raised or switched off) and writes nothing that
+        is already right. Returns what it changed."""
+        hold = await self.client.read_holding(10074, 6)
+        order, changed = self._order or "big", []
+        for label, base, want in (("export", 0, export_w), ("import", 3, import_w)):
+            if not want or want <= 0:
+                continue
+            mode, cur = hold[base], to_u32(hold[base + 1], hold[base + 2], order)
+            if mode == 2 and cur == want:
+                continue
+            if mode != 0 and cur and cur < want:
+                continue          # the inverter already has a stricter limit: leave it alone
+            await self.client.write_multiple(10074 + base + 1, from_i32(int(want), order))
+            await self.client.write_register(10074 + base, 2)
+            changed.append(f"{label} limit {want} W")
+        return changed
+
+    async def scan(self, ranges=((10000, 10300), (60000, 60100))) -> dict[str, dict[str, int]]:
+        """Read-only dump of raw registers (holding and input) for finding which register an app setting lives in:
+        scan, change one setting in the vendor app, scan again and compare. Never writes. A device that does not
+        answer a range at all (some stay silent instead of returning an error) is skipped after a few tries."""
+        out: dict[str, dict[str, int]] = {"holding": {}, "input": {}}
+        for kind, read in (("holding", self.client.read_holding), ("input", self.client.read_input)):
+            for lo, hi in ranges:
+                addr, silent = lo, 0
+                while addr <= hi and silent < 3:
+                    n = min(10, hi - addr + 1)
+                    try:
+                        vals = await read(addr, n)
+                        out[kind].update({str(addr + i): v for i, v in enumerate(vals)})
+                        silent = 0
+                    except ModbusError as err:
+                        if err.code is None:      # no reply at all
+                            silent += 1
+                        else:                     # the device refused this block: try its registers one by one
+                            for a in range(addr, addr + n):
+                                try:
+                                    out[kind][str(a)] = (await read(a, 1))[0]
+                                except ModbusError:
+                                    pass
+                    addr += n
+        return out
 
     async def keepalive(self) -> None:
         """Re-send the current setpoint unchanged so the device's comms watchdog (X1) stays fed."""

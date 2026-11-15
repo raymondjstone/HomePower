@@ -103,6 +103,63 @@ def test_read_decodes_and_normalises_sign():
     asyncio.run(go())
 
 
+def test_x1_reports_grid_loss_and_other_models_do_not():
+    async def go():
+        async with fake_anker() as dev:
+            x1 = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            dev.inp[10000] = 1
+            a = await x1.read()
+            assert a.off_grid is False and not a.protected
+            dev.inp[10000] = 2                                          # plant status 2 = off-grid
+            a = await x1.read()
+            assert a.off_grid is True and a.protected                    # engine leaves it alone
+            dev.inp[10000] = 4                                          # fault etc.: not a grid statement
+            assert (await x1.read()).off_grid is None
+            dev.inp[10000] = 2
+            other = AnkerModbusDriver(cfg(dev.port))                    # models without the flag never claim it
+            assert (await other.read()).off_grid is None
+            await x1.close(); await other.close()
+    asyncio.run(go())
+
+
+def test_register_scan_reads_without_writing_and_skips_unanswered_ranges():
+    async def go():
+        async with fake_anker() as dev:
+            d = AnkerModbusDriver(cfg(dev.port))
+            dev.inp[10014] = 62
+            dev.hold[10064] = 3
+            try:
+                out = await d.scan(ranges=((10000, 10049), (10060, 10084), (59000, 59010)))   # the fake refuses the gaps
+                assert out["input"]["10014"] == 62 and out["holding"]["10064"] == 3
+                assert "10049" not in out["holding"] and not any(k.startswith("590") for k in {**out["input"], **out["holding"]})
+                assert dev.writes == []                                      # never writes
+            finally:
+                await d.close()
+    asyncio.run(go())
+
+
+def test_x1_grid_limits_only_ever_tighten_and_skip_what_is_already_right():
+    async def go():
+        async with fake_anker() as dev:
+            for a in range(10060, 10085):
+                dev.hold.setdefault(a, 0)
+            d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            d._order = "big"
+            try:
+                assert await d.set_grid_limits(6000, 3680) == ["export limit 3680 W", "import limit 6000 W"]
+                assert dev.hold[10074] == 2 and (dev.hold[10075] << 16 | dev.hold[10076]) == 3680
+                assert dev.hold[10077] == 2 and (dev.hold[10078] << 16 | dev.hold[10079]) == 6000
+                n = len(dev.writes)
+                assert await d.set_grid_limits(6000, 3680) == [] and len(dev.writes) == n        # already right: no writes
+                dev.hold[10076] = 2000                                                          # installer set a stricter export limit
+                assert await d.set_grid_limits(6000, 3680) == []                                # never loosened
+                assert (dev.hold[10075] << 16 | dev.hold[10076]) == 2000
+                assert await d.set_grid_limits(None, None) == []                                # no limit set: never switches one off
+            finally:
+                await d.close()
+    asyncio.run(go())
+
+
 def test_probe_reports_capabilities():
     async def go():
         async with fake_anker() as dev:

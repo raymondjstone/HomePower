@@ -50,6 +50,7 @@ class Actual:
     grid_w: float | None = None     # house grid power if the device can see it (+ importing)
     pv_w: float | None = None
     load_w: float | None = None
+    off_grid: bool | None = None    # the device reports the grid is lost (None = it cannot tell)
 
 
 @dataclass(slots=True)

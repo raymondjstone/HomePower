@@ -201,6 +201,13 @@ more than five minutes old is not used to steer solar charging.
 ## Modes, scenes and overrides
 
 - **Pause:** HomePower keeps reading but sends no commands.
+- **Test run (dry run):** Settings > Test run. HomePower works out its plan as normal but sends nothing; each command it would have sent is listed under Events as `DRY RUN: would send ...`. Unlike Pause, the plan keeps being worked out, so it is the safe way to try new schedules, goals or a new battery.
+- **Grid down (Anker X1):** when an X1 reports the grid is lost it is running the house itself, so HomePower sends it no commands until the grid is back, shows a *Grid down* chip and raises an alert. Backup mode is not switched on for you, because it would stop the battery discharging below the reserve during the outage.
+- **Tariff comparison (Insights):** HomePower records your grid import and export every half-hour (90 days). List other tariffs in Settings > Compare tariffs, one per line (`Octopus Go; peak=0.28; cheap=0.07; window=00:30-05:30; export=0.15; standing=0.45`; rates per kWh, standing per day), and Insights prices the same recorded usage on each. It is what your house and battery actually did, so a tariff that suits a different battery schedule could do better than shown.
+- **Surplus load in cheap hours:** the solar-surplus switch can also be switched on during cheap-rate hours (Settings > Solar-surplus load).
+- **Anker X1 own limits (experimental, off by default):** mirrors HomePower's import and export limit into the X1's own limit registers so they hold if Home Assistant is down. It only sets a limit that is stricter than one already active and never switches one off. The addresses come from a community integration, so check them with Registers compare first.
+- **Register compare (Anker, Diagnostics tab):** for finding which register an app setting lives in. *Registers: save baseline* reads the battery's registers (read-only), you change one setting in the Anker app, then *Registers: compare* lists what changed. Live readings such as power and charge level change on their own, so ignore those.
+- **Automatic backup copies:** once a day HomePower writes your batteries, schedules, goals, scenes and settings (no secrets) to `homepower_backups/` in the Home Assistant config folder, keeping the newest 7.
 - **Backup mode:** tops up to the backup reserve and never discharges below it. Manual, or automatically while a chosen
   entity (a weather alert, for example) is on.
 - **Away mode:** only schedules marked "away" (or "always") apply. Manual, or from a person / tracker / on-off entity.

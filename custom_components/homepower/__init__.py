@@ -9,6 +9,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_track_time_interval
+from datetime import timedelta
 
 from . import services
 from .const import DOMAIN, SIGNAL_UPDATE, STORAGE_KEY, STORAGE_VERSION
@@ -63,8 +65,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(coordinator.async_add_listener(_cycle_done))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    # A daily safety copy of batteries, schedules, goals, scenes and settings (no secrets), newest 7 kept.
+    async def _backup(_now=None) -> None:
+        try:
+            await hass.async_add_executor_job(_write_backup, hass.config.path("homepower_backups"),
+                                              manager.export_all(dict(entry.options)))
+        except Exception:  # noqa: BLE001 - a failed safety copy must never affect control
+            _LOGGER.warning("could not write the HomePower backup copy", exc_info=True)
+
+    entry.async_on_unload(async_track_time_interval(hass, _backup, timedelta(days=1)))
+
     await _async_register_panel(hass)
     return True
+
+
+BACKUPS_KEPT = 7
+
+
+def _write_backup(folder: str, data: dict) -> None:
+    """Write today's copy and delete the oldest beyond the newest BACKUPS_KEPT."""
+    from datetime import date
+
+    d = Path(folder)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"homepower-{date.today().isoformat()}.json").write_text(json.dumps(data, indent=1), encoding="utf8")
+    for old in sorted(d.glob("homepower-*.json"))[:-BACKUPS_KEPT]:
+        old.unlink(missing_ok=True)
 
 
 def _notify(hass: HomeAssistant, key: str, message: str) -> None:
@@ -105,7 +131,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
             webcomponent_name="homepower-panel",
             frontend_url_path=PANEL_URL,
             module_url=f"{STATIC_URL}/homepower-panel.js?v={VERSION}",
-            sidebar_title="HomePower",
+            sidebar_title="Home Power",
             sidebar_icon="mdi:home-battery",
             require_admin=True,
             config={},

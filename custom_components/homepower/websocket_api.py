@@ -45,7 +45,7 @@ def _payload(hass: HomeAssistant) -> dict:
 
 @callback
 def async_register(hass: HomeAssistant) -> None:
-    for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device,
+    for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device, ws_reorder_devices, ws_scan_registers, ws_compare_tariffs,
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
                 ws_override, ws_clear_override,
                 ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control,
@@ -102,6 +102,25 @@ def _guard(fn):
 @_guard
 async def ws_save_device(hass, msg):
     return await _mgr(hass).save_device(msg["device"])
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "homepower/device/reorder", vol.Required("device_ids"): [str]}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_reorder_devices(hass, msg):
+    await _mgr(hass).reorder_devices(msg["device_ids"])
+    return {}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/device/scan", vol.Required("device_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_scan_registers(hass, msg):
+    return await _mgr(hass).scan_registers(msg["device_id"])
 
 
 @websocket_api.websocket_command(
@@ -285,6 +304,14 @@ async def ws_diagnostics(hass, msg):
     c = _mgr(hass).coordinator
     return {"devices": c.diagnostics(), "events": [list(e) for e in list(c._snap.events)[-100:]],
             "alerts": sorted(c.alerts.active()), "notes": c.last_result.notes}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/tariffs/compare", vol.Optional("days", default=30): vol.All(int, vol.Range(min=1, max=90))})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_compare_tariffs(hass, msg):
+    return _mgr(hass).coordinator.tariff_comparison(msg["days"])
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/device/test", vol.Required("device_id"): str})
