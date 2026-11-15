@@ -22,6 +22,23 @@ PANEL_URL = "homepower"
 STATIC_URL = "/homepower_static"
 # The one place the version lives is manifest.json; it is also the cache-buster for the panel and card scripts.
 VERSION = json.loads((Path(__file__).parent / "manifest.json").read_text(encoding="utf8")).get("version", "0")
+
+
+def _asset_tag() -> str:
+    """Cache-buster for the panel and card scripts: the version plus a hash of the files, so a beta that keeps the same
+    version number still makes browsers fetch the new script."""
+    import hashlib
+
+    h = hashlib.sha1()
+    for name in ("homepower-panel.js", "homepower-card.js"):
+        try:
+            h.update((Path(__file__).parent / "frontend" / name).read_bytes())
+        except OSError:
+            pass
+    return f"{VERSION}-{h.hexdigest()[:8]}"
+
+
+ASSET_TAG = _asset_tag()
 PLATFORMS = ["sensor", "switch"]
 
 
@@ -130,13 +147,13 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
             hass,
             webcomponent_name="homepower-panel",
             frontend_url_path=PANEL_URL,
-            module_url=f"{STATIC_URL}/homepower-panel.js?v={VERSION}",
+            module_url=f"{STATIC_URL}/homepower-panel.js?v={ASSET_TAG}",
             sidebar_title="Home Power",
             sidebar_icon="mdi:home-battery",
             require_admin=True,
             config={},
         )
-        frontend.add_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={VERSION}")   # the optional Lovelace card
+        frontend.add_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={ASSET_TAG}")   # the optional Lovelace card
         _LOGGER.info("HomePower panel registered at /%s", PANEL_URL)
     except Exception as err:  # noqa: BLE001 - UI is optional
         _LOGGER.warning("HomePower sidebar panel could not be registered", exc_info=True)
@@ -161,7 +178,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             from homeassistant.components import frontend
 
             frontend.async_remove_panel(hass, PANEL_URL, warn_if_unknown=False)
-            frontend.remove_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={VERSION}")
+            frontend.remove_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={ASSET_TAG}")
         except Exception:  # noqa: BLE001
             pass
         data = hass.data.get(DOMAIN, {})
