@@ -1135,7 +1135,7 @@ class HomePowerPanel extends HTMLElement {
       <tr><th>Last command</th><td>${x.last_command ? `${esc(x.last_command.mode)} ${x.last_command.power_w ? fmtW(x.last_command.power_w) : ""} at ${new Date(x.last_command.at).toLocaleTimeString()} - ${esc(x.last_command.result)}` : "none yet"}</td></tr>
       <tr><th>Problems</th><td>${x.last_error ? `<span class="bad">${esc(x.last_error)}</span>` : "none"}${x.unconfirmed ? ` · ${x.unconfirmed} unconfirmed` : ""}${x.release_pending ? " · holding control" : ""}</td></tr></table>
       <div style="margin-top:10px"><button class="btn sm" data-act="test-control" data-id="${esc(id)}"><ha-icon icon="mdi:flask-outline" style="--mdc-icon-size:16px"></ha-icon>Test control</button>
-        ${x.driver === "anker_modbus" ? `<button class="btn sm" data-act="scan-save" data-id="${esc(id)}" title="Read every register (read-only) and remember it as the starting point">Registers: save baseline</button> <button class="btn sm" data-act="scan-compare" data-id="${esc(id)}" title="Read the registers again and list what changed since the baseline">Registers: compare</button> <a class="sub" style="font-size:12px" href="https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf" target="_blank" rel="noopener">Anker's X1 register list (PDF)</a>` : ""}</div>
+        ${x.driver === "anker_modbus" ? `<button class="btn sm" data-act="scan-save" data-id="${esc(id)}" title="Read every register (read-only) and remember it as the starting point">Registers: save baseline</button> <button class="btn sm" data-act="scan-compare" data-id="${esc(id)}" title="Read the registers again and list what changed since the baseline">Registers: compare</button> <button class="btn sm" data-act="scan-show" data-id="${esc(id)}" title="Read every register (read-only) and list them all with their names and values">Registers: show all</button> <a class="sub" style="font-size:12px" href="https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf" target="_blank" rel="noopener">Anker's X1 register list (PDF)</a>` : ""}</div>
       <div class="steps" id="scan-${esc(id)}" style="margin-top:8px">${this._scans && this._scans[id] ? this._scans[id].html || "" : ""}</div>
       <div class="steps" id="test-${esc(id)}" style="margin-top:8px">${this._tests && this._tests[id] ? this._tests[id] : ""}</div></div>`).join("");
     const ev = (dg.events || []).slice().reverse().slice(0, 40).map(([t, id, m]) => `<div><span class="t">${esc(new Date(t).toLocaleTimeString())}</span> <b>${esc(id)}</b> ${esc(m)}</div>`).join("");
@@ -1174,6 +1174,40 @@ class HomePowerPanel extends HTMLElement {
     const tbl = (r) => `<table class="tbl"><tr><th>Register</th><th>What it is</th><th>Change</th></tr>${r.join("")}</table>`;
     set((rows.length ? `<div><b>Changed</b> (settings, status and unknown registers)</div>${tbl(rows)}` : `<div class="sub">No setting or unknown register changed.</div>`)
       + (live.length ? `<details style="margin-top:8px"><summary class="sub">${live.length} live reading${live.length === 1 ? "" : "s"} also moved (power, energy, temperature: ignore)</summary>${tbl(live)}</details>` : ""));
+  }
+
+  // Every register the battery answers, with its name (where Anker's register list has one) and value; filterable, and
+  // downloadable as a CSV file. Read-only.
+  async _showRegisters(id) {
+    const el = () => this.shadowRoot.getElementById("scan-" + id);
+    const put = (html) => { (this._scans ||= {})[id] = { ...(this._scans[id] || {}), html }; if (el()) el().innerHTML = html; };
+    put(`<div class="sub">Reading every register (read-only)… this can take up to a minute.</div>`);
+    let r;
+    try { r = await this._hass.callWS({ type: "homepower/device/scan", device_id: id }); }
+    catch (e) { return put(`<div class="bad">${esc(e.message || e)}</div>`); }
+    const names = r.names || {}, addrs = [...new Set([...Object.keys(r.holding), ...Object.keys(r.input)])].sort((a, b) => a - b);
+    const text = (a) => {   // text registers (model, serial, software version) hold two characters each, low byte first
+      const nm = (names[a] || [""])[0], v = r.input[a] ?? r.holding[a];
+      if (!/model name|serial number|software version|hardware version/i.test(nm) || !v) return "";
+      return String.fromCharCode(v & 255, v >> 8).replace(/[^ -~]/g, "");
+    };
+    const rows = addrs.map((a) => { const [nm, acc, kind] = names[a] || ["", "", ""]; return { a, nm, acc, kind, h: r.holding[a], i: r.input[a], t: text(a) }; });
+    const cell = (v) => (v === undefined ? "–" : v);
+    const csv = ["register,name,access,type,holding,input,text", ...rows.map((x) => [x.a, x.nm, x.acc, x.kind, x.h ?? "", x.i ?? "", x.t].map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))].join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const dev = (this.data.devices.find((d) => d.device_id === id) || {}).name || id;
+    this._regRows = this._regRows || {}; this._regRows[id] = rows;
+    const body = (only, q) => rows.filter((x) => (!only || x.nm) && (!q || `${x.a} ${x.nm} ${x.t}`.toLowerCase().includes(q))).map((x) =>
+      `<tr><td>${x.a}</td><td>${esc(x.nm) || '<span style="color:var(--secondary-text-color)">not in Anker’s list</span>'}${x.acc ? ` <span class="chip">${x.acc}</span>` : ""}</td><td>${cell(x.h)}</td><td>${cell(x.i)}</td><td>${esc(x.t)}</td></tr>`).join("");
+    put(`<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <b>${rows.length} registers</b> <a class="btn sm" download="registers-${esc(dev.replace(/[^\w-]+/g, "_"))}.csv" href="${url}">Download CSV</a>
+        <input type="text" id="reg-q-${esc(id)}" placeholder="Filter by number or name" style="min-width:200px" autocomplete="off">
+        <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="reg-named-${esc(id)}"> Only registers in Anker's list</label></div>
+      <div style="max-height:420px;overflow:auto"><table class="tbl" id="reg-t-${esc(id)}"><thead><tr><th>Register</th><th>Name</th><th>Holding</th><th>Input</th><th>Text</th></tr></thead><tbody>${body(false, "")}</tbody></table></div>
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Values are the raw 16-bit numbers; a 32-bit value is two registers (the X1 sends the low half first) and negative numbers show as 65536 minus the size, so 65326 is -210. Holding and input are two views of the same register on most Anker batteries.</p>`);
+    const root = this.shadowRoot, q = root.getElementById("reg-q-" + id), n = root.getElementById("reg-named-" + id);
+    const refresh = () => { root.querySelector(`#reg-t-${id} tbody`).innerHTML = body(n.checked, q.value.trim().toLowerCase()); };
+    if (q && n) { q.addEventListener("input", refresh); n.addEventListener("change", refresh); }
   }
 
   async _runTest(id) {
@@ -1394,6 +1428,7 @@ class HomePowerPanel extends HTMLElement {
       }
       case "find-eco": return this._findEco();
       case "test-battery": return this._testBattery(this._editingId || "");
+      case "scan-show": return this._showRegisters(id);
       case "scan-save": case "scan-compare": return this._scanRegisters(id, act === "scan-compare");
       case "toggle-control": {
         const on = t.dataset.on === "1";
