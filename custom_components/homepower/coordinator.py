@@ -161,6 +161,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         for gone in {a.config.device_id for a in self.adapters} - {a.config.device_id for a in adapters}:
             self.alerts.forget(f"offline:{gone}"), self.alerts.forget(f"error:{gone}"), self.alerts.forget(f"grid:{gone}"), self.alerts.forget(f"alarm:{gone}:")
             self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}"), self.alerts.forget(f"trend:{gone}")
+            self.grid_events.forget(gone, dt_util.now())
+            self.trend.days.pop(gone, None)
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
         old = self._snap.devices
         self._snap.devices = {a.config.device_id: old.get(a.config.device_id) or self._new_status(a.config.device_id) for a in adapters}
@@ -696,7 +698,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if s.weekly_digest and now.weekday() == 0:
             at = s.daily_summary_time or time(8, 0)
             due = now.time() >= at
-            await edge(f"digest_{today}", due, False, self._weekly_digest(now) if due else "")
+            await edge(f"digest_{today}", due, False, self._weekly_digest(now) if due and not self._event_state.get(f"digest_{today}") else "")
         if f"tariff_{today}" not in self._event_state:
             self._event_state[f"tariff_{today}"] = True
             try:

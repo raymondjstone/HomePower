@@ -136,8 +136,11 @@ class UsageHistory:
         for k, v in (data or {}).items():
             if len(v.get("imp", [])) == 48 and len(v.get("exp", [])) == 48:
                 self.days[k] = {"imp": [float(x) for x in v["imp"]], "exp": [float(x) for x in v["exp"]]}
-                if len(v.get("load", [])) == 48 and len(v.get("pv", [])) == 48:      # days recorded before house load was kept have neither
-                    self.days[k]["load"], self.days[k]["pv"] = [float(x) for x in v["load"]], [float(x) for x in v["pv"]]
+                try:
+                    if len(v.get("load", [])) == 48 and len(v.get("pv", [])) == 48:      # days recorded before house load was kept have neither
+                        self.days[k]["load"], self.days[k]["pv"] = [float(x) for x in v["load"]], [float(x) for x in v["pv"]]
+                except (TypeError, ValueError):
+                    pass                                                               # damaged: that day simply has no load figures
 
     def add(self, t: datetime, import_kwh: float, export_kwh: float, load_kwh: float = 0.0, pv_kwh: float = 0.0) -> None:
         if import_kwh <= 0 and export_kwh <= 0 and load_kwh <= 0 and pv_kwh <= 0:
@@ -216,7 +219,7 @@ class GridEvents:
     KEEP = 50
 
     def __init__(self, data: list | None = None) -> None:
-        self.events: list[dict] = [dict(e) for e in (data or []) if isinstance(e, dict) and e.get("start")][-self.KEEP:]
+        self.events: list[dict] = [dict(e) for e in (data or []) if isinstance(e, dict) and e.get("start") and e.get("did")][-self.KEEP:]
 
     def observe(self, did: str, name: str, off_grid: bool | None, now: datetime, soc: float | None) -> None:
         if off_grid is None:
@@ -227,6 +230,12 @@ class GridEvents:
             del self.events[:-self.KEEP]
         elif not off_grid and open_ev is not None:
             open_ev["end"], open_ev["soc_end"] = now.isoformat(timespec="seconds"), soc
+
+    def forget(self, did: str, now: datetime) -> None:
+        """A battery was removed: an outage still open for it ends now, so the list does not show it down for ever."""
+        for e in self.events:
+            if e["did"] == did and e.get("end") is None:
+                e["end"] = now.isoformat(timespec="seconds")
 
     def dump(self) -> list[dict]:
         return self.events
@@ -242,13 +251,13 @@ class HealthTrend:
     KEEP_DAYS = 60
     MIN_DAYS = 5          # days of history needed before the drift check speaks
     ABS_SPREAD = 1.5      # percentage points: a spread under this is never worth a warning
-    HOT_C = 50.0
+    HOT_C = 65.0          # an inverter's internal temperature runs well above the air around it
 
     def __init__(self, data: dict | None = None) -> None:
         self.days: dict[str, dict[str, dict]] = {}
         for did, rows in (data or {}).items():
             if isinstance(rows, dict):
-                self.days[did] = {d: dict(v) for d, v in rows.items() if isinstance(v, dict)}
+                self.days[did] = {d: {"tmax": v.get("tmax"), "spread": v.get("spread")} for d, v in rows.items() if isinstance(v, dict)}
 
     def update(self, day: str, did: str, temp_c: float | None, pack_v: tuple) -> None:
         rec = self.days.setdefault(did, {}).setdefault(day, {"tmax": None, "spread": None})

@@ -253,7 +253,7 @@ class HomePowerPanel extends HTMLElement {
     const now = Date.now();
     if (!force && now - this._lastRender < 1900) return;
     if (this.tab === "overview") this._render();
-    else if (["plan", "insights", "diagnostics"].includes(this.tab) && now - (this._lastTabLoad || 0) > 30000) this._tabLoad();
+    else if (["plan", "insights", "diagnostics"].includes(this.tab) && now - (this._lastTabLoad || 0) > 30000 && !(this._watch && this._watch.timer)) this._tabLoad();
   }
 
   async _tabLoad() {
@@ -1142,7 +1142,7 @@ class HomePowerPanel extends HTMLElement {
     }
     return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:thermometer-lines"></ha-icon>Battery temperature and pack balance</h2>${chart}
       <table class="tbl"><tr><th>Battery</th><th>Hottest each day (°C)</th><th>Pack voltage spread (%)</th><th>Status</th></tr>${rows}</table>
-      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Last 14 days, oldest to newest. The spread is how far apart the highest and lowest battery pack voltages are, as a percentage of their average: HomePower alerts you if it doubles against its usual, or a battery passes 50 °C. Read from Anker X1 batteries.</p></div>`;
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Last 14 days, oldest to newest. The spread is how far apart the highest and lowest battery pack voltages are, as a percentage of their average: HomePower alerts you if it doubles against its usual, or the X1's internal temperature passes 65 °C. Read from Anker X1 batteries.</p></div>`;
   }
 
   _gridEventsCard() {
@@ -1825,7 +1825,11 @@ class HomePowerPanel extends HTMLElement {
     if (t.id && t.id.startsWith("e-")) this._fillModeSelects();
     if (t.name === "s-dev") this._syncSchedForm();
   }
-  _input(e) { if (e.target.id === "s-pw") this._syncSchedForm(); }
+  _input(e) {
+    if (e.target.id === "s-pw") this._syncSchedForm();
+    const m = /^wi-(br|bc|ar|ac)$/.exec(e.target.id || "");
+    if (m) this._whatif = { ...(this._whatif || {}), in: { br: 10, bc: 0, ar: 10, ac: 80, ...((this._whatif || {}).in || {}), [m[1]]: +e.target.value } };   // kept across the tab's periodic reload
+  }
 }
 
 customElements.define("homepower-panel", HomePowerPanel);

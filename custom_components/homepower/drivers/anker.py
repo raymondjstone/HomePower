@@ -231,7 +231,10 @@ class AnkerModbusDriver:
                 runs[-1].append(a)
             else:
                 runs.append([a])
+        silent = 0
         for run in runs:
+            if silent >= 3:        # the device ignores these addresses: stop waiting on each one (the connection is shared)
+                break
             left = list(run)
             for read in (self.client.read_holding, self.client.read_input):
                 if not left:
@@ -242,6 +245,7 @@ class AnkerModbusDriver:
                     left = []
                 except ModbusError as err:
                     if err.code is None:       # no reply: try the other kind of register
+                        silent += 1
                         continue
                     for a in list(left):       # refused as a block: one by one
                         try:

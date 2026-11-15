@@ -26,17 +26,17 @@ def simulate(days: dict[str, dict[str, list[float]]], tariff: dict, capacity_kwh
             cheap = tariff["cheap"] is not None and _in_window(i, tariff["windows"])
             rate = tariff["cheap"] if cheap else tariff["peak"]
             net = load - pv
-            imp = exp = 0.0
+            imp = exp = moved = 0.0                                  # `moved`: what the battery has already charged or discharged this half-hour
             if net < 0:                                              # surplus solar: battery first, then the grid
                 put = min(-net, step, (cap - soc) / ONE_WAY)
                 soc += put * ONE_WAY
-                exp = -net - put
+                exp, moved = -net - put, put
             else:                                                    # shortfall: battery down to the reserve, then the grid
                 take = min(net, step, max(0.0, soc - floor) * ONE_WAY)
                 soc -= take / ONE_WAY
-                imp = net - take
+                imp, moved = net - take, take
             if cheap and soc < target:                               # cheap-rate top-up from the grid
-                add = min(step, (target - soc) / ONE_WAY, (cap - soc) / ONE_WAY)
+                add = min(step - moved, (target - soc) / ONE_WAY, (cap - soc) / ONE_WAY)
                 soc += add * ONE_WAY
                 imp += add
             buy += imp * rate

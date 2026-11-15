@@ -376,6 +376,26 @@ def test_health_trend_warns_when_packs_drift_apart_or_run_hot():
     h.update("2026-11-08", "a", 31.0, (500, 520, 500))
     assert "drifted" in h.warning("a")
     hot = HealthTrend()
-    hot.update("2026-11-01", "a", 55.0, ())
-    assert "55" in hot.warning("a")
+    hot.update("2026-11-01", "a", 70.0, ())
+    assert "70" in hot.warning("a")
+    cool = HealthTrend()
+    cool.update("2026-11-01", "a", 55.0, ())
+    assert cool.warning("a") is None
     assert HealthTrend(h.dump()).series("a")[-1] == h.series("a")[-1]
+
+
+def test_removing_a_battery_closes_its_open_outage():
+    from core.insights import GridEvents
+    g, t = GridEvents(), datetime(2026, 11, 10, 3, 0, tzinfo=UTC)
+    g.observe("a", "A", True, t, 80)
+    g.forget("a", t + timedelta(minutes=5))
+    assert g.events[0]["end"] and g.view()[0]["end"] == g.events[0]["end"]
+
+
+def test_damaged_saved_history_is_dropped_not_fatal():
+    from core.insights import GridEvents, HealthTrend, UsageHistory
+    u = UsageHistory({"2026-11-01": {"imp": [0.0] * 48, "exp": [0.0] * 48, "load": ["x"] * 48, "pv": [0.0] * 48}})
+    assert "2026-11-01" in u.days and "load" not in u.days["2026-11-01"]
+    assert GridEvents([{"start": "2026-11-01T00:00:00"}, "junk", None]).events == []
+    h = HealthTrend({"a": {"2026-11-01": {}}, "b": "junk"})
+    assert h.warning("a") is None and h.series("a") == [["2026-11-01", None, None]]

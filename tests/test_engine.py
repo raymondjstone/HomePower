@@ -512,3 +512,12 @@ def test_whatif_battery_model_saves_with_cheap_top_up_and_never_goes_below_reser
     s = simulate({"2026-11-01": sunny}, t, 10, 5, reserve_pct=10, cheap_pct=0)
     assert s["export_kwh"] > 0 and s["import_kwh"] == 0
     assert simulate(days, t, 10, 5, reserve_pct=100, cheap_pct=0)["import_kwh"] == round(19.2 * 5, 1)   # a full reserve: the battery is never used
+
+
+def test_whatif_battery_never_moves_more_than_its_power_in_a_half_hour():
+    from core.tariffs import parse_tariffs
+    from core.whatif import simulate
+    t = parse_tariffs("Go; peak=0.30; cheap=0.10; window=00:00-23:30")[0]       # cheap nearly all day
+    day = {"imp": [0.0] * 48, "exp": [0.0] * 48, "load": [1.0] * 48, "pv": [0.0] * 48}
+    r = simulate({"2026-11-01": day}, t, 10, 2, reserve_pct=0, cheap_pct=100)          # 2 kW = at most 1 kWh per half-hour, house wants 1 kWh
+    assert r["import_kwh"] >= 48 * 1.0 - 1e-6 + 0.0 - 10 / 0.95          # imports ~ the whole load; the battery cannot beat its power limit by discharging and recharging at once
