@@ -22,6 +22,7 @@ from .core.goals import Goal
 from .core.models import Actual, Desired, Mode
 from .core.preview import find_conflicts, preview as build_preview
 from .core.meter import MeterReader
+from .core.anker_x1_map import X1_ALARMS
 from .core.insights import BatteryFigures, DailyStats, Diverter, Health, LoadProfile, UsageHistory, combine
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
 from .core.reconcile import Decision, decide, materially_different
@@ -153,7 +154,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
 
     def set_config(self, adapters: list[DeviceAdapter], schedules: list[ScheduleEntry], goals: list[Goal]) -> None:
         for gone in {a.config.device_id for a in self.adapters} - {a.config.device_id for a in adapters}:
-            self.alerts.forget(f"offline:{gone}"), self.alerts.forget(f"error:{gone}"), self.alerts.forget(f"grid:{gone}")
+            self.alerts.forget(f"offline:{gone}"), self.alerts.forget(f"error:{gone}"), self.alerts.forget(f"grid:{gone}"), self.alerts.forget(f"alarm:{gone}:")
             self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}")
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
         old = self._snap.devices
@@ -699,6 +700,16 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 f"grid:{did}": (bool(st.actual and st.actual.off_grid), f"{name} reports the grid is down and is running the house itself. HomePower is not sending it commands until the grid is back.", 0),
                 f"protect:{did}": (st.decision is Decision.SKIP_PROTECTED and not (st.actual and st.actual.off_grid), f"{name} has manufacturer protection active, so HomePower is not overriding it.", PROTECT_ALERT_AFTER_S),
             }
+            act = st.actual
+            for text in X1_ALARMS.values():     # alarms the X1 itself reports (a failed meter or inverter link, ...)
+                checks[f"alarm:{did}:{text}"] = (bool(act and text in act.alarms), f"{name} reports: {text}.", 0)
+            fw, fw_key = act.firmware if act else None, f"fw:{did}"
+            if fw:
+                before = self._event_state.get(fw_key)
+                if before and before != fw:
+                    await self._notify(f"fwchg:{did}:{fw}", f"{name}'s software changed from {before} to {fw}. If something stops working, "
+                                       "run Diagnostics > Registers: compare: register addresses can differ between versions.", True)
+                self._event_state[fw_key] = fw
             weak = self.health.degraded(did)
             checks[f"health:{did}"] = (weak is not None, f"{name}: {weak}", 0)
             for key, (active, msg, after) in checks.items():
@@ -1051,6 +1062,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "pv_w": act.pv_w if act and act.online else None, "has_solar": self._has_solar(a.config),
                 "mode": act.mode.value if act and act.mode else None,
                 "protected": bool(act and act.protected), "off_grid": bool(act and act.off_grid),
+                "limits": list(act.limits) if act and act.limits else None,
+                "temp_c": act.temp_c if act else None, "firmware": act.firmware if act else None,
+                "alarms": list(act.alarms) if act else [],
                 "desired_mode": want.mode.value if want else None,
                 "desired_power_w": want.power_w if want else None,
                 "reason": st.reason,

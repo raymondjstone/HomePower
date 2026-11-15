@@ -55,6 +55,12 @@ def to_text(regs: list[int]) -> str:
     return "".join(c for c in raw.decode("latin-1") if c.isprintable()).strip()
 
 
+def to_text_low_first(regs: list[int]) -> str:
+    """Text where each register holds its two characters low byte first (the Anker X1's string registers)."""
+    raw = b"".join(struct.pack("<H", r) for r in regs)
+    return "".join(c for c in raw.decode("latin-1") if c.isprintable()).strip()
+
+
 class ModbusTcpClient:
     def __init__(self, host: str, port: int = 502, unit: int = 1, timeout: float = 3.0) -> None:
         self.host, self.port, self.unit, self.timeout = host, port, unit, timeout

@@ -1,5 +1,7 @@
 """Anker SOLIX over local Modbus TCP: Solarbank Max / Max AC, XE / XE AC, Solarbank 4 E5000 Pro, X1.
 
+X1: Anker's own "X1 Series Modbus Protocol" V1.0.0 (see core/anker_x1_map.py) is the reference. On the X1, 32-bit
+values come LOW word first and text registers hold their characters low byte first; both are handled below.
 Register map (from the vendors' published Modbus protocol as used by the open-source integrations):
   input regs (read FC04):  10001 battery status | 10002 PV W (i32) | 10008 battery W (i32, negative =
                            charging) | 10010 load W | 10012 grid W (+ importing) | 10014 SOC %
@@ -15,7 +17,11 @@ from __future__ import annotations
 import logging
 
 from ..core.models import Actual, Desired, DeviceConfig, Mode
-from .modbus import ModbusError, ModbusTcpClient, detect_word_order, from_i32, to_i32, to_text, to_u32
+import time
+from dataclasses import replace
+
+from ..core.anker_x1_map import alarm_texts
+from .modbus import ModbusError, ModbusTcpClient, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,6 +42,10 @@ class AnkerModbusDriver:
         self.client = client or ModbusTcpClient(c["host"], int(c.get("port", 502)), int(c.get("unit_id", 1)))
         self._restore: int | None = None  # mode the device was in before we took control
         self._order: str | None = None    # "big" / "little" once detected
+        self._slow_at = 0.0               # X1: next time to refresh the slowly-changing extras (temperature)
+        self._firmware: str | None = None
+        self._temp: float | None = None
+        self._limits: tuple | None = None
 
     async def close(self) -> None:
         await self.client.close()
@@ -67,18 +77,47 @@ class AnkerModbusDriver:
             mode, set_w = (Mode.DISCHARGE if sp > 0 else Mode.CHARGE), abs(sp)
         # X1: plant status 1 = on-grid, 2 = off-grid. While the grid is lost the inverter runs the house
         # itself, so HomePower must not fight it (protected makes the engine leave it alone).
-        plant = inp[0] if self.config.extra.get("house_meter") else None
+        x1 = bool(self.config.extra.get("house_meter"))
+        alarms = tuple(alarm_texts(inp[42])) if x1 else ()
+        plant = inp[0] if x1 else None
         off_grid = (plant == 2) if plant in (1, 2) else None
         return Actual(
-            online=True, off_grid=off_grid, protected=bool(off_grid),
+            online=True, off_grid=off_grid, protected=bool(off_grid), alarms=alarms, firmware=self._firmware, temp_c=self._temp, limits=self._limits,
             soc=float(inp[14]),
             power_w=float(-self._i32(inp, 10008)),  # register: negative = charging; we use + charging
             mode=mode, set_power_w=set_w,
             grid_w=float(self._i32(inp, 10012)), pv_w=float(self._i32(inp, 10002)), load_w=float(self._i32(inp, 10010)),
         )
 
+    async def _refresh_extras(self) -> None:
+        """X1: internal temperature (10156, INT16, tenths of a degree) every minute and the software version
+        (10112, text) every few hours. Failures are ignored: they are extras, not needed for control."""
+        now = time.monotonic()
+        if now < self._slow_at:
+            return
+        self._slow_at = now + 60
+        if not self.config.extra.get("house_meter"):
+            try:   # Solarbank: its own charge / discharge limits and backup reserve (holding 60000-60003, Anker's register file)
+                lim = await self.client.read_holding(60000, 4)
+                self._limits = (lim[0], lim[1], lim[2], bool(lim[3]))
+            except ModbusError:
+                self._limits = None
+            return
+        try:
+            t = (await self.client.read_input(10156, 1))[0]
+            self._temp = round((t - 0x10000 if t & 0x8000 else t) / 10, 1)
+        except ModbusError:
+            pass
+        if self._firmware is None or now - getattr(self, "_fw_at", 0) > 6 * 3600:
+            try:
+                self._firmware = to_text_low_first(await self.client.read_input(10112, 6)) or None
+                self._fw_at = now
+            except ModbusError:
+                pass
+
     async def read(self) -> Actual:
         try:
+            await self._refresh_extras()
             return self._decode(*await self._blocks())
         except ModbusError as err:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
@@ -95,11 +134,19 @@ class AnkerModbusDriver:
             "max_charge_w": self._i32(inp, 10036) or None, "max_discharge_w": self._i32(inp, 10038) or None,
             "min_soc": None,
         }
-        for key, addr, count in (("serial", 10100, 8), ("model", 32768, 16)):
+        x1 = bool(self.config.extra.get("house_meter"))
+        for key, addr, count in (("serial", 10100, 8), ("model", 10090 if x1 else 32768, 10 if x1 else 16)):
             try:
-                info[key] = to_text(await self.client.read_input(addr, count)) or None
+                regs = await self.client.read_input(addr, count)
+                info[key] = (to_text_low_first(regs) if x1 else to_text(regs)) or None
             except ModbusError:
                 info[key] = None
+        if x1:
+            info["firmware"] = self._firmware = a.firmware or None
+            try:
+                info["firmware"] = self._firmware = to_text_low_first(await self.client.read_input(10112, 6)) or None
+            except ModbusError:
+                pass
         try:
             rated = to_u32(*await self.client.read_input(10250, 2), self._order or "big")
             info["capacity_wh"] = int(rated * 100) or None  # register is in 0.1 kWh
@@ -117,8 +164,10 @@ class AnkerModbusDriver:
         limit also holds if Home Assistant is down. Cautious by design: it only ever sets a limit that is lower than
         one already active (an installer's grid-code limit is never raised or switched off) and writes nothing that
         is already right. Returns what it changed."""
+        if self._order is None:
+            return []             # the 32-bit word order is not known yet: never write a number that could be misread
         hold = await self.client.read_holding(10074, 6)
-        order, changed = self._order or "big", []
+        order, changed = self._order, []
         for label, base, want in (("export", 0, export_w), ("import", 3, import_w)):
             if not want or want <= 0:
                 continue
@@ -132,7 +181,7 @@ class AnkerModbusDriver:
             changed.append(f"{label} limit {want} W")
         return changed
 
-    async def scan(self, ranges=((10000, 10300), (60000, 60100))) -> dict[str, dict[str, int]]:
+    async def scan(self, ranges=((10000, 10700), (60000, 60100))) -> dict[str, dict[str, int]]:
         """Read-only dump of raw registers (holding and input) for finding which register an app setting lives in:
         scan, change one setting in the vendor app, scan again and compare. Never writes. A device that does not
         answer a range at all (some stay silent instead of returning an error) is skipped after a few tries."""

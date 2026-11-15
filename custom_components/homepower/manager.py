@@ -306,9 +306,12 @@ class HomePowerManager:
         if driver is None or not hasattr(driver, "scan"):
             raise ValidationError("this battery does not support a register scan")
         try:
-            return await driver.scan()
+            out = await driver.scan()
         except Exception as err:  # noqa: BLE001 - shown to the user
             raise ValidationError(f"could not scan: {err}") from err
+        from .core.anker_x1_map import describe_all
+        out["names"] = describe_all(bool(driver.config.extra.get("house_meter")))   # Anker's register lists: names, read/write, live-or-setting
+        return out
 
     async def _hand_back(self, device_id: str) -> None:
         """Best effort: give a battery we are forcing back to its own control before we stop managing it."""

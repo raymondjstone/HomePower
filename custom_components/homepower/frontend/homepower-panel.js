@@ -426,6 +426,9 @@ class HomePowerPanel extends HTMLElement {
     if (lv.has_solar || (lv.pv_w || 0) > 0) chips.push(`<span class="chip" title="Solar panels attached to this battery"><ha-icon icon="mdi:solar-power" style="--mdc-icon-size:14px"></ha-icon>Solar${lv.pv_w != null ? " " + fmtW(lv.pv_w) : ""}</span>`);
     if (lv.off_grid) chips.push(`<span class="chip warn" title="The battery reports the grid is down and is running the house itself. HomePower sends it no commands until the grid is back."><ha-icon icon="mdi:transmission-tower-off" style="--mdc-icon-size:14px"></ha-icon>Grid down</span>`);
     else if (lv.protected) chips.push(`<span class="chip warn"><ha-icon icon="mdi:shield-alert" style="--mdc-icon-size:14px"></ha-icon>Protection active</span>`);
+    if (lv.limits) chips.push(`<span class="chip" title="The battery's own limits, set in the Anker app: it charges to ${lv.limits[0]}% at most and stops discharging at ${lv.limits[1]}%${lv.limits[3] ? `; backup reserve ${lv.limits[2]}%` : ""}. HomePower cannot charge it past its own limit.">Battery limits ${lv.limits[1]}–${lv.limits[0]}%</span>`);
+    if (lv.temp_c != null) chips.push(`<span class="chip" title="Inverter internal temperature">${lv.temp_c.toFixed(0)}°C</span>`);
+    for (const al of lv.alarms || []) chips.push(`<span class="chip warn" title="The device itself reports this">${esc(al)}</span>`);
     if (lv.reason) chips.push(`<span class="chip" title="Why HomePower is doing this">${esc(lv.reason)}</span>`);
     if (lv.override) chips.push(`<span class="chip m" style="background:#7c3aed">Manual: ${(MODES[lv.override.mode] || {}).label} until ${new Date(lv.override.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>`);
     if (d.control_enabled === false) chips.push(`<span class="chip warn" title="HomePower reads this battery but never sends it commands">Monitor only</span>`);
@@ -1127,12 +1130,12 @@ class HomePowerPanel extends HTMLElement {
     const rows = Object.entries(dg.devices).map(([id, x]) => `<div class="card" style="margin-bottom:12px"><h2>${esc(x.name)} <span class="chip ${x.online ? "" : "bad"}">${x.online ? "Online" : "Offline"}</span> <span class="chip">${esc(x.driver || "")}</span> ${x.control_enabled ? "" : '<span class="chip warn">Monitor only</span>'}</h2>
       <table class="tbl"><tr><th>Connection</th><td>${esc(Object.entries(x.connection || {}).filter(([k]) => k !== "map").map(([k, v]) => `${k}=${v}`).join("  "))}</td></tr>
       <tr><th>Last good read</th><td>${x.last_read_ok ? new Date(x.last_read_ok).toLocaleString() : "never"}</td></tr>
-      <tr><th>Battery reports</th><td>${esc(x.actual_mode || "?")}${x.word_order ? ` · 32-bit word order: ${esc(x.word_order)}` : ""}</td></tr>
+      <tr><th>Battery reports</th><td>${esc(x.actual_mode || "?")}${x.word_order ? ` · 32-bit word order: ${esc(x.word_order)}` : ""}${(this.live.devices || {})[id] && this.live.devices[id].firmware ? ` · software ${esc(this.live.devices[id].firmware)}` : ""}</td></tr>
       <tr><th>HomePower wants</th><td>${x.desired ? esc(x.desired.mode) + (x.desired.power_w ? " " + fmtW(x.desired.power_w) : "") : "nothing (battery runs itself)"} ${x.reason ? "· " + esc(x.reason) : ""}</td></tr>
       <tr><th>Last command</th><td>${x.last_command ? `${esc(x.last_command.mode)} ${x.last_command.power_w ? fmtW(x.last_command.power_w) : ""} at ${new Date(x.last_command.at).toLocaleTimeString()} - ${esc(x.last_command.result)}` : "none yet"}</td></tr>
       <tr><th>Problems</th><td>${x.last_error ? `<span class="bad">${esc(x.last_error)}</span>` : "none"}${x.unconfirmed ? ` · ${x.unconfirmed} unconfirmed` : ""}${x.release_pending ? " · holding control" : ""}</td></tr></table>
       <div style="margin-top:10px"><button class="btn sm" data-act="test-control" data-id="${esc(id)}"><ha-icon icon="mdi:flask-outline" style="--mdc-icon-size:16px"></ha-icon>Test control</button>
-        ${x.driver === "anker_modbus" ? `<button class="btn sm" data-act="scan-save" data-id="${esc(id)}" title="Read every register (read-only) and remember it as the starting point">Registers: save baseline</button> <button class="btn sm" data-act="scan-compare" data-id="${esc(id)}" title="Read the registers again and list what changed since the baseline">Registers: compare</button>` : ""}</div>
+        ${x.driver === "anker_modbus" ? `<button class="btn sm" data-act="scan-save" data-id="${esc(id)}" title="Read every register (read-only) and remember it as the starting point">Registers: save baseline</button> <button class="btn sm" data-act="scan-compare" data-id="${esc(id)}" title="Read the registers again and list what changed since the baseline">Registers: compare</button> <a class="sub" style="font-size:12px" href="https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf" target="_blank" rel="noopener">Anker's X1 register list (PDF)</a>` : ""}</div>
       <div class="steps" id="scan-${esc(id)}" style="margin-top:8px">${this._scans && this._scans[id] ? this._scans[id].html || "" : ""}</div>
       <div class="steps" id="test-${esc(id)}" style="margin-top:8px">${this._tests && this._tests[id] ? this._tests[id] : ""}</div></div>`).join("");
     const ev = (dg.events || []).slice().reverse().slice(0, 40).map(([t, id, m]) => `<div><span class="t">${esc(new Date(t).toLocaleTimeString())}</span> <b>${esc(id)}</b> ${esc(m)}</div>`).join("");
@@ -1155,14 +1158,22 @@ class HomePowerPanel extends HTMLElement {
       const n = Object.keys(now.holding).length + Object.keys(now.input).length;
       return set(`<div class="ok">Baseline saved (${n} registers). Change one setting in the vendor app, wait a few seconds, then press Compare. Live readings (power, charge level) change on their own: ignore those.</div>`);
     }
-    const rows = [];
+    // Names come from Anker's own register document where the device has one (X1): live readings are set aside, since
+    // power and energy move by themselves; what is left is what you changed. Reading the holding and input copies of a
+    // register shows the same data, so each register is listed once.
+    const names = now.names || base.names || {}, rows = [], live = [], seen = new Set();
     for (const kind of ["holding", "input"]) {
       for (const a of [...new Set([...Object.keys(base[kind]), ...Object.keys(now[kind])])].sort((p, q) => p - q)) {
         const x = base[kind][a], y = now[kind][a];
-        if (x !== undefined && y !== undefined && x !== y) rows.push(`<tr><td>${kind}</td><td>${a}</td><td>${x} → ${y}</td></tr>`);
+        if (x === undefined || y === undefined || x === y || seen.has(a)) continue;
+        seen.add(a);
+        const [nm, acc, k] = names[a] || ["not in Anker's list", "", ""];
+        (k === "live" ? live : rows).push(`<tr><td>${a}</td><td>${esc(nm)}${acc ? ` <span class="chip">${acc}</span>` : ""}</td><td>${x} → ${y}</td></tr>`);
       }
     }
-    set(rows.length ? `<table class="tbl"><tr><th>Type</th><th>Register</th><th>Change</th></tr>${rows.join("")}</table>` : `<div class="sub">No register changed.</div>`);
+    const tbl = (r) => `<table class="tbl"><tr><th>Register</th><th>What it is</th><th>Change</th></tr>${r.join("")}</table>`;
+    set((rows.length ? `<div><b>Changed</b> (settings, status and unknown registers)</div>${tbl(rows)}` : `<div class="sub">No setting or unknown register changed.</div>`)
+      + (live.length ? `<details style="margin-top:8px"><summary class="sub">${live.length} live reading${live.length === 1 ? "" : "s"} also moved (power, energy, temperature: ignore)</summary>${tbl(live)}</details>` : ""));
   }
 
   async _runTest(id) {

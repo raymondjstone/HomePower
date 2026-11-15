@@ -160,6 +160,48 @@ def test_x1_grid_limits_only_ever_tighten_and_skip_what_is_already_right():
     asyncio.run(go())
 
 
+def test_x1_extras_from_anker_register_document():
+    from core.anker_x1_map import alarm_texts, describe_all
+    async def go():
+        async with fake_anker() as dev:
+            for i, w in enumerate((11825, 11824, 14641, 12590, 54, 0)):      # a real X1's software version, characters low byte first
+                dev.inp[10112 + i] = w
+            for i, w in enumerate((12632, 18477, 19254, 21293, 0, 0, 0, 0, 0, 0)):   # its model name, "X1-H6K-S"
+                dev.inp[10090 + i] = w
+            dev.inp[10156] = 312                                            # internal temperature, tenths of a degree
+            dev.inp[10042] = (1 << 5) | (1 << 6)                           # BMS and meter 1 communication failure
+            d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            try:
+                a = await d.read()
+                assert a.firmware == "1.0.19.16" and a.temp_c == 31.2
+                assert a.alarms == ("battery (BMS) communication failure", "meter 1 communication failure")
+                info = await d.probe()
+                assert info["model"] == "X1-H6K-S" and info["firmware"] == "1.0.19.16"
+                dev.inp[10156] = 0xFFF6                                      # -1.0 degrees: signed
+                d._slow_at = 0
+                assert (await d.read()).temp_c == -1.0
+            finally:
+                await d.close()
+    asyncio.run(go())
+    assert alarm_texts(0) == [] and alarm_texts(1) == ["EEPROM read/write error"]
+    x1, sb = describe_all(True), describe_all(False)
+    assert x1["10064"][2] == "setting" and x1["10156"][2] == "live" and x1["10075"][0].startswith("Export")
+    assert sb["60000"][0].startswith("Charge limit") and "60000" not in x1
+
+
+def test_solarbank_reports_its_own_limits_and_x1_extras_are_not_used_on_it():
+    async def go():
+        async with fake_anker() as dev:
+            dev.hold.update({60000: 90, 60001: 10, 60002: 20, 60003: 1})
+            d = AnkerModbusDriver(cfg(dev.port))                              # not an X1
+            try:
+                a = await d.read()
+                assert a.limits == (90, 10, 20, True) and a.temp_c is None and a.alarms == () and a.off_grid is None
+            finally:
+                await d.close()
+    asyncio.run(go())
+
+
 def test_probe_reports_capabilities():
     async def go():
         async with fake_anker() as dev:
