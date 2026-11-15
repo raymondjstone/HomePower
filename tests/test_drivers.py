@@ -552,3 +552,13 @@ def test_ecoflow_live_messages_and_driver_merge():
 
     asyncio.run(go())
     assert got == [(71.5, -900.0, 2)]
+
+
+def test_register_names_cover_what_a_real_x1_changes_between_two_scans():
+    from core.anker_x1_map import describe_all
+    names = describe_all(True)
+    # registers seen moving on a real X1 (live readings), all of which must be named and filed as live
+    for a in (10010, 10012, 10024, 10026, 10028, 10030, 10156, 10199, 10205, 10208, 10210, 10212, 10213, 10224, 10230, 10233,
+              10237, 10238, 10254, 10328, 10496, 10632, 10638, 10644, 10646, 10649, 10656):
+        assert str(a) in names and names[str(a)][2] == "live", a
+    assert names["10496"][0] == "Pack 4 maximum temperature" and names["10064"][2] == "setting"
