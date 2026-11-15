@@ -562,3 +562,30 @@ def test_register_names_cover_what_a_real_x1_changes_between_two_scans():
               10237, 10238, 10254, 10328, 10496, 10632, 10638, 10644, 10646, 10649, 10656):
         assert str(a) in names and names[str(a)][2] == "live", a
     assert names["10496"][0] == "Pack 4 maximum temperature" and names["10064"][2] == "setting"
+
+
+def test_read_registers_reads_only_what_is_asked_and_never_writes():
+    async def go():
+        async with fake_anker() as dev:
+            d = AnkerModbusDriver(cfg(dev.port))
+            dev.inp[10014] = 62
+            dev.hold[10064] = 3
+            try:
+                out = await d.read_registers([10064, 10014, 10015, 59999])
+                assert out["10014"] == 62 and out["10064"] == 3 and out["10015"] == 0 and "59999" not in out
+                assert dev.writes == []
+            finally:
+                await d.close()
+    asyncio.run(go())
+
+
+def test_x1_reports_pack_voltages_and_stops_at_the_first_missing_pack():
+    async def go():
+        async with fake_anker() as dev:
+            dev.inp[10321], dev.inp[10377] = 500, 520          # packs 1 and 2; pack 3 is not answered
+            d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            try:
+                assert (await d.read()).pack_v == (500, 520)
+            finally:
+                await d.close()
+    asyncio.run(go())

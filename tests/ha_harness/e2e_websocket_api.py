@@ -150,6 +150,39 @@ async def main():
     res = await must("homepower/import", data=dump)
     assert "WS scene" in mgr.scenes and res["skipped"] == [], res
     r = await call("homepower/import", data={"nope": 1}); assert r[0] == "err", r
+    # ---- the register watch, labels, what-if, readiness, decisions and the saved copies
+    rr = await must("homepower/device/registers", device_id="a", addresses=[10014, 10015, 10064], names=True)
+    assert rr["values"]["10014"] == 62 and "names" in rr, rr
+    n1 = await must("homepower/device/register_notes", device_id="a", address=10080, label="Grid fail sensitivity")
+    assert n1["notes"] == {"10080": "Grid fail sensitivity"} and (await must("homepower/device/register_notes", device_id="a"))["notes"] == n1["notes"]
+    assert (await must("homepower/device/register_notes", device_id="a", address=10080, label=""))["notes"] == {}
+    try:
+        await call("homepower/device/registers", device_id="a", addresses=[]); raise SystemExit("an empty register list must be refused")
+    except Exception as e:  # noqa: BLE001 - the schema refuses it before the handler runs
+        assert "length of value" in str(e), e
+    r = await call("homepower/whatif", base={"reserve": 10, "cheap": 0}, alt={"reserve": 10, "cheap": 80}); assert r[0] == "err" and "tariff" in r[2].lower(), r
+    await coord.async_refresh()
+    v = (await must("homepower/get"))["live"]
+    assert v["readiness"] is None or "usable_kwh" in v["readiness"]
+    assert "grid_events" in v and "trend" in v and "forecast_reserve" in v
+    dg = await must("homepower/diagnostics")
+    assert dg["decisions"] and dg["decisions"][0]["name"] and "inputs" in dg["decisions"][0], dg.get("decisions")
+    b = await must("homepower/backups/now"); assert b["backups"], b
+    name = b["backups"][0]["name"]
+    res = await must("homepower/backups/restore", name=name); assert res["skipped"] == [], res
+    r = await call("homepower/backups/restore", name="../../etc/passwd"); assert r[0] == "err", r
+    coord.apply_settings({"compare_tariffs": "Go; peak=0.30; cheap=0.10; window=00:30-05:30; export=0.05"})
+    for i in range(1, 6):
+        coord.usage.days[f"2026-11-0{i}"] = {"imp": [0.1] * 48, "exp": [0.0] * 48, "load": [0.4] * 48, "pv": [0.0] * 48}
+    wi = await must("homepower/whatif", days=30, base={"reserve": 10, "cheap": 0}, alt={"reserve": 10, "cheap": 100})
+    assert wi["days"] == 5 and wi["alt"]["cost"] < wi["base"]["cost"] and wi["tariff"] == "Go", wi
+    json.dumps(wi)
+    coord.grid_events.observe("a", "A", True, dt_util.now(), 80); coord.grid_events.observe("a", "A", False, dt_util.now(), 70)
+    dig = coord._weekly_digest(dt_util.now())
+    assert "Last 7 days" in dig and "1 grid outage" in dig, dig
+    rd = coord.readiness()
+    assert rd is None or (rd["usable_kwh"] > 0 and rd["basis"]), rd
+    print("new      : registers, labels, what-if, readiness, decisions, backups OK |", dig[:60])
     await must("homepower/device/delete", device_id="a")
     assert not mgr.devices
     await coord.async_close(); srv.close(); await srv.wait_closed()

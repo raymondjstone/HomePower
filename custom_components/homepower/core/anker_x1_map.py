@@ -173,11 +173,11 @@ X1_ALARMS: dict[int, str] = {
 
 
 def describe_all(x1: bool = True) -> dict[str, list[str]]:
-    """{register address: [name, access, kind]} for every register covered, for the panel."""
+    """{register address: [name, access, kind, first address, number of registers]} for every register covered."""
     out: dict[str, list[str]] = {}
     for addr, n, name, access, kind in (X1_REGISTERS if x1 else SOLARBANK_REGISTERS):
         for i in range(n):
-            out[str(addr + i)] = [name, access, kind]
+            out[str(addr + i)] = [name, access, kind, addr, n]
     return out
 
 

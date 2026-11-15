@@ -63,6 +63,7 @@ class World:
     grid_fresh: bool = True      # False = the grid reading is too old to steer charging by
     condition_ok: Callable[[str], bool] | None = None
     backup_active: bool = False
+    reserve_floor_pct: int = 0                     # never discharge below this (set ahead of a poor solar day)
     away: bool = False
     load_blocks: set[str] = field(default_factory=set)
     rates: RateTable | None = None
@@ -83,7 +84,8 @@ class Result:
 
 
 def _floor(caps: Capabilities, w: World) -> int:
-    return max(caps.min_soc, w.settings.backup_pct) if w.backup_active else caps.min_soc
+    floor = max(caps.min_soc, w.reserve_floor_pct)
+    return max(floor, w.settings.backup_pct) if w.backup_active else floor
 
 
 def _zero_import(w: World, dev: DevIn) -> Desired:

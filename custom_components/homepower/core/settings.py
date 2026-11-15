@@ -18,12 +18,12 @@ DEFAULTS: dict = {
     "storm_entity": "", "backup_reserve_pct": 50, "away_entity": "", "notify_service": "",
     "load_rules": [],
     "ecoflow_live": False, "dry_run": False, "erase_on_remove": False, "solar_room": True, "base_load_w": 0, "notify_full": False, "offpeak_extra": "", "save_for_peak": False,
-    "compare_tariffs": "", "divert_cheap": False, "x1_grid_limits": False, "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
+    "compare_tariffs": "", "weekly_digest": False, "forecast_reserve_kwh": 0, "forecast_reserve_pct": 50, "divert_cheap": False, "x1_grid_limits": False, "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
-            "notify_low_pct", "cheap_soon_below_pct", "divert_export_w", "divert_min_soc", "base_load_w")
+            "notify_low_pct", "cheap_soon_below_pct", "forecast_reserve_kwh", "forecast_reserve_pct", "divert_export_w", "divert_min_soc", "base_load_w")
 FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price")
-BOOL_KEYS = ("x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "notify_full", "notify_cheap_soon")
+BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "notify_full", "notify_cheap_soon")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
             "forecast_entity", "storm_entity", "away_entity", "notify_service",
             "offpeak_extra", "daily_summary_time", "divert_entity", "grid_order", "compare_tariffs")
@@ -118,6 +118,8 @@ def clean(raw: dict) -> dict:
     for k in ("notify_low_pct", "cheap_soon_below_pct"):
         if k in out and out[k] > 100:
             raise SettingsError("percentages must be 0-100")
+    if "forecast_reserve_pct" in out and out["forecast_reserve_pct"] > 100:
+        raise SettingsError("reserve must be 0-100")
     if "backup_reserve_pct" in out and out["backup_reserve_pct"] > 100:
         raise SettingsError("backup reserve must be 0-100")
     if "forecast_share" in out and out["forecast_share"] is not None and not 0 <= out["forecast_share"] <= 1:
@@ -171,6 +173,9 @@ class AppSettings:
     x1_grid_limits: bool = False   # mirror the import/export limits into an Anker X1's own registers
     divert_cheap: bool = False     # also run the surplus load during cheap-rate hours
     compare_tariffs: str = ""
+    weekly_digest: bool = False    # a summary message every Monday
+    forecast_reserve_kwh: int = 0   # on a day forecast below this many kWh of solar, keep the batteries above forecast_reserve_pct (0 = off)
+    forecast_reserve_pct: int = 50
     dry_run: bool = False          # work everything out and log it, but send no commands
     solar_room: bool = True        # cap overnight charging of batteries with panels to leave room for the solar forecast
     base_load_w: int = 0           # the house's steady use, assumed taken from the batteries outside cheap hours
@@ -199,7 +204,7 @@ def build(cfg: dict) -> AppSettings:
         price_offpeak=c["price_offpeak"], export_price=c["export_price"], offpeak_start=_t(c["offpeak_start"]), offpeak_end=_t(c["offpeak_end"]), offpeak_auto=bool(c["offpeak_auto"]),
         currency=c["currency"] or "£", forecast_entity=c["forecast_entity"], storm_entity=c["storm_entity"],
         away_entity=c["away_entity"], notify_service=c["notify_service"], load_rules=list(c["load_rules"] or []),
-        ecoflow_live=bool(c["ecoflow_live"]), dry_run=bool(c["dry_run"]), divert_cheap=bool(c["divert_cheap"]), x1_grid_limits=bool(c["x1_grid_limits"]), compare_tariffs=c["compare_tariffs"], solar_room=bool(c["solar_room"]), base_load_w=int(c["base_load_w"] or 0), offpeak_extra=parse_windows(c["offpeak_extra"]),
+        ecoflow_live=bool(c["ecoflow_live"]), dry_run=bool(c["dry_run"]), divert_cheap=bool(c["divert_cheap"]), x1_grid_limits=bool(c["x1_grid_limits"]), compare_tariffs=c["compare_tariffs"], weekly_digest=bool(c["weekly_digest"]), forecast_reserve_kwh=int(c["forecast_reserve_kwh"] or 0), forecast_reserve_pct=int(c["forecast_reserve_pct"] or 0), solar_room=bool(c["solar_room"]), base_load_w=int(c["base_load_w"] or 0), offpeak_extra=parse_windows(c["offpeak_extra"]),
         daily_summary_time=_t(c["daily_summary_time"]), divert_entity=c["divert_entity"],
         divert_export_w=int(c["divert_export_w"] or 500), divert_min_soc=int(c["divert_min_soc"] or 95), notify_full=bool(c["notify_full"]), notify_low_pct=int(c["notify_low_pct"] or 0),
         notify_cheap_soon=bool(c["notify_cheap_soon"]), cheap_soon_below_pct=int(c["cheap_soon_below_pct"] or 60),

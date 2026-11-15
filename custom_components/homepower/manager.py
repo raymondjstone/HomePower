@@ -54,6 +54,9 @@ class HomePowerManager:
         self.usage_data: dict = {}               # grid import/export per half-hour per day (tariff comparison)
         self.daily_data: dict = {}               # daily self-consumption / cheap-rate figures
         self.health_data: dict = {}              # weekly battery efficiency
+        self.grid_events: list = []              # times a battery reported the grid down
+        self.trend_data: dict = {}               # daily temperature / pack-voltage spread per battery
+        self.register_notes: dict[str, dict[str, str]] = {}   # the user's own names for registers they have identified
         self.scenes: dict[str, dict] = {}        # saved combinations of modes and limits
         self.event_state: dict[str, bool] = {}   # heads-up messages currently showing
         self.tests: dict[str, dict] = {}         # last control-test result per battery
@@ -81,6 +84,8 @@ class HomePowerManager:
         self.profile_data, self.daily_data = dict(data.get("profile", {})), dict(data.get("daily", {}))
         self.usage_data = dict(data.get("usage", {}))
         self.health_data = dict(data.get("health", {}))
+        self.grid_events, self.trend_data = list(data.get("grid_events", [])), dict(data.get("trend", {}))
+        self.register_notes = {k: dict(v) for k, v in data.get("register_notes", {}).items() if isinstance(v, dict)}
         self.event_state, self.tests = dict(data.get("event_state", {})), dict(data.get("tests", {}))
         self.divert_on = str(data.get("divert_on") or "")
         self.pv_seen = set(data.get("pv_seen", []))
@@ -97,6 +102,7 @@ class HomePowerManager:
             "energy": c.meter.totals if c else self.energy, "ledger": c.ledger.dump() if c else self.ledger_days,
             "ledger_stores": c.ledger.stores if c else (self.ledger_stores or {}),
             "profile": c.profile.dump() if c else self.profile_data, "daily": c.daily.dump() if c else self.daily_data, "usage": c.usage.dump() if c else self.usage_data,
+            "grid_events": c.grid_events.dump() if c else self.grid_events, "trend": c.trend.dump() if c else self.trend_data, "register_notes": self.register_notes,
             "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
             "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen), "forecast_days": self.forecast_days,
         })
@@ -310,8 +316,69 @@ class HomePowerManager:
         except Exception as err:  # noqa: BLE001 - shown to the user
             raise ValidationError(f"could not scan: {err}") from err
         from .core.anker_x1_map import describe_all
+        out["order"] = driver._order      # 32-bit word order, so the panel can decode two-register values
         out["names"] = describe_all(bool(driver.config.extra.get("house_meter")))   # Anker's register lists: names, read/write, live-or-setting
         return out
+
+    async def read_registers(self, device_id: str, addrs: list[int], names: bool = False) -> dict:
+        """Current value of a few registers (read-only), for the panel's register watch."""
+        cached = self._adapters.get(device_id)
+        driver = getattr(cached[1], "driver", None) if cached else None
+        if driver is None or not hasattr(driver, "read_registers"):
+            raise ValidationError("this battery does not support reading registers")
+        try:
+            out = {"values": await driver.read_registers(addrs), "order": driver._order}
+            if names:
+                from .core.anker_x1_map import describe_all
+
+                out["names"] = describe_all(bool(driver.config.extra.get("house_meter")))
+            return out
+        except Exception as err:  # noqa: BLE001 - shown to the user
+            raise ValidationError(f"could not read: {err}") from err
+
+    async def register_note(self, device_id: str, address: int | None = None, label: str | None = None) -> dict:
+        """The user's own names for registers (what they found by watching), per battery. A label of "" removes one."""
+        if device_id not in self.devices:
+            raise ValidationError("unknown battery")
+        notes = self.register_notes.setdefault(device_id, {})
+        if address is not None:
+            label = str(label or "").strip()[:80]
+            if label:
+                notes[str(int(address))] = label
+            else:
+                notes.pop(str(int(address)), None)
+            await self._save()
+        return {"notes": dict(notes)}
+
+    # ------------------------------------------------------------------ the daily safety copies
+    def _backup_dir(self) -> str:
+        return self.hass.config.path("homepower_backups")
+
+    async def list_backups(self) -> list[dict]:
+        def run() -> list[dict]:
+            from pathlib import Path
+
+            d = Path(self._backup_dir())
+            return [{"name": p.name, "size": p.stat().st_size} for p in sorted(d.glob("homepower-*.json"), reverse=True)] if d.is_dir() else []
+
+        return await self.hass.async_add_executor_job(run)
+
+    async def restore_backup(self, name: str, entry) -> dict:
+        import json as _json
+        import re as _re
+        from pathlib import Path
+
+        if not _re.fullmatch(r"homepower-\d{4}-\d\d-\d\d\.json", name or ""):
+            raise ValidationError("not one of HomePower's backup files")
+
+        def run() -> dict:
+            return _json.loads((Path(self._backup_dir()) / name).read_text(encoding="utf8"))
+
+        try:
+            data = await self.hass.async_add_executor_job(run)
+        except (OSError, ValueError) as err:
+            raise ValidationError(f"could not read that backup: {err}") from err
+        return await self.import_all(data, entry)
 
     async def _hand_back(self, device_id: str) -> None:
         """Best effort: give a battery we are forcing back to its own control before we stop managing it."""
@@ -343,6 +410,7 @@ class HomePowerManager:
         await self._apply()
 
     async def delete_device(self, device_id: str) -> None:
+        self.register_notes.pop(device_id, None)
         await self._hand_back(device_id)
         self.devices.pop(device_id, None)
         self.forced.discard(device_id)

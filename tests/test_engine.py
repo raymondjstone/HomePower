@@ -451,3 +451,64 @@ def test_usage_history_records_half_hours_and_survives_a_round_trip():
     u.add(datetime(2026, 11, 10, 1, 50), 0.1, 0.05)
     u2 = UsageHistory(u.dump())
     assert round(u2.days["2026-11-10"]["imp"][3], 3) == 0.3 and round(u2.days["2026-11-10"]["exp"][3], 3) == 0.05
+
+
+def test_forecast_reserve_floor_stops_discharge_below_it_but_not_above():
+    sch = [sched(mode=Mode.DISCHARGE, power=2000)]
+    assert compute(world([dev("a", soc=45)], schedules=sch)).wants["a"].mode is Mode.DISCHARGE
+    assert compute(world([dev("a", soc=45)], schedules=sch, reserve_floor_pct=50)).wants["a"].mode is not Mode.DISCHARGE
+    assert compute(world([dev("a", soc=80)], schedules=sch, reserve_floor_pct=50)).wants["a"].mode is Mode.DISCHARGE
+
+
+def test_tariff_months_flag_a_tariff_cheaper_for_three_complete_months():
+    from core.tariffs import compare, parse_tariffs
+    ts = parse_tariffs("Now; peak=0.30\nGo; peak=0.28; cheap=0.07; window=00:30-05:30")
+    usage = {}
+    for m in ("2026-07", "2026-08", "2026-09", "2026-10", "2026-11"):
+        imp = [0.0] * 48
+        imp[2] = 2.0
+        usage[m + "-10"] = {"imp": imp, "exp": [0.0] * 48}
+    mo = compare(usage, ts)["monthly"]
+    assert mo["months"][0] == "2026-07" and mo["totals"]["Now"][0] == 0.6 and mo["totals"]["Go"][0] == 0.14
+    f = mo["cheaper_than_current"]
+    assert f["tariff"] == "Go" and f["current"] == "Now" and f["months"] == 4 and f["saved"] == 1.84
+    short = {k: v for k, v in usage.items() if k >= "2026-09"}
+    assert compare(short, ts)["monthly"]["cheaper_than_current"] is None      # only two complete months: not enough
+    assert compare(usage, parse_tariffs("Only; peak=0.3"))["monthly"]["cheaper_than_current"] is None
+
+
+def test_forecast_reserve_settings_are_validated():
+    from core.settings import SettingsError, build, clean
+    assert build({}).forecast_reserve_kwh == 0
+    assert build(clean({"forecast_reserve_kwh": 8, "forecast_reserve_pct": 60})).forecast_reserve_pct == 60
+    with pytest.raises(SettingsError):
+        clean({"forecast_reserve_pct": 150})
+
+
+def test_usage_history_keeps_house_load_and_solar_only_for_days_that_have_them():
+    from core.insights import UsageHistory
+    u = UsageHistory({"2026-11-09": {"imp": [0.1] * 48, "exp": [0.0] * 48}})        # recorded before load was kept
+    t = datetime(2026, 11, 9, 10, 10, tzinfo=UTC)
+    u.add(t, 0.1, 0.0, 0.3, 0.2)
+    assert "load" not in u.days["2026-11-09"]
+    t2 = datetime(2026, 11, 10, 10, 10, tzinfo=UTC)
+    u.add(t2, 0.1, 0.0, 0.3, 0.2)
+    u.add(t2, 0.0, 0.0, 0.1, 0.0)
+    again = UsageHistory(u.dump())
+    assert "load" not in again.days["2026-11-09"] and round(again.days["2026-11-10"]["load"][20], 3) == 0.4 and again.days["2026-11-10"]["pv"][20] == 0.2
+
+
+def test_whatif_battery_model_saves_with_cheap_top_up_and_never_goes_below_reserve():
+    from core.tariffs import parse_tariffs
+    from core.whatif import simulate
+    t = parse_tariffs("Go; peak=0.30; cheap=0.10; window=00:30-05:30; export=0.05")[0]
+    day = {"imp": [0.0] * 48, "exp": [0.0] * 48, "load": [0.4] * 48, "pv": [0.0] * 48}          # 19.2 kWh a day, no solar
+    days = {f"2026-11-0{i}": day for i in range(1, 6)}
+    none = simulate(days, t, 10, 5, reserve_pct=10, cheap_pct=0)
+    topup = simulate(days, t, 10, 5, reserve_pct=10, cheap_pct=100)
+    assert topup["cost"] < none["cost"]                                   # buying cheap and using it in the evening beats buying peak
+    assert none["import_kwh"] >= 5 * 19.2 - 5 * 9 * 0.95 - 0.5            # at most the 9 usable kWh could ever come out of the battery per day
+    sunny = {"imp": [0.0] * 48, "exp": [0.0] * 48, "load": [0.1] * 48, "pv": [0.5] * 48}
+    s = simulate({"2026-11-01": sunny}, t, 10, 5, reserve_pct=10, cheap_pct=0)
+    assert s["export_kwh"] > 0 and s["import_kwh"] == 0
+    assert simulate(days, t, 10, 5, reserve_pct=100, cheap_pct=0)["import_kwh"] == round(19.2 * 5, 1)   # a full reserve: the battery is never used

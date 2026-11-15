@@ -129,26 +129,31 @@ class DailyStats:
 class UsageHistory:
     """Grid import / export per half-hour of each day (kWh), kept for the tariff comparison."""
 
-    KEEP_DAYS = 90
+    KEEP_DAYS = 200
 
     def __init__(self, data: dict | None = None) -> None:
         self.days: dict[str, dict[str, list[float]]] = {}
         for k, v in (data or {}).items():
             if len(v.get("imp", [])) == 48 and len(v.get("exp", [])) == 48:
                 self.days[k] = {"imp": [float(x) for x in v["imp"]], "exp": [float(x) for x in v["exp"]]}
+                if len(v.get("load", [])) == 48 and len(v.get("pv", [])) == 48:      # days recorded before house load was kept have neither
+                    self.days[k]["load"], self.days[k]["pv"] = [float(x) for x in v["load"]], [float(x) for x in v["pv"]]
 
-    def add(self, t: datetime, import_kwh: float, export_kwh: float) -> None:
-        if import_kwh <= 0 and export_kwh <= 0:
+    def add(self, t: datetime, import_kwh: float, export_kwh: float, load_kwh: float = 0.0, pv_kwh: float = 0.0) -> None:
+        if import_kwh <= 0 and export_kwh <= 0 and load_kwh <= 0 and pv_kwh <= 0:
             return
-        d = self.days.setdefault(t.strftime("%Y-%m-%d"), {"imp": [0.0] * 48, "exp": [0.0] * 48})
+        d = self.days.setdefault(t.strftime("%Y-%m-%d"), {"imp": [0.0] * 48, "exp": [0.0] * 48, "load": [0.0] * 48, "pv": [0.0] * 48})
         i = t.hour * 2 + t.minute // 30
         d["imp"][i] += import_kwh
         d["exp"][i] += export_kwh
+        if "load" in d:              # a day that began before the upgrade stays without load figures: they would be half a day
+            d["load"][i] += load_kwh
+            d["pv"][i] += pv_kwh
         for old in sorted(self.days)[:-self.KEEP_DAYS]:
             del self.days[old]
 
     def dump(self) -> dict:
-        return {k: {"imp": [round(x, 4) for x in v["imp"]], "exp": [round(x, 4) for x in v["exp"]]} for k, v in self.days.items()}
+        return {k: {n: [round(x, 4) for x in v[n]] for n in ("imp", "exp", "load", "pv") if n in v} for k, v in self.days.items()}
 
 
 # ---------------------------------------------------------------- weekly battery health
@@ -203,6 +208,79 @@ class Health:
 
     def dump(self) -> dict:
         return {"weeks": self.weeks, "base": self.base, "base_week": self.base_week}
+
+
+class GridEvents:
+    """When each battery reported the grid down: start, end, and the charge level at both."""
+
+    KEEP = 50
+
+    def __init__(self, data: list | None = None) -> None:
+        self.events: list[dict] = [dict(e) for e in (data or []) if isinstance(e, dict) and e.get("start")][-self.KEEP:]
+
+    def observe(self, did: str, name: str, off_grid: bool | None, now: datetime, soc: float | None) -> None:
+        if off_grid is None:
+            return
+        open_ev = next((e for e in reversed(self.events) if e["did"] == did and e.get("end") is None), None)
+        if off_grid and open_ev is None:
+            self.events.append({"did": did, "name": name, "start": now.isoformat(timespec="seconds"), "end": None, "soc_start": soc, "soc_end": None})
+            del self.events[:-self.KEEP]
+        elif not off_grid and open_ev is not None:
+            open_ev["end"], open_ev["soc_end"] = now.isoformat(timespec="seconds"), soc
+
+    def dump(self) -> list[dict]:
+        return self.events
+
+    def view(self, n: int = 20) -> list[dict]:
+        return list(reversed(self.events[-n:]))
+
+
+class HealthTrend:
+    """Daily highest battery temperature and how far apart the battery packs' voltages are (percent of their mean).
+    A pack drifting away from the others, or running hot, shows here well before it becomes a fault."""
+
+    KEEP_DAYS = 60
+    MIN_DAYS = 5          # days of history needed before the drift check speaks
+    ABS_SPREAD = 1.5      # percentage points: a spread under this is never worth a warning
+    HOT_C = 50.0
+
+    def __init__(self, data: dict | None = None) -> None:
+        self.days: dict[str, dict[str, dict]] = {}
+        for did, rows in (data or {}).items():
+            if isinstance(rows, dict):
+                self.days[did] = {d: dict(v) for d, v in rows.items() if isinstance(v, dict)}
+
+    def update(self, day: str, did: str, temp_c: float | None, pack_v: tuple) -> None:
+        rec = self.days.setdefault(did, {}).setdefault(day, {"tmax": None, "spread": None})
+        if temp_c is not None:
+            rec["tmax"] = temp_c if rec["tmax"] is None else max(rec["tmax"], temp_c)
+        if len(pack_v) >= 2 and (mean := sum(pack_v) / len(pack_v)) > 0:
+            sp = round(100 * (max(pack_v) - min(pack_v)) / mean, 2)
+            rec["spread"] = sp if rec["spread"] is None else max(rec["spread"], sp)
+        for old in sorted(self.days[did])[:-self.KEEP_DAYS]:
+            del self.days[did][old]
+
+    def series(self, did: str, n: int = 14) -> list[list]:
+        d = self.days.get(did, {})
+        return [[k, d[k]["tmax"], d[k]["spread"]] for k in sorted(d)[-n:]]
+
+    def warning(self, did: str) -> str | None:
+        d = self.days.get(did, {})
+        keys = sorted(d)
+        if not keys:
+            return None
+        last = d[keys[-1]]
+        if last["tmax"] is not None and last["tmax"] >= self.HOT_C:
+            return f"it reached {last['tmax']:g} °C today"
+        before = [d[k]["spread"] for k in keys[:-1] if d[k]["spread"] is not None]
+        if last["spread"] is not None and len(before) >= self.MIN_DAYS:
+            base = median(before)
+            if last["spread"] >= max(self.ABS_SPREAD, 2 * base):
+                return f"its battery packs have drifted apart ({last['spread']:g}% voltage spread, usually {base:g}%)"
+        return None
+
+    def dump(self) -> dict:
+        return self.days
 
 
 # ---------------------------------------------------------------- the combined "home battery"

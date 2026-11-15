@@ -350,3 +350,32 @@ def test_grid_order_setting_and_battery_meter_flag():
         assert False
     except ValidationError:
         pass
+
+
+def test_grid_events_record_start_end_and_charge_and_survive_a_round_trip():
+    from core.insights import GridEvents
+    g, t = GridEvents(), datetime(2026, 11, 10, 3, 0, tzinfo=UTC)
+    g.observe("a", "A", False, t, 80)
+    assert g.events == []
+    g.observe("a", "A", True, t, 80)
+    g.observe("a", "A", True, t + timedelta(minutes=1), 79)
+    assert len(g.events) == 1 and g.events[0]["end"] is None
+    g.observe("a", "A", None, t + timedelta(minutes=2), 78)        # cannot tell: nothing changes
+    assert g.events[0]["end"] is None
+    g.observe("a", "A", False, t + timedelta(minutes=20), 60)
+    e = GridEvents(g.dump()).view()[0]
+    assert e["soc_start"] == 80 and e["soc_end"] == 60 and e["end"]
+
+
+def test_health_trend_warns_when_packs_drift_apart_or_run_hot():
+    from core.insights import HealthTrend
+    h = HealthTrend()
+    for i in range(7):
+        h.update(f"2026-11-0{i + 1}", "a", 30.0, (500, 501, 500))
+    assert h.warning("a") is None
+    h.update("2026-11-08", "a", 31.0, (500, 520, 500))
+    assert "drifted" in h.warning("a")
+    hot = HealthTrend()
+    hot.update("2026-11-01", "a", 55.0, ())
+    assert "55" in hot.warning("a")
+    assert HealthTrend(h.dump()).series("a")[-1] == h.series("a")[-1]

@@ -74,4 +74,39 @@ def compare(usage: dict[str, dict[str, list[float]]], tariffs: list[dict], days:
         res.append({"name": t["name"], "import_cost": round(buy, 2), "export_earned": round(earn, 2),
                     "standing": round(standing, 2), "total": round(buy - earn + standing, 2)})
     return {"days": len(keys), "import_kwh": round(sum(sum(usage[k]["imp"]) for k in keys), 1),
-            "export_kwh": round(sum(sum(usage[k]["exp"]) for k in keys), 1), "tariffs": sorted(res, key=lambda r: r["total"])}
+            "export_kwh": round(sum(sum(usage[k]["exp"]) for k in keys), 1), "tariffs": sorted(res, key=lambda r: r["total"]),
+            "monthly": monthly(usage, tariffs)}
+
+
+def monthly(usage: dict[str, dict[str, list[float]]], tariffs: list[dict]) -> dict:
+    """Each tariff's cost month by month over all the recorded days, and which tariff has been cheaper than the first
+    one listed (taken to be the one you are on) for the last few complete months running."""
+    months: dict[str, list[str]] = {}
+    for k in sorted(usage):
+        months.setdefault(k[:7], []).append(k)
+    names = sorted(months)
+    totals: dict[str, list[float]] = {}
+    for t in tariffs:
+        row = []
+        for m in names:
+            buy = earn = 0.0
+            for k in months[m]:
+                for i in range(48):
+                    rate = t["cheap"] if t["cheap"] is not None and _in_window(i, t["windows"]) else t["peak"]
+                    buy += usage[k]["imp"][i] * rate
+                    earn += usage[k]["exp"][i] * t["export"]
+            row.append(round(buy - earn + t["standing"] * len(months[m]), 2))
+        totals[t["name"]] = row
+    flag = None
+    if len(tariffs) > 1 and len(names) > 1:
+        cur = tariffs[0]["name"]
+        for t in tariffs[1:]:
+            run, saved = 0, 0.0
+            for i in range(len(names) - 2, -1, -1):     # the newest month is still in progress: leave it out
+                gain = totals[cur][i] - totals[t["name"]][i]
+                if gain <= 0:
+                    break
+                run, saved = run + 1, saved + gain
+            if run >= 3 and (flag is None or saved > flag["saved"]):
+                flag = {"tariff": t["name"], "current": cur, "months": run, "saved": round(saved, 2)}
+    return {"months": names, "totals": totals, "cheaper_than_current": flag}

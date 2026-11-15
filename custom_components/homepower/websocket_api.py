@@ -45,7 +45,7 @@ def _payload(hass: HomeAssistant) -> dict:
 
 @callback
 def async_register(hass: HomeAssistant) -> None:
-    for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device, ws_reorder_devices, ws_scan_registers, ws_compare_tariffs,
+    for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device, ws_reorder_devices, ws_scan_registers, ws_read_registers, ws_register_notes, ws_whatif, ws_backups, ws_backup_now, ws_restore_backup, ws_compare_tariffs,
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
                 ws_override, ws_clear_override,
                 ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control,
@@ -121,6 +121,72 @@ async def ws_reorder_devices(hass, msg):
 @_guard
 async def ws_scan_registers(hass, msg):
     return await _mgr(hass).scan_registers(msg["device_id"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/device/registers", vol.Required("device_id"): str,
+                                  vol.Required("addresses"): vol.All([vol.All(int, vol.Range(min=0, max=65535))], vol.Length(min=1, max=64)),
+                                  vol.Optional("names", default=False): bool})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_read_registers(hass, msg):
+    return await _mgr(hass).read_registers(msg["device_id"], msg["addresses"], msg["names"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/device/register_notes", vol.Required("device_id"): str,
+                                  vol.Optional("address"): vol.All(int, vol.Range(min=0, max=65535)), vol.Optional("label"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_register_notes(hass, msg):
+    return await _mgr(hass).register_note(msg["device_id"], msg.get("address"), msg.get("label"))
+
+
+_PCT = vol.All(vol.Coerce(float), vol.Range(min=0, max=100))
+_SCENARIO = {vol.Required("reserve"): _PCT, vol.Required("cheap"): _PCT}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/whatif", vol.Optional("days", default=30): vol.All(int, vol.Range(min=3, max=200)),
+                                  vol.Required("base"): _SCENARIO, vol.Required("alt"): _SCENARIO})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_whatif(hass, msg):
+    c = _mgr(hass).coordinator
+    try:
+        return c.whatif(msg["days"], {"reserve_pct": msg["base"]["reserve"], "cheap_pct": msg["base"]["cheap"]},
+                        {"reserve_pct": msg["alt"]["reserve"], "cheap_pct": msg["alt"]["cheap"]})
+    except ValueError as err:
+        raise ValidationError(str(err)) from err
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/backups"})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_backups(hass, msg):
+    return {"backups": await _mgr(hass).list_backups()}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/backups/now"})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_backup_now(hass, msg):
+    from . import _write_backup
+
+    entry = _entry(hass)
+    mgr = _mgr(hass)
+    await hass.async_add_executor_job(_write_backup, mgr._backup_dir(), mgr.export_all(dict(entry.options) if entry else {}))
+    return {"backups": await mgr.list_backups()}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/backups/restore", vol.Required("name"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_restore_backup(hass, msg):
+    return await _mgr(hass).restore_backup(msg["name"], _entry(hass))
 
 
 @websocket_api.websocket_command(
@@ -303,7 +369,8 @@ async def ws_preview(hass, msg):
 async def ws_diagnostics(hass, msg):
     c = _mgr(hass).coordinator
     return {"devices": c.diagnostics(), "events": [list(e) for e in list(c._snap.events)[-100:]],
-            "alerts": sorted(c.alerts.active()), "notes": c.last_result.notes}
+            "alerts": sorted(c.alerts.active()), "notes": c.last_result.notes,
+            "decisions": list(reversed(c.why))[:40]}
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/tariffs/compare", vol.Optional("days", default=30): vol.All(int, vol.Range(min=1, max=90))})
