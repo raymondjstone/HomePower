@@ -398,3 +398,60 @@ class Diverter:
             return None
         self.on, self._since, self._want = want, None, None
         return "on" if want else "off"
+
+
+# ---------------------------------------------------------------- plan versus actual
+
+
+class PlanLog:
+    """What each battery was told to do against what it really did, averaged per half hour, for the last few days.
+
+    Power is signed like the readings: charging positive, discharging negative. A battery left to its own control has no
+    planned figure for that slot (None), only an actual one."""
+
+    KEEP_DAYS = 8
+
+    def __init__(self, data: dict | None = None) -> None:
+        self.days: dict[str, dict[str, dict[str, list[float]]]] = {}
+        for day, devs in (data or {}).items():
+            for did, r in (devs or {}).items():
+                try:
+                    if all(len(r[k]) == 48 for k in ("ps", "pn", "as", "an")):
+                        self.days.setdefault(day, {})[did] = {k: [float(x) for x in r[k]] for k in ("ps", "pn", "as", "an")}
+                except (KeyError, TypeError, ValueError):
+                    continue                                    # a damaged day is dropped, never fatal
+
+    def add(self, t: datetime, did: str, planned_w: float | None, actual_w: float | None) -> None:
+        if planned_w is None and actual_w is None:
+            return
+        r = self.days.setdefault(t.strftime("%Y-%m-%d"), {}).setdefault(did, {k: [0.0] * 48 for k in ("ps", "pn", "as", "an")})
+        i = t.hour * 2 + t.minute // 30
+        if planned_w is not None:
+            r["ps"][i] += planned_w
+            r["pn"][i] += 1
+        if actual_w is not None:
+            r["as"][i] += actual_w
+            r["an"][i] += 1
+        for old in sorted(self.days)[:-self.KEEP_DAYS]:
+            del self.days[old]
+
+    def view(self, did: str, now: datetime, hours: int = 24) -> dict:
+        """The last `hours` hours as half-hour rows [start iso, planned W, actual W] (None = no reading), plus how closely
+        the battery followed the plan over the slots that had both."""
+        end = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0) + timedelta(minutes=30)
+        rows, num, den = [], 0.0, 0.0
+        for k in range(hours * 2):
+            start = end - timedelta(minutes=30 * (hours * 2 - k))
+            r = self.days.get(start.strftime("%Y-%m-%d"), {}).get(did)
+            i = start.hour * 2 + start.minute // 30
+            p = r["ps"][i] / r["pn"][i] if r and r["pn"][i] else None
+            a = r["as"][i] / r["an"][i] if r and r["an"][i] else None
+            rows.append([start.isoformat(), None if p is None else round(p), None if a is None else round(a)])
+            if p is not None and a is not None:
+                num += abs(p - a)
+                den += max(abs(p), abs(a), 1.0)
+        both = sum(1 for _, p, a in rows if p is not None and a is not None)
+        return {"rows": rows, "match_pct": round(100 * (1 - num / den)) if both >= 4 and den > 0 else None}
+
+    def dump(self) -> dict:
+        return {d: {did: {k: [round(x, 1) for x in v] for k, v in r.items()} for did, r in devs.items()} for d, devs in self.days.items()}

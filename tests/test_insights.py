@@ -399,3 +399,34 @@ def test_damaged_saved_history_is_dropped_not_fatal():
     assert GridEvents([{"start": "2026-11-01T00:00:00"}, "junk", None]).events == []
     h = HealthTrend({"a": {"2026-11-01": {}}, "b": "junk"})
     assert h.warning("a") is None and h.series("a") == [["2026-11-01", None, None]]
+
+
+def test_plan_log_averages_per_slot_and_scores_how_closely_the_plan_was_followed():
+    from datetime import datetime, timezone
+    from hp.core.insights import PlanLog
+    log = PlanLog()
+    t0 = datetime(2026, 3, 1, 1, 0, tzinfo=timezone.utc)
+    for k in range(8):                                           # four hours of half-hour slots, 2 samples each
+        for j in range(2):
+            t = t0.replace(hour=1 + k // 2, minute=30 * (k % 2))
+            log.add(t, "e", 2000.0, 1800.0 if j else 2200.0)     # follows the plan on average
+    log.add(t0.replace(hour=6), "e", None, -300.0)               # left to itself: an actual figure only
+    now = datetime(2026, 3, 1, 8, 10, tzinfo=timezone.utc)
+    v = log.view("e", now, hours=24)
+    row = {r[0][11:16]: r for r in v["rows"]}
+    assert row["01:00"][1:] == [2000, 2000] and row["06:00"][1:] == [None, -300]
+    assert v["match_pct"] == 100
+    off = PlanLog()
+    for k in range(6):
+        off.add(t0.replace(hour=1 + k // 2, minute=30 * (k % 2)), "e", 2000.0, 0.0)   # told to charge, did nothing
+    assert off.view("e", now)["match_pct"] == 0
+
+
+def test_plan_log_survives_a_save_and_ignores_damaged_days():
+    from datetime import datetime, timezone
+    from hp.core.insights import PlanLog
+    log = PlanLog()
+    t = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
+    log.add(t, "e", 100.0, 90.0)
+    again = PlanLog({**log.dump(), "2026-03-02": {"e": {"ps": [1]}}})       # a damaged day alongside a good one
+    assert "2026-03-02" not in again.days and again.days["2026-03-01"]["e"]["ps"][24] == 100.0

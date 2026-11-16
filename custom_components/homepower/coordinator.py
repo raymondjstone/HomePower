@@ -23,7 +23,7 @@ from .core.models import Actual, Desired, Mode
 from .core.preview import find_conflicts, preview as build_preview
 from .core.meter import MeterReader
 from .core.anker_x1_map import X1_ALARMS
-from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, UsageHistory, combine
+from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, PlanLog, UsageHistory, combine
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
 from dataclasses import replace as _replace
 
@@ -110,6 +110,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.rate_learner = RateLearner(manager.charge_rates)   # real charge rate of batteries that pick their own
         self.budget = CommandBudget()                       # daily cap on commands to cloud batteries
         self.charge_watch = ChargeWatch()                    # told to charge but nothing happens
+        self.plan_log = PlanLog(manager.plan_log_data)       # planned against actual power per half hour
         self.health = Health(manager.health_data)           # weekly round-trip efficiency per battery
         self.grid_events = GridEvents(manager.grid_events)  # each time a battery reported the grid down
         self.trend = HealthTrend(manager.trend_data)        # daily temperature and pack-voltage spread per battery
@@ -167,7 +168,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
     def set_config(self, adapters: list[DeviceAdapter], schedules: list[ScheduleEntry], goals: list[Goal]) -> None:
         for gone in {a.config.device_id for a in self.adapters} - {a.config.device_id for a in adapters}:
             self.alerts.forget(f"offline:{gone}"), self.alerts.forget(f"error:{gone}"), self.alerts.forget(f"grid:{gone}"), self.alerts.forget(f"alarm:{gone}:")
-            self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"stuck:{gone}"), self.alerts.forget(f"gridsign:{gone}"), self.charge_watch.forget(gone), self.rate_learner.forget(gone), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}"), self.alerts.forget(f"trend:{gone}")
+            self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"stuck:{gone}"), self.alerts.forget(f"gridsign:{gone}"), self.charge_watch.forget(gone), self.rate_learner.forget(gone), self._forget_plan(gone), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}"), self.alerts.forget(f"trend:{gone}")
             self.grid_events.forget(gone, dt_util.now())
             self.trend.days.pop(gone, None)
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
@@ -957,7 +958,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if not self.paused:
             await self._keepalive(mono, adapters)
         self.last_grid = grid
-        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters), lambda: self._learn_rates(adapters),
+        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals),
                      lambda: self._check_events(now, wall, actuals, rates),
                      lambda: self._divert(wall, actuals, grid), lambda: self._sync_x1_limits(mono, adapters)):
             try:   # accounting / alerts are secondary: a bug there must not stop control
@@ -1061,6 +1062,20 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if rate and not cfg.caps.power_control and rate != cfg.caps.max_charge_w:
             return _replace(cfg, caps=_replace(cfg.caps, max_charge_w=rate))
         return cfg
+
+    def _record_plan(self, now: datetime, actuals: dict[str, Actual]) -> None:
+        """Remember what each battery was told to do, and what it did, for the plan-versus-actual chart."""
+        for did, act in actuals.items():
+            st = self._snap.devices.get(did)
+            want = st.desired if st else None
+            planned = None
+            if want is not None and want.mode is not Mode.AUTO:
+                planned = {Mode.CHARGE: 1, Mode.DISCHARGE: -1}.get(want.mode, 0) * float(want.power_w or 0)
+            self.plan_log.add(now, did, planned, act.power_w if act.online else None)
+
+    def _forget_plan(self, did: str) -> None:
+        for devs in self.plan_log.days.values():
+            devs.pop(did, None)
 
     def _learn_rates(self, adapters) -> None:
         changed = False
@@ -1309,6 +1324,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             "combined": self._combined(actuals), "setup": self.setup_check(), "solar_room": self.solar_room, "export_better": self._export_better(rates, now),
             "divert": {"entity": self.settings.divert_entity, "on": self.diverter.on} if self.settings.divert_entity else None,
             "daily": {"self_consumption": self.daily.self_consumption(day_key), "cheap_share": self.daily.cheap_share(day_key)},
+            "plan_actual": {a.config.device_id: self.plan_log.view(a.config.device_id, now) for a in self.adapters},
             "health": {a.config.device_id: {"efficiency": self.health.efficiency(a.config.device_id)[-8:],
                                              "warning": self.health.degraded(a.config.device_id),
                                              "cycling": self._cycling(a.config.device_id, rates, now)} for a in self.adapters},

@@ -505,7 +505,7 @@ class HomePowerPanel extends HTMLElement {
     const xt = [0, 0.25, 0.5, 0.75, 1].map((f) => tmin + f * (tmax - tmin));
     const grid = ticks.map((v) => `<line x1="0" x2="${W}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--divider-color)" stroke-opacity="${v === 0 && lo < 0 ? 1 : 0.5}" ${v === 0 && lo < 0 ? "" : 'stroke-dasharray="3 4"'} vector-effect="non-scaling-stroke"/>`).join("")
       + xt.slice(1, -1).map((t) => `<line x1="${X(t).toFixed(1)}" x2="${X(t).toFixed(1)}" y1="0" y2="${H}" stroke="var(--divider-color)" stroke-opacity=".3" vector-effect="non-scaling-stroke"/>`).join("");
-    const lines = series.map((s) => s.pts.length < 2 ? "" : `<path d="${s.pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Math.min(H, Math.max(0, Y(p.v))).toFixed(1)}`).join("")}" fill="none" stroke="${s.color}" stroke-width="${s.width || 2.2}" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`).join("");
+    const lines = series.map((s) => s.pts.length < 2 ? "" : `<path d="${s.pts.map((p, i) => `${i ? "L" : "M"}${X(p.t).toFixed(1)},${Math.min(H, Math.max(0, Y(p.v))).toFixed(1)}`).join("")}" fill="none" stroke="${s.color}" stroke-width="${s.width || 2.2}"${s.dash ? ' stroke-dasharray="7 5"' : ""} stroke-linejoin="round" vector-effect="non-scaling-stroke"/>`).join("");
     const ylab = ticks.map((v) => `<span style="top:${((1 - (v - lo) / Math.max(1e-9, hi - lo)) * 100).toFixed(2)}%">${o.fmtY(v)}</span>`).join("");
     const xlab = xt.map((t, i) => `<span style="left:${i * 25}%">${this._fmtT(t, tmax - tmin)}</span>`).join("");
     return `<div class="plot"><div class="plot-y" style="height:${height}px">${ylab}</div>
@@ -1090,6 +1090,25 @@ class HomePowerPanel extends HTMLElement {
     return `${c.worth_it ? `<span class="ok">Yes: about ${cur}${n} per kWh</span>` : `<span class="bad">No: loses about ${cur}${n} per kWh</span>`}<span class="sub" style="color:var(--secondary-text-color)"> (cheapest to dearest price at ${c.efficiency_pct}%${c.measured ? "" : ", estimated"})</span>`;
   }
 
+  _planCard() {
+    const pa = this.live.plan_actual || {};
+    const blocks = this.data.devices.map((d, i) => {
+      const x = pa[d.device_id];
+      if (!x || !(x.rows || []).some((r) => r[1] != null || r[2] != null)) return "";
+      const t = (r) => Date.parse(r[0]) + 900000, mk = (k) => x.rows.filter((r) => r[k] != null).map((r) => ({ t: t(r), v: r[k] }));
+      const series = [{ name: "Planned", color: "#9ca3af", dash: true, pts: mk(1) }, { name: "Actual", color: this._color(i), pts: mk(2) }];
+      const vs = series.flatMap((s) => s.pts.map((p) => p.v)).concat([0]), nt = this._niceTicks(Math.min(...vs), Math.max(...vs), 4);
+      const tmin = Date.parse(x.rows[0][0]), tmax = Date.parse(x.rows[x.rows.length - 1][0]) + 1800000;
+      const verdict = x.match_pct == null ? "Not enough time under HomePower's control yet to compare." : `Followed the plan ${x.match_pct}% over the slots it was given one.`;
+      return `<div style="margin:10px 0"><b>${esc(d.name)}</b> <span class="sub" style="font-size:12px;color:var(--secondary-text-color)">${verdict}</span>
+        ${this._plot(series, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin, tmax, fmtY: (v) => (v === 0 ? "0" : fmtW(v)), height: 130, ariaLabel: `${d.name}: planned and actual power, last 24 hours` })}
+        <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${s.name}</span>`).join("")}</div></div>`;
+    }).join("");
+    if (!blocks) return "";
+    return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-timeline-variant"></ha-icon>Plan versus actual (last 24 hours)</h2>${blocks}
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Charging is above the line, discharging below. The dashed line is what HomePower told the battery to do (it stops where the battery was left to its own control); the solid line is what it really did. A big gap means the battery is not following commands, or something else (the app, a schedule on the battery) is overriding them.</p></div>`;
+  }
+
   _healthCard() {
     const h = (this.live.health || {}), rows = this.data.devices.map((d) => {
       const x = h[d.device_id] || { efficiency: [], warning: null }, e = x.efficiency || [];
@@ -1224,7 +1243,7 @@ class HomePowerPanel extends HTMLElement {
         ${tile("Solar", `${kwh("pv_in")} kWh`, "As reported by your batteries")}
         ${L.daily && L.daily.self_consumption != null ? tile("Solar used at home today", `${L.daily.self_consumption}%`, "Not exported to the grid") : ""}
         ${L.daily && L.daily.cheap_share != null ? tile("Cheap-rate share today", `${L.daily.cheap_share}%`, "Of the grid energy you imported") : ""}
-      </div>${this._tariffCard(cur)}${this._healthCard()}${this._trendCard()}${this._gridEventsCard()}${this._whatifCard()}
+      </div>${this._tariffCard(cur)}${this._healthCard()}${this._planCard()}${this._trendCard()}${this._gridEventsCard()}${this._whatifCard()}
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:battery-sync"></ha-icon>Batteries (since HomePower started recording)</h2>
         <table class="tbl"><tr><th>Battery</th><th>Charged</th><th>Discharged</th><th>Round-trip</th><th>Cycles</th></tr>${rows || ""}</table>
         <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">These are also Home Assistant sensors, so you can add them to the Energy dashboard.</p></div>
