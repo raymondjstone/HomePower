@@ -17,6 +17,7 @@ from .core.profiles import PROFILE_BY_ID
 from .core.serde import (
     ValidationError,
     device_from_dict,
+    current_abilities,
     device_to_dict,
     fill_from_probe,
     goal_from_dict,
@@ -550,13 +551,14 @@ class HomePowerManager:
     def public_devices(self) -> list[dict]:
         """Devices for the UI: secrets are never sent to the browser."""
         out = []
-        for d in self.devices.values():
-            d = dict(d)
+        for saved in self.devices.values():
+            d = dict(saved)
             conn = dict(d.get("connection", {}))
             if "secret_key" in conn:
                 conn["secret_key"] = ""
                 conn["secret_saved"] = True
             d["connection"] = conn
+            d.update(current_abilities(saved))
             out.append(d)
         return out
 

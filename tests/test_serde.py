@@ -84,3 +84,11 @@ def test_fill_from_probe_uses_battery_values_and_keeps_user_overrides():
     assert out["capacity_wh"] == 10000 and out["max_charge_w"] == 3600 and out["min_soc"] == 10
     assert fill_from_probe({"capacity_wh": 8000}, info)["capacity_wh"] == 8000   # user override wins
     assert fill_from_probe({}, {"capacity_wh": None}).get("capacity_wh") is None  # nothing invented
+
+
+def test_panel_devices_use_current_modes_not_the_saved_copy():
+    from core.serde import current_abilities
+    old = {**device_to_dict(device_from_dict(ECO)), "supported_modes": ["auto", "hold"], "max_charge_w": 0, "power_control": True}
+    out = current_abilities(old)
+    assert "charge" in out["supported_modes"] and out["power_control"] is False and out["max_charge_w"] > 0
+    assert current_abilities({"device_id": "x", "kind": "ecoflow_stream_ultra_x", "connection": {}}) == {}   # unreadable: left as saved

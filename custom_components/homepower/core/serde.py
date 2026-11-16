@@ -273,3 +273,13 @@ def goal_to_dict(g: Goal) -> dict:
         "by": g.by.strftime("%H:%M"), "days": sorted(g.days), "use_forecast": g.use_forecast,
         "max_power_w": g.max_power_w, "enabled": g.enabled, "auto_target": g.auto_target, "source": g.source,
     }
+
+
+def current_abilities(saved: dict) -> dict:
+    """What a saved battery can do now. Modes and limits come from its profile, not from the copy saved when it was added,
+    so a new HomePower release shows new abilities without the battery being re-added. {} if it cannot be rebuilt."""
+    try:
+        cur = device_to_dict(device_from_dict(saved))
+    except Exception:  # noqa: BLE001 - an unreadable saved battery is shown as saved
+        return {}
+    return {k: cur[k] for k in ("supported_modes", "power_control", "max_charge_w")}
