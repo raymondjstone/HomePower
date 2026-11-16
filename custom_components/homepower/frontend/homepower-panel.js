@@ -444,6 +444,9 @@ class HomePowerPanel extends HTMLElement {
     if (d.control_enabled === false) chips.push(`<span class="chip warn" title="HomePower reads this battery but never sends it commands">Monitor only</span>`);
     if (lv.guard_held) chips.push(`<span class="chip" title="Held by the SOC limit">SOC limit reached</span>`);
     if (lv.last_error) chips.push(`<span class="chip bad" title="${esc(lv.last_error)}">Last write failed</span>`);
+    if (lv.why && !lv.last_error && d.control_enabled !== false && lv.online) chips.push(`<span class="chip warn" title="${esc(lv.why)}">Why idle: ${esc(lv.why.length > 48 ? lv.why.slice(0, 46) + "…" : lv.why)}</span>`);
+    if (lv.measured_charge_w) chips.push(`<span class="chip" title="The charge power this battery has really shown while charging; it picks its own rate. Plans use it.">Charges at ~${fmtW(lv.measured_charge_w)} (measured)</span>`);
+    if ((lv.setting_changes || []).length) chips.push(`<span class="chip" title="${esc(lv.setting_changes.map((c) => `${c.at}  ${c.key}: ${c.from} → ${c.to}`).join("\n"))}">Settings changed (${lv.setting_changes.length})</span>`);
     if (this.data.settings.zero_import_device === d.device_id) chips.push(`<span class="chip"><ha-icon icon="mdi:scale-balance" style="--mdc-icon-size:14px"></ha-icon>Zero-import</span>`);
     for (const sid of lv.active_schedules || []) chips.push(`<span class="chip"><ha-icon icon="mdi:calendar-clock" style="--mdc-icon-size:14px"></ha-icon>${esc(sid)}</span>`);
     return `<div class="card"><div class="bat">${this._ring(r.soc)}

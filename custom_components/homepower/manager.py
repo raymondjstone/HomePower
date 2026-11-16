@@ -66,6 +66,7 @@ class HomePowerManager:
         self.divert_on: str = ""                 # the solar-surplus load we switched on (to switch it off after a restart)
         self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
+        self.charge_rates: dict[str, int] = {}       # measured charge power of batteries that pick their own rate
         self.ecoflow_orig: dict[str, dict] = {}     # EcoFlow settings as they were before HomePower held/charged (kept across restarts)
         self._live_on = False                       # opt-in setting: EcoFlow live (MQTT) updates
         self._hubs: dict[tuple, EcoFlowLive] = {}   # live-update connections, one per EcoFlow account
@@ -92,6 +93,7 @@ class HomePowerManager:
         self.divert_on = str(data.get("divert_on") or "")
         self.pv_seen = set(data.get("pv_seen", []))
         self.forecast_days = dict(data.get("forecast_days", {}))
+        self.charge_rates = {k: int(v) for k, v in data.get("charge_rates", {}).items() if isinstance(v, (int, float))}
         self.ecoflow_orig = {k: dict(v) for k, v in data.get("ecoflow_orig", {}).items() if isinstance(v, dict)}
         scenes = data.get("scenes")
         self.scenes = {s["name"]: s for s in (scenes if scenes is not None else DEFAULT_SCENES)}
@@ -108,7 +110,7 @@ class HomePowerManager:
             "grid_events": c.grid_events.dump() if c else self.grid_events, "trend": c.trend.dump() if c else self.trend_data, "register_notes": self.register_notes,
             "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
             "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen), "forecast_days": self.forecast_days,
-            "ecoflow_orig": self.ecoflow_orig,
+            "ecoflow_orig": self.ecoflow_orig, "charge_rates": c.rate_learner.rates if c else self.charge_rates,
         })
 
     async def save_runtime(self) -> None:

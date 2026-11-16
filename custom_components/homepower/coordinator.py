@@ -25,7 +25,9 @@ from .core.meter import MeterReader
 from .core.anker_x1_map import X1_ALARMS
 from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, UsageHistory, combine
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
-from .core.sanity import ChargeWatch, cycling_margin, grid_sign_mismatch
+from dataclasses import replace as _replace
+
+from .core.sanity import ChargeWatch, CommandBudget, RateLearner, cycling_margin, explain_idle, grid_sign_mismatch, next_unconfirmed
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
 from .core.settings import AppSettings, build as build_settings
@@ -62,6 +64,7 @@ class DeviceStatus:
     guard_held: bool = False        # software SOC limit is currently holding this device
     last_read_ok: float | None = None
     unconfirmed: int = 0
+    waited: int = 0                 # cycles a slow (cloud) battery has been given to show a command's effect
     last_keepalive: float = 0.0
     last_command: dict | None = None
     last_applied: Desired | None = None   # what we last sent, to tell a new instruction from a retry
@@ -104,6 +107,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.profile = LoadProfile(manager.profile_data)   # the household's usual load by time of day
         self.usage = UsageHistory(manager.usage_data)          # grid import/export per half-hour, for the tariff comparison
         self.daily = DailyStats(manager.daily_data)         # self-consumption / cheap-rate share per day
+        self.rate_learner = RateLearner(manager.charge_rates)   # real charge rate of batteries that pick their own
+        self.budget = CommandBudget()                       # daily cap on commands to cloud batteries
         self.charge_watch = ChargeWatch()                    # told to charge but nothing happens
         self.health = Health(manager.health_data)           # weekly round-trip efficiency per battery
         self.grid_events = GridEvents(manager.grid_events)  # each time a battery reported the grid down
@@ -162,7 +167,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
     def set_config(self, adapters: list[DeviceAdapter], schedules: list[ScheduleEntry], goals: list[Goal]) -> None:
         for gone in {a.config.device_id for a in self.adapters} - {a.config.device_id for a in adapters}:
             self.alerts.forget(f"offline:{gone}"), self.alerts.forget(f"error:{gone}"), self.alerts.forget(f"grid:{gone}"), self.alerts.forget(f"alarm:{gone}:")
-            self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"stuck:{gone}"), self.alerts.forget(f"gridsign:{gone}"), self.charge_watch.forget(gone), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}"), self.alerts.forget(f"trend:{gone}")
+            self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"stuck:{gone}"), self.alerts.forget(f"gridsign:{gone}"), self.charge_watch.forget(gone), self.rate_learner.forget(gone), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}"), self.alerts.forget(f"trend:{gone}")
             self.grid_events.forget(gone, dt_util.now())
             self.trend.days.pop(gone, None)
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
@@ -905,7 +910,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             backup_active=self.backup_active, away=self.away, load_blocks=self._load_blocks(), reserve_floor_pct=self._forecast_floor(now),
             grid_fresh=self.grid_age_s is None or self.grid_age_s <= GRID_STALE_AFTER_S,
             rates=rates, forecast_kwh=self._forecast_kwh(), cheap_now=self._is_cheap(rates, now, self._price_now(rates, now)),
-            devices=[DevIn(a.config, actuals[a.config.device_id],
+            devices=[DevIn(self._effective_config(a.config), actuals[a.config.device_id],
                            self._snap.devices[a.config.device_id].release_pending,
                            self._snap.devices[a.config.device_id].guard_held,
                            bool(a.config.extra.get("control_enabled", True)), self._has_solar(a.config)) for a in adapters],
@@ -952,7 +957,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if not self.paused:
             await self._keepalive(mono, adapters)
         self.last_grid = grid
-        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters),
+        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters), lambda: self._learn_rates(adapters),
                      lambda: self._check_events(now, wall, actuals, rates),
                      lambda: self._divert(wall, actuals, grid), lambda: self._sync_x1_limits(mono, adapters)):
             try:   # accounting / alerts are secondary: a bug there must not stop control
@@ -1050,6 +1055,23 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             self.ledger.add(day, did, d_in, 1.0 if did in forced else free_share, d_out, exp_share, price, exp_price, stored, first)
         self.ledger.forget(set(caps))
 
+    def _effective_config(self, cfg):
+        """The battery's config with the charge rate it has really shown (batteries that pick their own rate)."""
+        rate = self.rate_learner.rates.get(cfg.device_id)
+        if rate and not cfg.caps.power_control and rate != cfg.caps.max_charge_w:
+            return _replace(cfg, caps=_replace(cfg.caps, max_charge_w=rate))
+        return cfg
+
+    def _learn_rates(self, adapters) -> None:
+        changed = False
+        for a in adapters:
+            st = self._snap.devices.get(a.config.device_id)
+            if st is None or st.actual is None or a.config.caps.power_control:
+                continue
+            changed |= self.rate_learner.observe(a.config.device_id, self._grid_charging(st), st.actual.power_w, st.actual.soc)
+        if changed:
+            self.manager.charge_rates = dict(self.rate_learner.rates)
+
     @staticmethod
     def _grid_charging(st: DeviceStatus) -> bool:
         """Is this battery being told to charge from the grid at a fixed power (schedule, goal, override, backup)?"""
@@ -1073,6 +1095,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             st.last_command = {"at": dt_util.now().isoformat(), "mode": want.mode.value, "power_w": want.power_w, "result": "dry run: not sent"}
             self._log(did, f"DRY RUN: would send {what}")
             return
+        if not a.config.caps.power_control and not self.budget.allow(did, dt_util.now().strftime("%Y-%m-%d"), want.mode is Mode.AUTO):
+            st.last_error = (f"Daily limit of {self.budget.limit} commands reached for {a.config.name}: HomePower will not send more "
+                             "until tomorrow (it can still hand the battery back).")
+            self._log(did, st.last_error)
+            return
         st.last_applied = want
         if want.mode is not Mode.AUTO:
             self._set_release(did, st, True)
@@ -1083,8 +1110,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             st.last_error = None
             # Vendor state can lag; a remaining mismatch is retried after the cooldown.
             _, remaining = decide(want, st.actual, now=st.last_apply, last_apply=None)
-            st.unconfirmed = st.unconfirmed + 1 if remaining else 0
-            st.last_command["result"] = "confirmed" if not remaining else "not yet confirmed"
+            st.unconfirmed, st.waited = next_unconfirmed(st.unconfirmed, st.waited, bool(remaining), not a.config.caps.power_control)
+            st.last_command["result"] = "confirmed" if not remaining else ("waiting for the cloud to show it" if st.waited and not st.unconfirmed else "not yet confirmed")
             if want.mode is Mode.AUTO and not remaining:
                 self._set_release(did, st, False)  # handed back and confirmed
             self._log(did, "verified" if not remaining else f"not yet confirmed: {remaining}")
@@ -1253,6 +1280,12 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "override": ({"mode": ov[0].mode.value, "power_w": ov[0].power_w, "until": ov[1].isoformat()} if ov else None),
                 "guard_held": st.guard_held,
                 "last_error": st.last_error,
+                "measured_charge_w": self.rate_learner.rates.get(did) if not a.config.caps.power_control else None,
+                "why": explain_idle(control_enabled=bool(a.config.extra.get("control_enabled", True)), paused=self.paused,
+                                    dry_run=self.settings.dry_run, online=bool(act and act.online), off_grid=bool(act and act.off_grid),
+                                    protected=bool(act and act.protected), last_error=st.last_error, guard_held=st.guard_held,
+                                    unconfirmed=st.unconfirmed),
+                "setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or [])[-8:],
             }
         return out
 
