@@ -41,6 +41,10 @@ def _time(s: Any, name: str) -> time:
         raise ValidationError(f"{name} must be HH:MM") from e
 
 
+SECRET_KEYS = ("secret_key", "password")     # kept out of anything sent to the browser or a diagnostics file
+PRIVATE_KEYS = SECRET_KEYS + ("access_key", "email")
+
+
 def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
     raw = raw or {}
     profile = profile or {}
@@ -72,6 +76,17 @@ def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
                 raise ValidationError(f"{label} is required")
             out[k] = v
         return out
+    if driver == "ecoflow_ac5000":
+        region = str(raw.get("region") or "eu")
+        if region not in ("eu", "america", "global"):
+            raise ValidationError("region must be eu, america or global")
+        out = {"region": region}
+        for k, label in (("email", "EcoFlow account email"), ("password", "EcoFlow account password"), ("sn", "battery serial number")):
+            v = str(raw.get(k) or "").strip()
+            if not v:
+                raise ValidationError(f"{label} is required")
+            out[k] = v
+        return out
     return {}
 
 
@@ -92,8 +107,13 @@ def device_from_dict(d: dict) -> DeviceConfig:
     kind = str(d.get("kind") or "custom")
     profile = PROFILE_BY_ID.get(kind) or PROFILE_BY_ID["custom"]
     driver = profile["driver"]
+    legacy = False
+    if driver == "ecoflow_ac5000" and not (d.get("connection") or {}).get("email") and (d.get("connection") or {}).get("access_key"):
+        driver, legacy = "ecoflow_stream", True   # saved before the account login existed: keep reading it with its developer keys
     spec = DRIVERS[driver]
     modes = frozenset(Mode(m) for m in (profile.get("modes") or spec["modes"]))
+    if legacy:
+        modes = frozenset({Mode.AUTO})            # read-only until the account login is entered
     connection = _connection(driver, d.get("connection"), profile) if driver != "entities" else {}
     if driver == "modbus_generic":
         parsed = connection.pop("_parsed")
@@ -106,7 +126,7 @@ def device_from_dict(d: dict) -> DeviceConfig:
     caps = Capabilities(
         capacity_wh=_int(d.get("capacity_wh"), "capacity", 100, 200000),
         max_charge_w=_int(d.get("max_charge_w"), "max charge", 0, 50000) or (
-            int(profile.get("default_charge_w", 0)) if driver == "ecoflow_stream" else 0),   # saved before Charge existed: size it
+            int(profile.get("default_charge_w", 0)) if driver in ("ecoflow_stream", "ecoflow_ac5000") else 0),   # saved before Charge existed: size it
         max_discharge_w=_int(d.get("max_discharge_w"), "max discharge", 0, 50000),
         min_soc=_int(d.get("min_soc"), "minimum SOC", 0, 100, 0),
         supported_modes=modes,

@@ -30,7 +30,7 @@ HomePower is set up once per Home Assistant (a second copy cannot be added). Tes
 |---|---|---|
 | Anker SOLIX Solarbank Max AC / Max, XE AC / XE, Solarbank 4 E5000 Pro, X1 | Local **Modbus TCP** on your network (switch it on in the Anker app: device > Settings > Three-Party Control). HomePower scans your network and finds the battery. | Auto, Charge, Discharge, Hold |
 | EcoFlow STREAM AC / Pro / Ultra / Ultra X / Max | EcoFlow's own **developer API**: create an Access Key and Secret Key at developer.ecoflow.com; HomePower lists the batteries on your account. | Auto, Hold, Charge (on/off, own rate) |
-| EcoFlow STREAM AC 5000 (ES5000) | The same developer API | Monitor only |
+| EcoFlow STREAM AC 5000 (ES5000) | Your **EcoFlow account** (email + password), the way the EcoFlow app connects, because this model's settings are not in the developer API. Live readings include the paired P1 meter. | Auto, Hold (experimental) |
 | Victron GX | Modbus TCP, register map built in | Monitor only |
 | Any Modbus TCP battery | You describe its registers as a small JSON map ([see below](#generic-modbus-register-map)) | Auto, plus Charge/Discharge/Hold if the map has a setpoint and mode register |
 | Anything else | Advanced: choose Home Assistant entities that read and control it | Auto, Charge, Discharge, Hold |
@@ -367,7 +367,13 @@ HomePower) before deleting. Home Assistant cannot ask at the moment of deleting,
 
 - Sending commands has only been run against simulators, not real hardware. New batteries are monitor-only until you allow
   control; run Test control before relying on it.
-- EcoFlow STREAM batteries can be set to Auto, Hold or Charge (no set power, no discharge), and the ES5000 is read-only. Charge has not been tried on a real battery.
+- EcoFlow STREAM batteries can be set to Auto, Hold or Charge (no set power, no discharge). Charge has not been tried on a real battery.
+- **ES5000:** only Auto and Hold, and neither has been tried on a real unit. Hold sets its "net power out" limit to 0 and Auto puts the old limit back.
+  No way to force a grid charge on this model is known. While it is connected, HomePower records the commands the EcoFlow app sends it (Diagnostics >
+  raw readings > `app_command_*`): set a charge in the EcoFlow app, then share those lines so the real command can be added. Signing in with your
+  account can sign the app out on your phone; a second EcoFlow login for HomePower avoids that. An ES5000 saved before this keeps reading with its
+  developer keys (monitor only) until you enter the account login (Batteries > edit).
+- The ES5000 driver uses protobuf field numbers published by the open-source [EcoFlow Cloud](https://github.com/tolwi/hassio-ecoflow-cloud) integration (Apache-2.0).
 - If Home Assistant is hard-killed (power cut) while a battery is being forced, it stays in that mode until HomePower
   next starts and hands it back (X1 also has its own watchdog).
 - Goals plan with the prices known at the time; they re-plan every cycle as prices and charge level change.

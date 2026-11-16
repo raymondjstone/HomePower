@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
 
-REDACT = {"secret_key", "access_key", "host", "sn", "serial", "notify_service"}
+REDACT = {"secret_key", "access_key", "password", "email", "host", "sn", "serial", "notify_service"}
 
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:

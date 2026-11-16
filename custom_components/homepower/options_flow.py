@@ -100,6 +100,8 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                 return await self.async_step_anker_find()
             if driver == "ecoflow_stream":
                 return await self.async_step_ecoflow_account()
+            if driver == "ecoflow_ac5000":
+                return await self.async_step_ecoflow_ac5000()
             if driver == "modbus_generic":
                 return await self.async_step_modbus_map()
             return await self.async_step_entity_details()
@@ -172,6 +174,24 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             step_id="ecoflow_account", errors=errors,
             data_schema=vol.Schema({vol.Required("region", default="eu"): _dropdown(region),
                                     vol.Required("access_key"): str, vol.Required("secret_key"): str}),
+            description_placeholders={"error": detail})
+
+    async def async_step_ecoflow_ac5000(self, user_input=None):
+        """STREAM AC 5000: the app's own sign-in (email + password) and the battery's serial number."""
+        errors, detail = {}, ""
+        if user_input is not None:
+            conn = {k: str(user_input[k]).strip() for k in ("region", "email", "password", "sn")}
+            try:
+                self._info = await self._mgr().probe({"kind": self._d["kind"], "connection": conn})
+                self._d["connection"] = conn
+                return await self.async_step_battery_details()
+            except ValidationError as err:
+                errors, detail = {"base": "cannot_connect"}, str(err)
+        region = DRIVERS["ecoflow_ac5000"]["connection"][0]["options"]
+        return self.async_show_form(
+            step_id="ecoflow_ac5000", errors=errors,
+            data_schema=vol.Schema({vol.Required("region", default="eu"): _dropdown(region), vol.Required("email"): str,
+                                    vol.Required("password"): str, vol.Required("sn"): str}),
             description_placeholders={"error": detail})
 
     async def async_step_ecoflow_device(self, user_input=None):

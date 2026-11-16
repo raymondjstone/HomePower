@@ -27,6 +27,7 @@ from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Hea
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
+from .core.serde import PRIVATE_KEYS
 from .core.settings import AppSettings, build as build_settings
 from .core.solar_room import SolarDay, charge_ceiling_pct, split_by_capacity
 
@@ -72,6 +73,7 @@ class Snapshot:
     events: deque = field(default_factory=lambda: deque(maxlen=200))  # diagnostics log
 
 
+CLOUD_DRIVERS = ("ecoflow_stream", "ecoflow_ac5000")   # batteries read through EcoFlow's cloud
 _PRIVATE_KEY = re.compile(r"ssid|wifi|pass|mac|^sn$|serial|lat|lon|addr|ip$|token", re.I)
 
 
@@ -551,7 +553,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         def from_battery(local: bool) -> float | None:
             for did, a in actuals.items():
                 cfg = cfgs.get(did)
-                if cfg is None or (cfg.extra.get("driver") != "ecoflow_stream") != local or not self._measures_house(cfg):
+                if cfg is None or (cfg.extra.get("driver") not in CLOUD_DRIVERS) != local or not self._measures_house(cfg):
                     continue
                 if a.online and a.grid_w is not None:
                     self.grid_source = f"{cfg.name} ({'its own meter reading' if local else 'cloud reading'})"
@@ -590,7 +592,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         said = cfg.extra.get("grid_meter", "auto")
         if said != "auto":
             return said == "yes"
-        return bool(cfg.extra.get("house_meter")) or cfg.extra.get("driver") == "ecoflow_stream"
+        return bool(cfg.extra.get("house_meter")) or cfg.extra.get("driver") in CLOUD_DRIVERS
 
     def _entity_age(self, entity_id: str) -> float | None:
         st = self.hass.states.get(entity_id) if entity_id else None
@@ -1170,7 +1172,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         for a in self.adapters:
             did, st = a.config.device_id, self._snap.devices.get(a.config.device_id)
             conn = dict(a.config.extra.get("connection", {}))
-            for secret in ("secret_key", "access_key"):
+            for secret in PRIVATE_KEYS:
                 if secret in conn:
                     conn[secret] = "***"
             out[did] = {
