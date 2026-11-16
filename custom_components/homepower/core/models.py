@@ -23,6 +23,7 @@ class Capabilities:
     max_discharge_w: int
     min_soc: int = 0
     supported_modes: frozenset[Mode] = frozenset(Mode)
+    power_control: bool = True   # False: Charge is on/off only (the battery picks its own rate), so surplus-tracking is not possible
 
 
 @dataclass(frozen=True, slots=True)

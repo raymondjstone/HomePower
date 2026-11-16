@@ -521,3 +521,14 @@ def test_whatif_battery_never_moves_more_than_its_power_in_a_half_hour():
     day = {"imp": [0.0] * 48, "exp": [0.0] * 48, "load": [1.0] * 48, "pv": [0.0] * 48}
     r = simulate({"2026-11-01": day}, t, 10, 2, reserve_pct=0, cheap_pct=100)          # 2 kW = at most 1 kWh per half-hour, house wants 1 kWh
     assert r["import_kwh"] >= 48 * 1.0 - 1e-6 + 0.0 - 10 / 0.95          # imports ~ the whole load; the battery cannot beat its power limit by discharging and recharging at once
+
+
+def test_charge_without_power_control_never_follows_solar_or_meter():
+    caps = Capabilities(5000, 2300, 2300, 10, frozenset({Mode.AUTO, Mode.CHARGE, Mode.HOLD}), power_control=False)
+    d = DevIn(DeviceConfig("a", "a", "x", caps, extra={"control_enabled": True}), Actual(online=True, soc=50.0, power_w=0.0, mode=Mode.AUTO),
+              release_pending=False, guard_held=False, controllable=True)
+    s = ScheduleEntry("s", frozenset(), time(21), time(23), Desired(Mode.CHARGE, 2000), source="solar")
+    r = compute(world([d], schedules=[s]))
+    assert r.wants["a"].mode is Mode.HOLD
+    g = ScheduleEntry("g", frozenset(), time(21), time(23), Desired(Mode.CHARGE, 2000))
+    assert compute(world([d], schedules=[g])).wants["a"].mode is Mode.CHARGE

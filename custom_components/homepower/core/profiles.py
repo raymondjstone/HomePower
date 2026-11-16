@@ -44,7 +44,8 @@ DRIVERS: dict[str, dict] = {
         ),
     },
     "ecoflow_stream": {
-        "modes": [A, H],
+        "modes": [A, C, H],
+        "power_control": False,   # Charge = raise the backup reserve; the battery charges at its own rate
         "connection": [
             {"k": "region", "label": "Region", "type": "select", "req": True, "default": "eu",
              "options": [{"value": "eu", "label": "Europe (api-e.ecoflow.com)"}, {"value": "america", "label": "Americas (api-a.ecoflow.com)"}, {"value": "global", "label": "Other / global (api.ecoflow.com)"}]},
@@ -102,15 +103,16 @@ VENDORS: dict[str, dict] = {
         "override commands sent by HomePower.")},
     "EcoFlow": {"regions": (
         "Pick the region of your EcoFlow account: Europe uses api-e.ecoflow.com, the Americas use api-a.ecoflow.com, anywhere else api.ecoflow.com. "
-        "STREAM batteries cannot be force-charged or force-discharged through EcoFlow's API, so HomePower offers "
-        "Auto and Hold only for them.")},
+        "STREAM batteries have no charge or discharge power setpoint in EcoFlow's API, so HomePower offers Auto, Hold and "
+        "Charge (on/off: the battery charges from the grid at its own rate up to the target) but never Discharge.")},
     "Other": {"regions": "Any battery that exposes a mode select and a power number in Home Assistant."},
 }
 
 _ANKER = ("Connects directly over Modbus TCP. Control uses the device's third-party control mode and a signed power "
           "setpoint; HomePower hands the battery back to its previous mode when no schedule applies.")
 _EF = ("Uses EcoFlow's developer API. Auto = self-powered; Hold = backup reserve raised to the current charge level so the battery will "
-       "not discharge (solar can still charge it). No force charge/discharge is available.")
+       "not discharge (solar can still charge it); Charge = backup reserve raised to the target so it charges from the grid at its own "
+       "rate (the power cannot be set, and it is not tested on hardware yet). Force discharge is not available.")
 
 
 def _p(pid, vendor, label, driver, notes="", **extra):
@@ -126,13 +128,14 @@ PROFILES: list[dict] = [
     _p("anker_x1", "Anker", "Anker SOLIX X1", "anker_modbus",
        _ANKER + " X1 also gets a comms watchdog so it reverts to the app's mode if HomePower stops talking to it.",
        restore_mode=20, watchdog=True, house_meter=True),   # installed at the grid connection: its meter sees the whole house
-    _p("ecoflow_stream_ac", "EcoFlow", "EcoFlow STREAM AC", "ecoflow_stream", _EF),
-    _p("ecoflow_stream_pro", "EcoFlow", "EcoFlow STREAM Pro", "ecoflow_stream", _EF),
-    _p("ecoflow_stream_ultra", "EcoFlow", "EcoFlow STREAM Ultra", "ecoflow_stream", _EF),
-    _p("ecoflow_stream_ultra_x", "EcoFlow", "EcoFlow STREAM Ultra X", "ecoflow_stream", _EF),
-    _p("ecoflow_stream_max", "EcoFlow", "EcoFlow STREAM Max", "ecoflow_stream", _EF),
+    _p("ecoflow_stream_ac", "EcoFlow", "EcoFlow STREAM AC", "ecoflow_stream", _EF, default_charge_w=1200),
+    _p("ecoflow_stream_pro", "EcoFlow", "EcoFlow STREAM Pro", "ecoflow_stream", _EF, default_charge_w=1500),
+    _p("ecoflow_stream_ultra", "EcoFlow", "EcoFlow STREAM Ultra", "ecoflow_stream", _EF, default_charge_w=2300),
+    _p("ecoflow_stream_ultra_x", "EcoFlow", "EcoFlow STREAM Ultra X", "ecoflow_stream", _EF, default_charge_w=2300),
+    _p("ecoflow_stream_max", "EcoFlow", "EcoFlow STREAM Max", "ecoflow_stream", _EF, default_charge_w=1500),
     _p("ecoflow_stream_ac_5000", "EcoFlow", "EcoFlow STREAM AC 5000 / ES5000 (model to confirm)", "ecoflow_stream",
-       _EF + " Whether EcoFlow's developer API covers this exact model is unconfirmed; the setup test will tell you."),
+       _EF + " Whether EcoFlow's developer API covers this exact model is unconfirmed; the setup test will tell you.",
+       modes=[A], default_charge_w=0),   # its settings use a private protocol this API does not cover: monitor only
     _p("victron_gx", "Other", "Victron GX system (read-only)", "modbus_generic",
        "Reads the GX system registers over Modbus TCP (enable it in the GX device: Settings > Services > Modbus/TCP). "
        "Read-only: shown and recorded, never controlled. Unverified on hardware.",

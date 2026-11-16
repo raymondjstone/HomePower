@@ -138,7 +138,7 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         if not devs:
             if any(g.covers(d.config.device_id) for d in w.devices):
                 res.notes.append(f"goal '{g.id}': none of its batteries can charge right now (offline, or charge control is not "
-                                 "supported: EcoFlow STREAM only offers Auto and Hold)")
+                                 "supported: EcoFlow AC 5000 is monitor-only)")
             continue
         target = g.target_soc
         if g.auto_target:
@@ -175,7 +175,8 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
             p = power_now(allocs, did, w.now)
             if p > 0 and (did not in out or p > (out[did][0].power_w or 0)):
                 out[did] = (Desired(Mode.CHARGE, p, target_soc=tgt(d)), f"goal '{g.id}'", "both" if g.source == "both" else "grid")
-            elif (p <= 0 and g.source != "grid" and not w.export_better and did not in out and d.actual.soc < target):
+            elif (p <= 0 and g.source != "grid" and not w.export_better and did not in out and d.actual.soc < target
+                  and d.config.caps.power_control):
                 # no grid slot right now: take whatever solar would otherwise be exported (and nothing from the grid)
                 out[did] = (Desired(Mode.CHARGE, g.max_power_w, target_soc=target), f"goal '{g.id}'", "solar")
     return out
@@ -204,8 +205,10 @@ def compute(w: World) -> Result:
             want, reason = _zero_import(w, d), "zero-import"
         if want is None:
             continue
-        if (did in entries and want.mode is Mode.CHARGE and entries[did].source == "solar" and Mode.CHARGE not in caps.supported_modes
-                and Mode.HOLD in caps.supported_modes):
+        if want.mode is Mode.CHARGE and reason == "zero-import" and not caps.power_control:
+            want = Desired(Mode.HOLD)   # cannot follow the meter without a power setpoint, and must not charge from the grid
+        if (did in entries and want.mode is Mode.CHARGE and entries[did].source == "solar"
+                and (Mode.CHARGE not in caps.supported_modes or not caps.power_control) and Mode.HOLD in caps.supported_modes):
             if d.has_solar is False:
                 res.notes.append(f"{did}: solar-only charging does nothing for a battery without panels that cannot be told to charge; left alone")
                 continue
@@ -240,7 +243,8 @@ def compute(w: World) -> Result:
     # ---- 2b. where the charging energy may come from: the grid (fixed power), solar surplus only, or both
     src = {did: e.source for did, e in entries.items()}
     src.update({did: s for did, s in goal_src.items() if did not in entries})
-    trackers = [did for did, s in src.items() if did in res.wants and res.wants[did].mode is Mode.CHARGE and s in ("solar", "both")]
+    trackers = [did for did, s in src.items() if did in res.wants and res.wants[did].mode is Mode.CHARGE and s in ("solar", "both")
+                and by_id[did].config.caps.power_control]
     if trackers:
         fixed = sum(max(0.0, o.actual.power_w or 0.0) for o in w.devices
                     if o.actual.online and o.config.device_id not in trackers)   # deliberate charging elsewhere: not surplus
@@ -319,7 +323,7 @@ def compute(w: World) -> Result:
             chargers = []
             for d in free:
                 c = d.config.caps
-                if (d.config.device_id not in res.wants and Mode.CHARGE in c.supported_modes and c.max_charge_w > 0
+                if (d.config.device_id not in res.wants and Mode.CHARGE in c.supported_modes and c.max_charge_w > 0 and c.power_control
                         and d.actual.soc < 98 and "charge" not in w.load_blocks):
                     chargers.append((d.config.device_id, max(0.0, d.actual.power_w or 0.0), c.max_charge_w,
                                      max(c.capacity_wh * (100 - d.actual.soc) / 100, 1.0)))

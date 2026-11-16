@@ -691,7 +691,7 @@ class HomePowerPanel extends HTMLElement {
     q("s-tgt").style.display = mode === "charge" ? "" : "none";
     q("s-srcwrap").style.display = mode === "charge" ? "" : "none";
     const src = mode === "charge" ? (q("s-source").value || "grid") : "grid";
-    q("s-srchelp").textContent = src === "solar" ? "Follows your grid meter: charges with whatever would otherwise be exported (the power above is the most it will take) and waits when there is none. Needs a grid reading. Batteries that only support Hold (EcoFlow) are held so their own panels charge them."
+    q("s-srchelp").textContent = src === "solar" ? "Follows your grid meter: charges with whatever would otherwise be exported (the power above is the most it will take) and waits when there is none. Needs a grid reading. Batteries whose charge power cannot be set (EcoFlow) are held so their own panels charge them."
       : src === "both" ? "Charges at the power above from the grid, and takes any extra solar that would otherwise be exported." : "";
     q("s-res").style.display = mode === "discharge" ? "" : "none";
     q("s-modehelp").textContent = MODES[mode].help;

@@ -93,7 +93,7 @@ def device_from_dict(d: dict) -> DeviceConfig:
     profile = PROFILE_BY_ID.get(kind) or PROFILE_BY_ID["custom"]
     driver = profile["driver"]
     spec = DRIVERS[driver]
-    modes = frozenset(Mode(m) for m in spec["modes"])
+    modes = frozenset(Mode(m) for m in (profile.get("modes") or spec["modes"]))
     connection = _connection(driver, d.get("connection"), profile) if driver != "entities" else {}
     if driver == "modbus_generic":
         parsed = connection.pop("_parsed")
@@ -105,10 +105,12 @@ def device_from_dict(d: dict) -> DeviceConfig:
             connection["map"] = json.loads(connection["map"])
     caps = Capabilities(
         capacity_wh=_int(d.get("capacity_wh"), "capacity", 100, 200000),
-        max_charge_w=_int(d.get("max_charge_w"), "max charge", 0, 50000),
+        max_charge_w=_int(d.get("max_charge_w"), "max charge", 0, 50000) or (
+            int(profile.get("default_charge_w", 0)) if driver == "ecoflow_stream" else 0),   # saved before Charge existed: size it
         max_discharge_w=_int(d.get("max_discharge_w"), "max discharge", 0, 50000),
         min_soc=_int(d.get("min_soc"), "minimum SOC", 0, 100, 0),
         supported_modes=modes,
+        power_control=bool(spec.get("power_control", True)),
     )
     extra: dict = {"driver": driver}
     if driver == "entities":
@@ -153,7 +155,7 @@ def device_to_dict(c: DeviceConfig) -> dict:
         "device_id": c.device_id, "name": c.name, "kind": c.kind, "priority": c.priority,
         "capacity_wh": c.caps.capacity_wh, "max_charge_w": c.caps.max_charge_w,
         "max_discharge_w": c.caps.max_discharge_w, "min_soc": c.caps.min_soc,
-        "supported_modes": sorted(m.value for m in c.caps.supported_modes),
+        "supported_modes": sorted(m.value for m in c.caps.supported_modes), "power_control": c.caps.power_control,
         "driver": e.get("driver", "entities"), "connection": e.get("connection", {}),
         "control_enabled": bool(e.get("control_enabled", True)),
         "entities": e.get("entities", {}), "mode_map": e.get("mode_map", {}),

@@ -72,8 +72,9 @@ def test_direct_connection_validation():
         device_from_dict({**ECO, "connection": {**ECO["connection"], "region": "mars"}})
 
 
-def test_ecoflow_only_auto_and_hold():
-    assert device_from_dict(ECO).caps.supported_modes == {Mode.AUTO, Mode.HOLD}
+def test_ecoflow_offers_auto_hold_and_charge_but_no_power_control():
+    c = device_from_dict(ECO).caps
+    assert c.supported_modes == {Mode.AUTO, Mode.HOLD, Mode.CHARGE} and not c.power_control
 
 
 def test_fill_from_probe_uses_battery_values_and_keeps_user_overrides():

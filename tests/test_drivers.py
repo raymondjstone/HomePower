@@ -304,7 +304,7 @@ def test_ecoflow_read_and_commands():
         assert d.api.sent == [{"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}},
                               {"cfgBackupReverseSoc": 10}]
         with pytest.raises(ValueError):
-            await d.apply(Desired(Mode.CHARGE, 1000))
+            await d.apply(Desired(Mode.DISCHARGE, 1000))     # no discharge setpoint exists
         d.api._q = {"backupReverseSoc": 95}
         assert (await d.read()).mode is Mode.HOLD
         d._cache = None
@@ -588,4 +588,24 @@ def test_x1_reports_pack_voltages_and_stops_at_the_first_missing_pack():
                 assert (await d.read()).pack_v == (500, 520)
             finally:
                 await d.close()
+    asyncio.run(go())
+
+
+def test_ecoflow_charge_raises_reserve_to_target():
+    async def go():
+        d = eco({"soc": 40, "backupReverseSoc": 10, "powGetBpCms": 0})
+        await d.read()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=80))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 80}]
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=100))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 95}]          # the API tops out at 95
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=30))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 40}]          # already above target: hold, do not top up
+        with pytest.raises(ValueError):
+            await d.apply(Desired(Mode.DISCHARGE, 1000))
+        d._cache = None
+        d.api._q = {"soc": 40, "backupReverseSoc": 80}
+        assert (await d.read()).mode is Mode.CHARGE
     asyncio.run(go())

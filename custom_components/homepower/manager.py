@@ -289,7 +289,8 @@ class HomePowerManager:
         except ValidationError:
             pass  # offline right now: fall through to the normal validation message
         if driver == "ecoflow_stream" or (driver == "modbus_generic" and not self._map_controls(raw)):
-            raw.setdefault("max_charge_w", 0)   # nothing to size: no charge/discharge setpoint exists
+            # No power setpoint exists, so these only size the plan: a per-model estimate (editable), nothing for discharge.
+            raw.setdefault("max_charge_w", int(profile.get("default_charge_w", 0)))
             raw.setdefault("max_discharge_w", 0)
         raw.setdefault("min_soc", 10)  # safe floor if the battery doesn't report one
         return raw

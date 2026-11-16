@@ -29,7 +29,7 @@ HomePower is set up once per Home Assistant (a second copy cannot be added). Tes
 | Battery | How HomePower connects | Modes |
 |---|---|---|
 | Anker SOLIX Solarbank Max AC / Max, XE AC / XE, Solarbank 4 E5000 Pro, X1 | Local **Modbus TCP** on your network (switch it on in the Anker app: device > Settings > Three-Party Control). HomePower scans your network and finds the battery. | Auto, Charge, Discharge, Hold |
-| EcoFlow STREAM AC / Pro / Ultra / Ultra X / Max | EcoFlow's own **developer API**: create an Access Key and Secret Key at developer.ecoflow.com; HomePower lists the batteries on your account. | Auto, Hold |
+| EcoFlow STREAM AC / Pro / Ultra / Ultra X / Max | EcoFlow's own **developer API**: create an Access Key and Secret Key at developer.ecoflow.com; HomePower lists the batteries on your account. | Auto, Hold, Charge (on/off, own rate) |
 | EcoFlow STREAM AC 5000 (ES5000) | The same developer API | Monitor only |
 | Victron GX | Modbus TCP, register map built in | Monitor only |
 | Any Modbus TCP battery | You describe its registers as a small JSON map ([see below](#generic-modbus-register-map)) | Auto, plus Charge/Discharge/Hold if the map has a setpoint and mode register |
@@ -40,7 +40,9 @@ The four modes mean: **Auto** = the battery runs its own logic; **Charge** / **D
 
 - **EcoFlow limitation:** EcoFlow's developer API has no charge/discharge power setpoint, and the ES5000's own commands are
   not published there. Auto = self-powered. Hold = the backup reserve is raised to the battery's current charge level, so
-  it stops discharging and is not told to top up from the grid (its own panels still charge it).
+  it stops discharging and is not told to top up from the grid (its own panels still charge it). Charge = the reserve is
+  raised to the target (95 % at most), so the battery tops itself up from the grid at its own rate: the power you set is
+  not sent, and solar-only / follow-the-meter charging holds the battery instead of grid-charging it. There is no force discharge.
 - **Regions:** Anker control is local and works in any region; grid feed-in is off by default in IT/ES/TH/VN/PH. For EcoFlow
   pick your account's region (`api-e.ecoflow.com` Europe, `api-a.ecoflow.com` Americas, `api.ecoflow.com` elsewhere).
 - **Anker's X1 register list:** Anker publishes the X1's Modbus registers as [Anker SOLIX X1 Series Modbus Protocol V1.0.0](https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf) (PDF). HomePower's X1 support and the register compare names are based on it; on a real X1 its 32-bit numbers come low word first and its text registers hold their characters low byte first, which HomePower handles.
@@ -365,7 +367,7 @@ HomePower) before deleting. Home Assistant cannot ask at the moment of deleting,
 
 - Sending commands has only been run against simulators, not real hardware. New batteries are monitor-only until you allow
   control; run Test control before relying on it.
-- EcoFlow batteries can only be set to Auto or Hold, and the ES5000 is read-only.
+- EcoFlow STREAM batteries can be set to Auto, Hold or Charge (no set power, no discharge), and the ES5000 is read-only. Charge has not been tried on a real battery.
 - If Home Assistant is hard-killed (power cut) while a battery is being forced, it stays in that mode until HomePower
   next starts and hands it back (X1 also has its own watchdog).
 - Goals plan with the prices known at the time; they re-plan every cycle as prices and charge level change.

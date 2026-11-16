@@ -4,8 +4,9 @@ You need an Access Key and Secret Key from https://developer.ecoflow.com/ (your 
 Hosts: api-e.ecoflow.com (Europe) and api.ecoflow.com (global/US). Requests are HMAC-SHA256 signed.
 
 These batteries expose no charge/discharge power setpoint through this API, only the operating
-mode and the backup reserve, so HomePower offers Auto and Hold: Hold raises the backup reserve so the
-battery will not discharge (solar can still charge it); Auto restores your normal reserve.
+mode and the backup reserve, so HomePower offers Auto, Hold and Charge: Hold raises the backup reserve to the
+charge level so the battery will not discharge (solar can still charge it); Charge raises it to the target so the
+battery tops itself up from the grid at its own rate; Auto restores your normal reserve.
 """
 from __future__ import annotations
 
@@ -171,6 +172,16 @@ class EcoFlowStreamDriver:
         self._pushed = time.monotonic()
 
     @staticmethod
+    def _mode(reserve: float | None, soc: float | None, min_soc: float | None) -> Mode:
+        if reserve is None or reserve <= (min_soc or 0) + 2:
+            return Mode.AUTO                      # a reserve at its normal floor is just the battery's own control
+        if soc is not None and reserve > soc + 1.5:
+            return Mode.CHARGE
+        if reserve >= HOLD_RESERVE or (soc is not None and reserve >= soc - 1.5):
+            return Mode.HOLD
+        return Mode.AUTO
+
+    @staticmethod
     def _decode(q: dict, min_soc: float | None = None) -> Actual:
         reserve = _first(q, "backupReverseSoc")
         soc = next((float(q[k]) for k in ("f32ShowSoc", "soc", "cmsBattSoc") if isinstance(q.get(k), (int, float)) and q[k] > 0), None)
@@ -188,9 +199,9 @@ class EcoFlowStreamDriver:
             soc=soc,
             power_w=power,  # EcoFlow: discharge negative, charge positive
             # Models without backupReverseSoc (AC 5000) are read-only and always run their own logic, so report Auto.
-            # Hold = the backup reserve sits at (or above) the charge level, so the battery will not discharge.
-            mode=Mode.HOLD if reserve is not None and (reserve >= HOLD_RESERVE or (
-                soc is not None and reserve >= soc - 1.5 and reserve > (min_soc or 0) + 2)) else Mode.AUTO,
+            # Charge = the reserve is above the charge level, so the battery tops itself up from the grid;
+            # Hold = the reserve sits at the charge level, so it will not discharge.
+            mode=EcoFlowStreamDriver._mode(reserve, soc, min_soc),
             grid_w=_first(q, "powGetSysGrid", "gridPwr", "gridConnectionPower"),
             pv_w=_first(q, "powGetPvSum", "pvPwr"), load_w=_first(q, "powGetSysLoad", "loadPwr"),
         )
@@ -245,5 +256,13 @@ class EcoFlowStreamDriver:
         elif desired.mode is Mode.AUTO:
             await self.api.command(self.sn, {"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}})
             await self.api.command(self.sn, {"cfgBackupReverseSoc": max(3, self.config.caps.min_soc)})
+        elif desired.mode is Mode.CHARGE:
+            # A reserve above the charge level makes the battery top itself up from the grid, at its own rate (the power
+            # cannot be set). It stops when it reaches the reserve, so the reserve is the target (95 % at most).
+            soc = self._decode(self._state or self.last_quota).soc
+            target = desired.target_soc if desired.target_soc is not None else HOLD_RESERVE
+            if soc is not None and soc >= target:
+                target = soc                      # already there: hold rather than top up further
+            await self.api.command(self.sn, {"cfgBackupReverseSoc": int(max(3, min(HOLD_RESERVE, target)))})
         else:
             raise ValueError(f"EcoFlow STREAM cannot {desired.mode.value} through the API")
