@@ -138,7 +138,7 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         if not devs:
             if any(g.covers(d.config.device_id) for d in w.devices):
                 res.notes.append(f"goal '{g.id}': none of its batteries can charge right now (offline, or charge control is not "
-                                 "supported: EcoFlow AC 5000 is monitor-only)")
+                                 "supported: check the battery's control settings)")
             continue
         target = g.target_soc
         if g.auto_target:
@@ -156,8 +156,8 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
                 res.notes.append(f"goal '{g.id}': {d.config.name} charges to {tgt(d)}% from the grid, leaving room for the solar forecast")
         allocs: list[Alloc] = []
         if g.source != "solar" and w.rates is not None:
-            needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d))
-                     for d in devs]
+            needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d),
+                          not d.config.caps.power_control) for d in devs]
             slots = w.rates.slots_between(w.now, deadline)
             if not slots:
                 res.notes.append(f"goal '{g.id}': no price data before {deadline:%H:%M}")

@@ -1081,14 +1081,20 @@ class HomePowerPanel extends HTMLElement {
       <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div>`;
   }
 
+  _cyclingText(c) {
+    if (!c) return "–";
+    const cur = esc(this.live.currency || ""), n = Math.abs(c.net_per_kwh).toFixed(2);
+    return `${c.worth_it ? `<span class="ok">Yes: about ${cur}${n} per kWh</span>` : `<span class="bad">No: loses about ${cur}${n} per kWh</span>`}<span class="sub" style="color:var(--secondary-text-color)"> (cheapest to dearest price at ${c.efficiency_pct}%${c.measured ? "" : ", estimated"})</span>`;
+  }
+
   _healthCard() {
     const h = (this.live.health || {}), rows = this.data.devices.map((d) => {
       const x = h[d.device_id] || { efficiency: [], warning: null }, e = x.efficiency || [];
-      return `<tr><td>${esc(d.name)}</td><td>${e.length ? e.map(([, v]) => v + "%").join(" → ") : "not enough history yet"}</td><td>${x.warning ? `<span style="color:#dc2626">${esc(x.warning)}</span>` : e.length >= 3 ? "Steady" : "–"}</td></tr>`;
+      return `<tr><td>${esc(d.name)}</td><td>${e.length ? e.map(([, v]) => v + "%").join(" → ") : "not enough history yet"}</td><td>${x.warning ? `<span style="color:#dc2626">${esc(x.warning)}</span>` : e.length >= 3 ? "Steady" : "–"}</td><td>${this._cyclingText(x.cycling)}</td></tr>`;
     }).join("");
     if (!rows) return "";
     return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:heart-pulse"></ha-icon>Battery health (weekly round-trip efficiency)</h2>
-      <table class="tbl"><tr><th>Battery</th><th>Last weeks (oldest → newest)</th><th>Trend</th></tr>${rows}</table>
+      <table class="tbl"><tr><th>Battery</th><th>Last weeks (oldest → newest)</th><th>Trend</th><th>Worth cycling in the next 24 h?</th></tr>${rows}</table>
       <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Energy out divided by energy in, per full week. HomePower alerts you if a battery drops 10 points below its usual.</p></div>`;
   }
 
@@ -1407,7 +1413,7 @@ class HomePowerPanel extends HTMLElement {
     let html;
     try {
       const r = await this._hass.callWS({ type: "homepower/device/test", device_id: id });
-      html = `<div><b class="${r.ok ? "ok" : "bad"}">${r.ok ? "Passed: the battery follows HomePower's commands." : "Failed"}</b></div>` + r.steps.map((x) => `<div class="${x.ok ? "ok" : "bad"}">${x.ok ? "✔" : "✘"} ${esc(x.name)}${x.detail ? ` <span class="sub" style="color:var(--secondary-text-color)">- ${esc(x.detail)}</span>` : ""}</div>`).join("");
+      html = `<div><b class="${r.ok ? "ok" : "bad"}">${r.ok ? "Passed: the battery follows HomePower's commands." : "Failed"}</b></div>` + r.steps.map((x) => `<div class="${x.ok ? "ok" : x.info ? "" : "bad"}">${x.ok ? "✔" : x.info ? "ℹ" : "✘"} ${esc(x.name)}${x.detail ? ` <span class="sub" style="color:var(--secondary-text-color)">- ${esc(x.detail)}</span>` : ""}</div>`).join("");
     } catch (e) { html = `<div class="bad">${esc(e.message || e)}</div>`; }
     (this._tests ||= {})[id] = html;
     const el2 = this.shadowRoot.getElementById("test-" + id);

@@ -640,3 +640,53 @@ def test_es5000_hold_charge_and_auto_use_the_5000_series_commands():
         with pytest.raises(ValueError):
             await d.apply(Desired(Mode.DISCHARGE, 1000))
     asyncio.run(go())
+
+
+def test_setting_changes_ignore_live_figures():
+    from hp.drivers.ecoflow import setting_changes
+    old = {"bpPwr": -700, "bpSoc": 40, "workMode": "TIMER_TASK", "backupSocOnOff": False, "backupSoc": 40, "newKey": 1}
+    new = {"bpPwr": -650, "bpSoc": 41, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 80, "newKey": 2, "other": 3}
+    got = {c["key"]: (c["from"], c["to"]) for c in setting_changes(old, new)}
+    assert got == {"workMode": ("TIMER_TASK", "SELF_CONSUMPTION"), "backupSocOnOff": (False, True), "backupSoc": (40, 80)}
+
+
+def test_es5000_originals_survive_a_restart():
+    async def go():
+        saved = []
+        d = eco(dict(ES5000))
+        d._on_orig = saved.append
+        await d.read()
+        await d.apply(Desired(Mode.HOLD))
+        assert saved and saved[-1]["mode"] == "TIMER_TASK"
+        # Home Assistant restarts while the battery is held: a new driver is built from what was saved
+        c = eco({**ES5000, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 40})
+        again = EcoFlowStreamDriver(c.config, session=None, orig=saved[-1], on_orig=saved.append)
+        again.api = c.api
+        await again.read()
+        await again.apply(Desired(Mode.AUTO))
+        assert {"workMode": "TIMER_TASK"} in again.api.sent and {"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}} in again.api.sent
+        assert saved[-1] is None                                  # handed back: nothing left to remember
+    asyncio.run(go())
+
+
+def test_ecoflow_refusal_and_rate_limit_back_off_and_say_so():
+    from hp.drivers.ecoflow import EcoFlowError
+
+    class Refusing(FakeApi):
+        async def command(self, sn, params, cmd_id=17):
+            err = EcoFlowError("EcoFlow error 1006: x")
+            err.code = "1006"
+            raise err
+
+    async def go():
+        d = eco({"soc": 40, "backupReverseSoc": 10})
+        await d.read()
+        d.api = Refusing({})
+        with pytest.raises(ValueError, match="1006"):
+            await d.apply(Desired(Mode.HOLD))
+        with pytest.raises(ValueError):                           # backing off: no second attempt reaches EcoFlow
+            await d.apply(Desired(Mode.HOLD))
+        d.api = FakeApi({})
+        await d.apply(Desired(Mode.AUTO))                         # handing back is still attempted while backing off
+        assert d.api.sent
+    asyncio.run(go())

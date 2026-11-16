@@ -66,6 +66,7 @@ class HomePowerManager:
         self.divert_on: str = ""                 # the solar-surplus load we switched on (to switch it off after a restart)
         self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
+        self.ecoflow_orig: dict[str, dict] = {}     # EcoFlow settings as they were before HomePower held/charged (kept across restarts)
         self._live_on = False                       # opt-in setting: EcoFlow live (MQTT) updates
         self._hubs: dict[tuple, EcoFlowLive] = {}   # live-update connections, one per EcoFlow account
 
@@ -91,6 +92,7 @@ class HomePowerManager:
         self.divert_on = str(data.get("divert_on") or "")
         self.pv_seen = set(data.get("pv_seen", []))
         self.forecast_days = dict(data.get("forecast_days", {}))
+        self.ecoflow_orig = {k: dict(v) for k, v in data.get("ecoflow_orig", {}).items() if isinstance(v, dict)}
         scenes = data.get("scenes")
         self.scenes = {s["name"]: s for s in (scenes if scenes is not None else DEFAULT_SCENES)}
 
@@ -106,6 +108,7 @@ class HomePowerManager:
             "grid_events": c.grid_events.dump() if c else self.grid_events, "trend": c.trend.dump() if c else self.trend_data, "register_notes": self.register_notes,
             "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
             "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen), "forecast_days": self.forecast_days,
+            "ecoflow_orig": self.ecoflow_orig,
         })
 
     async def save_runtime(self) -> None:
@@ -121,10 +124,20 @@ class HomePowerManager:
         if driver == "anker_modbus":
             return DirectAdapter(cfg, AnkerModbusDriver(cfg))
         if driver == "ecoflow_stream":
-            return DirectAdapter(cfg, EcoFlowStreamDriver(cfg, async_get_clientsession(self.hass), self._live_hub(cfg)))
+            did = cfg.device_id
+            return DirectAdapter(cfg, EcoFlowStreamDriver(cfg, async_get_clientsession(self.hass), self._live_hub(cfg),
+                                                          orig=self.ecoflow_orig.get(did), on_orig=lambda v, did=did: self._keep_orig(did, v)))
         if driver == "modbus_generic":
             return DirectAdapter(cfg, GenericModbusDriver(cfg))
         return HaEntityAdapter(self.hass, cfg)
+
+    def _keep_orig(self, device_id: str, value: dict | None) -> None:
+        """An EcoFlow battery's own settings were remembered (or handed back): keep them across a restart."""
+        if value:
+            self.ecoflow_orig[device_id] = dict(value)
+        else:
+            self.ecoflow_orig.pop(device_id, None)
+        self.hass.async_create_task(self._save())
 
     def _live_hub(self, cfg) -> EcoFlowLive | None:
         """One shared live-update connection per EcoFlow account."""
@@ -417,6 +430,7 @@ class HomePowerManager:
         self.devices.pop(device_id, None)
         self.forced.discard(device_id)
         self.tests.pop(device_id, None)
+        self.ecoflow_orig.pop(device_id, None)
         self.pv_seen.discard(device_id)
         self._remove_entities(device_id)
         for coll in (self.schedules, self.goals):  # drop references; an empty list would mean "all batteries"

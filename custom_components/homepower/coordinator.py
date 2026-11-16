@@ -25,6 +25,7 @@ from .core.meter import MeterReader
 from .core.anker_x1_map import X1_ALARMS
 from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, UsageHistory, combine
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
+from .core.sanity import ChargeWatch, cycling_margin, grid_sign_mismatch
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
 from .core.settings import AppSettings, build as build_settings
@@ -103,6 +104,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.profile = LoadProfile(manager.profile_data)   # the household's usual load by time of day
         self.usage = UsageHistory(manager.usage_data)          # grid import/export per half-hour, for the tariff comparison
         self.daily = DailyStats(manager.daily_data)         # self-consumption / cheap-rate share per day
+        self.charge_watch = ChargeWatch()                    # told to charge but nothing happens
         self.health = Health(manager.health_data)           # weekly round-trip efficiency per battery
         self.grid_events = GridEvents(manager.grid_events)  # each time a battery reported the grid down
         self.trend = HealthTrend(manager.trend_data)        # daily temperature and pack-voltage spread per battery
@@ -160,7 +162,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
     def set_config(self, adapters: list[DeviceAdapter], schedules: list[ScheduleEntry], goals: list[Goal]) -> None:
         for gone in {a.config.device_id for a in self.adapters} - {a.config.device_id for a in adapters}:
             self.alerts.forget(f"offline:{gone}"), self.alerts.forget(f"error:{gone}"), self.alerts.forget(f"grid:{gone}"), self.alerts.forget(f"alarm:{gone}:")
-            self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}"), self.alerts.forget(f"trend:{gone}")
+            self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"stuck:{gone}"), self.alerts.forget(f"gridsign:{gone}"), self.charge_watch.forget(gone), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}"), self.alerts.forget(f"trend:{gone}")
             self.grid_events.forget(gone, dt_util.now())
             self.trend.days.pop(gone, None)
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
@@ -839,6 +841,16 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 f"protect:{did}": (st.decision is Decision.SKIP_PROTECTED and not (st.actual and st.actual.off_grid), f"{name} has manufacturer protection active, so HomePower is not overriding it.", PROTECT_ALERT_AFTER_S),
             }
             act = st.actual
+            if act and act.online and did not in self.testing and not self.settings.dry_run and a.config.extra.get("control_enabled", True):
+                tgt = st.desired.target_soc if st.desired else None
+                stuck = self.charge_watch.stuck(did, self._grid_charging(st), act.soc, act.power_w, tgt, now_s)
+                checks[f"stuck:{did}"] = (stuck, f"{name} was told to charge but is not charging (no power and no rise in charge for "
+                                                 f"{int(self.charge_watch.after_s // 60)} min). Check the battery's own app for a mode or schedule overriding HomePower.", 0)
+            if act and act.online and a.config.extra.get("driver") == "ecoflow_stream":
+                checks[f"gridsign:{did}"] = (grid_sign_mismatch(self.last_grid, act.grid_w),
+                                             f"{name}'s grid reading ({act.grid_w:g} W) points the opposite way to your grid meter ({self.last_grid:g} W). "
+                                             "One of them is reversed or measures a different point: check Settings > grid sensor and its 'invert' option."
+                                             if self.last_grid is not None and act.grid_w is not None else "", 600)
             for text in X1_ALARMS.values():     # alarms the X1 itself reports (a failed meter or inverter link, ...)
                 checks[f"alarm:{did}:{text}"] = (bool(act and text in act.alarms), f"{name} reports: {text}.", 0)
             fw, fw_key = act.firmware if act else None, f"fw:{did}"
@@ -1111,14 +1123,33 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 want = Desired(Mode.HOLD)
             self._set_release(device_id, self._snap.devices[device_id], True)
             await a.apply(want)
-            await asyncio.sleep(6)
-            after = await a.read()
+            drv = getattr(a, "driver", None)
+            slow = not caps.power_control          # cloud batteries (EcoFlow) take a while to show a change
+            after, waited = None, 0
+            while after is None or (after.mode != want.mode and waited < (45 if slow else 0)):
+                await asyncio.sleep(10 if slow else 6)
+                waited += 10 if slow else 6
+                if drv is not None and hasattr(drv, "_cache"):
+                    drv._cache = None                  # make the next read ask the battery, not repeat the last answer
+                after = await a.read()
             ok_mode = after.mode == want.mode
             ok_pw = want.power_w is None or after.set_power_w is None or abs(after.set_power_w - want.power_w) <= 10
             step(f"sent {want.mode.value}" + (f" {want.power_w} W" if want.power_w else ""), ok_mode and ok_pw,
                  f"battery reports mode={after.mode.value if after.mode else '?'}, setpoint={after.set_power_w}")
+            if slow and want.mode is Mode.CHARGE:
+                if drv is not None and hasattr(drv, "_cache"):
+                    drv._cache = None
+                later = await a.read()
+                moved = (later.power_w or 0) >= 50 or (later.soc or 0) > soc + 0.5
+                steps.append({"name": "battery actually charged", "ok": moved, "info": True, "detail": (
+                    f"after {waited} s: power {later.power_w if later.power_w is not None else '?'} W, charge {later.soc if later.soc is not None else '?'} %. "
+                    + ("Raising the reserve does start charging on this battery." if moved else
+                       "The reserve was raised but it did not start charging yet: it may ignore the reserve in its current operating mode, "
+                       "or it was already full. Check its app, and try again with the charge level lower."))})
             await a.apply(Desired(Mode.AUTO))
             await asyncio.sleep(3)
+            if drv is not None and hasattr(drv, "_cache"):
+                drv._cache = None
             final = await a.read()
             ok_back = final.mode in (Mode.AUTO, None)
             step("handed back", ok_back, f"battery reports mode={final.mode.value if final.mode else '?'}")
@@ -1132,7 +1163,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 pass
         finally:
             self.testing.discard(device_id)
-        result = {"ok": all(s["ok"] for s in steps), "steps": steps}
+        result = {"ok": all(s["ok"] for s in steps if not s.get("info")), "steps": steps}
         self.manager.tests[device_id] = {"ok": result["ok"], "at": dt_util.now().isoformat()}   # shown in the setup check
         self.hass.async_create_task(self.manager.save_runtime())
         return result
@@ -1185,6 +1216,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "unconfirmed": st.unconfirmed if st else 0, "release_pending": bool(st and st.release_pending),
                 "word_order": getattr(getattr(a, "driver", None), "_order", None),
                 "driver_error": getattr(getattr(a, "driver", None), "last_error", None),
+                "recent_setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or []) or None,
                 "raw_readings": {k: v for k, v in (getattr(getattr(a, "driver", None), "last_quota", None) or {}).items()
                                  if not _PRIVATE_KEY.search(k)} or None,
             }
@@ -1245,7 +1277,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             "divert": {"entity": self.settings.divert_entity, "on": self.diverter.on} if self.settings.divert_entity else None,
             "daily": {"self_consumption": self.daily.self_consumption(day_key), "cheap_share": self.daily.cheap_share(day_key)},
             "health": {a.config.device_id: {"efficiency": self.health.efficiency(a.config.device_id)[-8:],
-                                             "warning": self.health.degraded(a.config.device_id)} for a in self.adapters},
+                                             "warning": self.health.degraded(a.config.device_id),
+                                             "cycling": self._cycling(a.config.device_id, rates, now)} for a in self.adapters},
             "grid_events": self.grid_events.view(),
             "trend": {a.config.device_id: {"days": self.trend.series(a.config.device_id, 60), "warning": self.trend.warning(a.config.device_id)} for a in self.adapters},
             "forecast_reserve": self.forecast_floor, "readiness": self.readiness(),
@@ -1256,6 +1289,20 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             "savings": {"today": round(self.ledger.saved(day), 2) + 0.0, "month": round(self.ledger.saved(month), 2) + 0.0},
             "energy": {k: round(v, 3) for k, v in self.meter.totals.items()},
         }
+
+    def _cycling(self, did: str, rates: RateTable | None, now: datetime) -> dict | None:
+        """What storing a kWh in this battery is worth right now: the cheapest import in the next 24 h against the dearest
+        price it could avoid, at this battery's own measured round-trip efficiency (or an 85 % estimate until it has one)."""
+        if rates is None:
+            return None
+        ahead = [to_main_units(x.price, self.settings.rates_unit) for x in rates.slots_between(now, now + timedelta(hours=24))]
+        if len(ahead) < 2:
+            return None
+        eff = self.health.efficiency(did)
+        measured = bool(eff)
+        out = cycling_margin(min(ahead), max(ahead), (eff[-1][1] / 100) if measured else 0.85)
+        out["measured"] = measured
+        return out
 
     async def async_close(self) -> None:
         await self.manager.save_runtime()

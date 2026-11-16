@@ -33,6 +33,44 @@ class EcoFlowError(Exception):
     pass
 
 
+BACKOFF_S = 300            # after a rate limit or a refusal, leave EcoFlow alone for this long
+REFUSED_CODES = ("1006",)  # the model does not accept these commands through the developer API
+_SETTINGISH = re.compile(r"backup|reserve|cfg|mode|onoff|switch|limit|timer|task|enable|strateg|schedul|feed", re.I)
+_TELEMETRY = re.compile(r"pwr|power|watt|volt|temp|energy|cur(rent)?$|freq|cycle|^bpSoc$|^soc$|f32|show|time$|stamp", re.I)
+
+
+def setting_changes(old: dict, new: dict) -> list[dict]:
+    """Settings that differ between two readings (what someone changed in the EcoFlow app): booleans, text and
+    anything named like a setting; live power/voltage/charge figures are ignored."""
+    out = []
+    for k in sorted(set(old) | set(new)):
+        a, b = old.get(k), new.get(k)
+        if a == b or k not in old:
+            continue                      # unchanged, or a key we had never seen (not a change)
+        flag = isinstance(b, (bool, str)) or isinstance(a, (bool, str))
+        if (flag or _SETTINGISH.search(k)) and not (_TELEMETRY.search(k) and not flag):
+            out.append({"key": k, "from": a, "to": b})
+    return out
+
+
+def _is_rate_limit(err: Exception) -> bool:
+    text = str(err).lower()
+    return getattr(err, "code", "") == "429" or "rate limit" in text or "too many" in text or "too frequent" in text
+
+
+def backs_off(err: Exception) -> bool:
+    return getattr(err, "code", "") in REFUSED_CODES or _is_rate_limit(err)
+
+
+def friendly_error(err: Exception) -> str:
+    if getattr(err, "code", "") in REFUSED_CODES:
+        return ("EcoFlow refused the command (error 1006): this model does not accept it through the developer API. "
+                "HomePower will not retry for a few minutes.")
+    if _is_rate_limit(err):
+        return "EcoFlow says requests are too frequent (rate limit): HomePower is backing off for a few minutes."
+    return str(err)
+
+
 def flatten(obj: Any, prefix: str = "") -> dict[str, str]:
     """Flatten nested params the way EcoFlow's signature expects (a.b=1, list[0]=x, true/false)."""
     out: dict[str, str] = {}
@@ -73,9 +111,14 @@ class EcoFlowApi:
         try:
             async with self._s.request(method, self._base + path, params=params if body is None else None,
                                        json=body, headers=self._headers(signed), timeout=ClientTimeout(total=15)) as resp:
+                status = resp.status
                 data = await resp.json(content_type=None)
         except Exception as err:  # noqa: BLE001 - network / JSON problems all mean "can't reach"
             raise EcoFlowError(f"cannot reach EcoFlow: {err!r}") from err
+        if status == 429:
+            err = EcoFlowError("EcoFlow error 429: too many requests (rate limit)")
+            err.code = "429"
+            raise err
         if not isinstance(data, dict):
             raise EcoFlowError("EcoFlow sent an unexpected reply")
         if str(data.get("code")) != "0":
@@ -147,7 +190,11 @@ def _first(q: dict, *keys: str, positive: bool = False) -> float | None:
 
 
 class EcoFlowStreamDriver:
-    def __init__(self, config: DeviceConfig, session, hub=None) -> None:
+    _blocked_until = 0.0     # class defaults so a driver built without __init__ (tests) still works
+    _orig_val = None
+    _on_orig = None
+
+    def __init__(self, config: DeviceConfig, session, hub=None, orig: dict | None = None, on_orig=None) -> None:
         self.config = config
         c = config.extra["connection"]
         self.sn = c["sn"]
@@ -159,7 +206,30 @@ class EcoFlowStreamDriver:
         self._state: dict = {}          # last full reading with live updates merged in
         self._pushed = 0.0              # when a live update last arrived
         self._polled = 0.0              # when the full reading was last fetched
-        self._orig: dict | None = None  # STREAM 5000: the reserve switch/level and operating mode before HomePower changed them
+        self._orig_val: dict | None = dict(orig) if orig else None   # STREAM 5000: reserve switch/level and mode before HomePower changed them
+        self._on_orig = on_orig         # called with the new value whenever it changes, so it survives a restart
+        self.changes: list[dict] = []   # recent settings changes seen between readings (made in the EcoFlow app, or by us)
+        self._blocked_until = 0.0       # backing off after a rate limit or a refusal
+
+    @property
+    def _orig(self) -> dict | None:
+        return self._orig_val
+
+    @_orig.setter
+    def _orig(self, value: dict | None) -> None:
+        self._orig_val = value
+        if self._on_orig is not None:
+            try:
+                self._on_orig(value)
+            except Exception:  # noqa: BLE001 - failing to save must never stop a command
+                _LOGGER.debug("could not save the EcoFlow originals", exc_info=True)
+
+    def _note_changes(self, before: dict, after: dict) -> None:
+        found = setting_changes(before, after) if before else []
+        if found:
+            self.changes = (self.changes + [{"at": time.strftime("%Y-%m-%d %H:%M:%S"), **c} for c in found])[-40:]
+            _LOGGER.info("%s: EcoFlow settings changed: %s", self.config.device_id,
+                         "; ".join(f"{c['key']} {c['from']!r} -> {c['to']!r}" for c in found))
 
     async def close(self) -> None:
         if self.hub is not None:
@@ -218,8 +288,11 @@ class EcoFlowStreamDriver:
             return self._decode(self._state, self.config.caps.min_soc)             # live data is flowing: no need to poll
         if self._cache and now - self._cache[0] < 30:
             return self._cache[1]
+        if now < self._blocked_until:
+            return self._cache[1] if self._cache else Actual(online=False)      # backing off: do not ask again yet
         try:
             q = normalise(await self.api.quota(self.sn))
+            self._note_changes(self._state, q)
             self._state, self._polled, self._pushed = dict(q), time.monotonic(), 0.0
             self.last_quota, self.last_error = q, None
             actual = self._decode(q, self.config.caps.min_soc)
@@ -229,8 +302,10 @@ class EcoFlowStreamDriver:
             self._cache = (time.monotonic(), actual)
             return actual
         except EcoFlowError as err:
-            self.last_error = str(err)
-            _LOGGER.warning("%s: EcoFlow read failed: %s", self.config.device_id, err)
+            self.last_error = friendly_error(err)
+            if backs_off(err):
+                self._blocked_until = time.monotonic() + BACKOFF_S
+            _LOGGER.warning("%s: EcoFlow read failed: %s", self.config.device_id, self.last_error)
             return Actual(online=False)
 
     async def probe(self) -> dict:
@@ -282,6 +357,17 @@ class EcoFlowStreamDriver:
         await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": True, "backupSoc": int(max(0, min(100, target)))}}, cmd_id=38)
 
     async def apply(self, desired: Desired) -> None:
+        if time.monotonic() < self._blocked_until and desired.mode is not Mode.AUTO:
+            raise ValueError(self.last_error or "EcoFlow is being given a rest after an error: trying again shortly")
+        try:
+            await self._apply(desired)
+        except EcoFlowError as err:
+            if backs_off(err):
+                self._blocked_until = time.monotonic() + BACKOFF_S
+            self.last_error = friendly_error(err)
+            raise ValueError(self.last_error) from err
+
+    async def _apply(self, desired: Desired) -> None:
         self._cache, self._pushed = None, 0.0   # next read must come from the cloud and show the effect of this command
         if self._is5000:
             return await self._apply_5000(desired)
