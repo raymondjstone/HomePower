@@ -280,8 +280,9 @@ class FakeApi:
     async def quota(self, sn):
         return self._q
 
-    async def command(self, sn, params):
+    async def command(self, sn, params, cmd_id=17):
         self.sent.append(params)
+        self.ids = getattr(self, "ids", []) + [cmd_id]
 
 
 def eco(quota):
@@ -608,4 +609,34 @@ def test_ecoflow_charge_raises_reserve_to_target():
         d._cache = None
         d.api._q = {"soc": 40, "backupReverseSoc": 80}
         assert (await d.read()).mode is Mode.CHARGE
+    asyncio.run(go())
+
+
+# What a real ES5000 (STREAM 5000 series, developer API) reported: reserve switched off, in timer-task mode, discharging.
+ES5000 = {"bpSoc": 40, "bpPwr": -790, "gridPwr": 10, "loadPwr": 800, "pvPwr": 0, "onGridPwr": 790, "backupSoc": 40,
+          "backupSocOnOff": False, "workMode": "TIMER_TASK", "feedToGridLimitOnOff": True, "acSocketOnoff": False}
+
+
+def test_es5000_hold_charge_and_auto_use_the_5000_series_commands():
+    async def go():
+        d = eco(dict(ES5000))
+        a = await d.read()
+        assert (a.soc, a.power_w, a.grid_w, a.mode) == (40, -790, 10, Mode.AUTO)      # reserve off = the battery runs itself
+        await d.apply(Desired(Mode.HOLD))
+        assert d.api.sent == [{"workMode": "SELF_CONSUMPTION"}, {"bpBackupConfig": {"backupSocOnOff": True, "backupSoc": 40}}]
+        assert set(d.api.ids) == {38}
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=80))                    # already in self-consumption: no mode change needed
+        d.api._q = {**ES5000, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 80}
+        d._cache, d._state = None, {}
+        assert (await d.read()).mode is Mode.CHARGE                                  # reserve above the charge level
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == [{"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, {"workMode": "TIMER_TASK"}]
+        d.api.sent.clear()
+        d.api._q, d._state, d.last_quota = dict(ES5000), {}, dict(ES5000)            # back to how it was
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == []                                                      # nothing of ours to hand back
+        with pytest.raises(ValueError):
+            await d.apply(Desired(Mode.DISCHARGE, 1000))
     asyncio.run(go())

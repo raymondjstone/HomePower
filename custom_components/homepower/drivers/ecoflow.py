@@ -26,6 +26,7 @@ SIGN_ERRORS = ("8521", "7000")
 QUOTAS = ("backupReverseSoc", "f32ShowSoc", "soc", "cmsBattSoc", "powGetBpCms", "powGetSysGrid", "gridConnectionPower",
           "powGetPvSum", "powGetSysLoad", "cmsBattFullEnergy", "productName")
 HOLD_RESERVE = 95  # STREAM accepts a backup reserve of 3-95 %; Hold raises the reserve to the current charge level
+SELF_MODE = "SELF_CONSUMPTION"   # STREAM 5000 series operating modes: SELF_CONSUMPTION, AI_MODE, TIMER_TASK, POU_MODE
 
 
 class EcoFlowError(Exception):
@@ -100,9 +101,9 @@ class EcoFlowApi:
         got = await self._call("POST", "/iot-open/sign/device/quota", body={"sn": sn, "params": {"quotas": list(QUOTAS)}})
         return got if isinstance(got, dict) else {}
 
-    async def command(self, sn: str, params: dict) -> None:
+    async def command(self, sn: str, params: dict, cmd_id: int = 17) -> None:
         await self._call("PUT", "/iot-open/sign/device/quota", body={
-            "sn": sn, "cmdId": 17, "cmdFunc": 254, "dirDest": 1, "dirSrc": 1, "dest": 2,
+            "sn": sn, "cmdId": cmd_id, "cmdFunc": 254, "dirDest": 1, "dirSrc": 1, "dest": 2,
             "needAck": True, "params": params})
 
 
@@ -158,6 +159,7 @@ class EcoFlowStreamDriver:
         self._state: dict = {}          # last full reading with live updates merged in
         self._pushed = 0.0              # when a live update last arrived
         self._polled = 0.0              # when the full reading was last fetched
+        self._orig: dict | None = None  # STREAM 5000: the reserve switch/level and operating mode before HomePower changed them
 
     async def close(self) -> None:
         if self.hub is not None:
@@ -184,6 +186,8 @@ class EcoFlowStreamDriver:
     @staticmethod
     def _decode(q: dict, min_soc: float | None = None) -> Actual:
         reserve = _first(q, "backupReverseSoc")
+        if reserve is None and q.get("backupSocOnOff"):
+            reserve = _first(q, "backupSoc")      # STREAM 5000 series: the same reserve, behind an on/off switch
         soc = next((float(q[k]) for k in ("f32ShowSoc", "soc", "cmsBattSoc") if isinstance(q.get(k), (int, float)) and q[k] > 0), None)
         if soc is None:
             soc = _guess(q, r"soc", _BAD_SOC, positive=True)
@@ -239,8 +243,48 @@ class EcoFlowStreamDriver:
                 "max_charge_w": None, "max_discharge_w": None, "min_soc": None,
                 "reserve": q.get("backupReverseSoc")}
 
+    @property
+    def _is5000(self) -> bool:
+        q = self.last_quota
+        return "backupReverseSoc" not in q and ("backupSocOnOff" in q or "backupSoc" in q)
+
+    async def _apply_5000(self, desired: Desired) -> None:
+        """STREAM 5000 series (EcoFlow's "STREAM 5000 Series" developer document): the backup reserve is a switch plus a level
+        under bpBackupConfig, and the operating mode is workMode. Hold/Charge raise the reserve exactly as on the Ultra X;
+        the unit is put in self-consumption while managed (a timer-task or AI mode would run its own plan) and its own
+        settings are put back on Auto."""
+        q = self._state or self.last_quota
+        soc = self._decode(q).soc
+        if desired.mode is Mode.AUTO:
+            if self._orig is None:
+                if q.get("backupSocOnOff") and self._decode(q, self.config.caps.min_soc).mode in (Mode.HOLD, Mode.CHARGE):
+                    await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, cmd_id=38)  # restarted while held
+                return
+            o, self._orig = self._orig, None
+            reserve = {"backupSocOnOff": True, "backupSoc": o["level"]} if o["on"] and o["level"] is not None else {"backupSocOnOff": False, "backupSoc": 0}
+            await self.api.command(self.sn, {"bpBackupConfig": reserve}, cmd_id=38)
+            if o["mode"] and o["mode"] != SELF_MODE:
+                await self.api.command(self.sn, {"workMode": o["mode"]}, cmd_id=38)
+            return
+        if desired.mode not in (Mode.HOLD, Mode.CHARGE):
+            raise ValueError(f"EcoFlow STREAM cannot {desired.mode.value} through the API")
+        if soc is None:
+            raise ValueError("cannot hold or charge: the battery's charge level is not known yet")
+        if self._orig is None:
+            level = q.get("backupSoc")
+            self._orig = {"on": bool(q.get("backupSocOnOff")), "level": int(level) if isinstance(level, (int, float)) else None,
+                          "mode": q.get("workMode") if isinstance(q.get("workMode"), str) else None}
+        if isinstance(q.get("workMode"), str) and q["workMode"] != SELF_MODE:
+            await self.api.command(self.sn, {"workMode": SELF_MODE}, cmd_id=38)
+        target = soc
+        if desired.mode is Mode.CHARGE:
+            target = max(soc, desired.target_soc if desired.target_soc is not None else 100)
+        await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": True, "backupSoc": int(max(0, min(100, target)))}}, cmd_id=38)
+
     async def apply(self, desired: Desired) -> None:
         self._cache, self._pushed = None, 0.0   # next read must come from the cloud and show the effect of this command
+        if self._is5000:
+            return await self._apply_5000(desired)
         if self.last_quota and "backupReverseSoc" not in self.last_quota:
             # A model that reports different settings (e.g. AC 5000): its command format is not known, so never guess.
             if desired.mode is Mode.AUTO:

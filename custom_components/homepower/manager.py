@@ -17,8 +17,6 @@ from .core.profiles import PROFILE_BY_ID
 from .core.serde import (
     ValidationError,
     device_from_dict,
-    PRIVATE_KEYS,
-    SECRET_KEYS,
     current_abilities,
     device_to_dict,
     fill_from_probe,
@@ -30,7 +28,6 @@ from .core.serde import (
 from .drivers import discovery
 from .drivers.anker import AnkerModbusDriver
 from .drivers.ecoflow import EcoFlowApi, EcoFlowError, EcoFlowStreamDriver
-from .drivers.ecoflow_ac5000 import EcoFlowAc5000Driver
 from .drivers.ecoflow_live import EcoFlowLive
 from .drivers.modbus_generic import GenericModbusDriver
 
@@ -125,8 +122,6 @@ class HomePowerManager:
             return DirectAdapter(cfg, AnkerModbusDriver(cfg))
         if driver == "ecoflow_stream":
             return DirectAdapter(cfg, EcoFlowStreamDriver(cfg, async_get_clientsession(self.hass), self._live_hub(cfg)))
-        if driver == "ecoflow_ac5000":
-            return DirectAdapter(cfg, EcoFlowAc5000Driver(cfg, async_get_clientsession(self.hass)))
         if driver == "modbus_generic":
             return DirectAdapter(cfg, GenericModbusDriver(cfg))
         return HaEntityAdapter(self.hass, cfg)
@@ -228,7 +223,7 @@ class HomePowerManager:
             return None
         old_conn = cached[0].get("connection", {})
         new_conn = cfg.extra.get("connection", {})
-        keys = ("host", "port", "unit_id", "sn", "region", "access_key", "secret_key", "email", "password")
+        keys = ("host", "port", "unit_id", "sn", "region", "access_key", "secret_key")
         return cached[1] if all(old_conn.get(k) == new_conn.get(k) for k in keys) else None
 
     async def discover_anker(self) -> list[dict]:
@@ -257,9 +252,8 @@ class HomePowerManager:
         """When editing, a blank secret key means 'keep the one already stored'."""
         conn = dict(raw.get("connection") or {})
         old = self.devices.get(raw.get("device_id") or "", {}).get("connection", {})
-        for k in SECRET_KEYS:
-            if not conn.get(k) and old.get(k):
-                conn[k] = old[k]
+        if not conn.get("secret_key") and old.get("secret_key"):
+            conn["secret_key"] = old["secret_key"]
         return {**raw, "connection": conn}
 
     # ------------------------------------------------------------------ flags
@@ -295,7 +289,7 @@ class HomePowerManager:
             raw = fill_from_probe(raw, await self.probe(raw))
         except ValidationError:
             pass  # offline right now: fall through to the normal validation message
-        if driver in ("ecoflow_stream", "ecoflow_ac5000") or (driver == "modbus_generic" and not self._map_controls(raw)):
+        if driver == "ecoflow_stream" or (driver == "modbus_generic" and not self._map_controls(raw)):
             # No power setpoint exists, so these only size the plan: a per-model estimate (editable), nothing for discharge.
             raw.setdefault("max_charge_w", int(profile.get("default_charge_w", 0)))
             raw.setdefault("max_discharge_w", 0)
@@ -504,7 +498,7 @@ class HomePowerManager:
         for d in self.devices.values():
             d = {**d, "connection": dict(d.get("connection", {}))}
             if not include_secrets:
-                for k in PRIVATE_KEYS:
+                for k in ("secret_key", "access_key"):
                     if k in d["connection"]:
                         d["connection"][k] = ""
             devices.append(d)
@@ -560,10 +554,9 @@ class HomePowerManager:
         for saved in self.devices.values():
             d = dict(saved)
             conn = dict(d.get("connection", {}))
-            for k in SECRET_KEYS:
-                if k in conn:
-                    conn[k] = ""
-                    conn["secret_saved"] = True
+            if "secret_key" in conn:
+                conn["secret_key"] = ""
+                conn["secret_saved"] = True
             d["connection"] = conn
             d.update(current_abilities(saved))
             out.append(d)

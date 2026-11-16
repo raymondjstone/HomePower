@@ -53,16 +53,6 @@
           "secret_key": "Secret Key"
         }
       },
-      "ecoflow_ac5000": {
-        "title": "EcoFlow STREAM AC 5000",
-        "description": "This model's settings are not in EcoFlow's developer API, so HomePower signs in as the EcoFlow app does, with your EcoFlow account email and password (kept only in Home Assistant, sent only to EcoFlow). The serial number starts ES22. {error}",
-        "data": {
-          "region": "Region",
-          "email": "EcoFlow account email",
-          "password": "EcoFlow account password",
-          "sn": "Battery serial number"
-        }
-      },
       "ecoflow_device": {
         "title": "Choose the battery",
         "description": "{error}",

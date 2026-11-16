@@ -830,14 +830,6 @@ class HomePowerPanel extends HTMLElement {
         <div class="f"><button class="btn" data-act="find-eco"><ha-icon icon="mdi:magnify" style="--mdc-icon-size:16px"></ha-icon>Find my batteries</button></div>
         <div class="f"><label>Battery *</label><select id="c-sn">${conn.sn ? `<option value="${esc(conn.sn)}" selected>${esc(conn.sn)}</option>` : `<option value="">Press "Find my batteries" first</option>`}</select></div>
         <button class="btn" data-act="test-battery"><ha-icon icon="mdi:lan-check" style="--mdc-icon-size:16px"></ha-icon>Test connection</button>`;
-    } else if (prof.driver === "ecoflow_ac5000") {
-      const regions = spec.connection[0].options;
-      box.innerHTML = `${help}
-        <div class="f"><label>Region *</label><select id="c-region">${regions.map((o) => `<option value="${o.value}" ${(conn.region || "eu") === o.value ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select></div>
-        <div class="two"><div class="f"><label>EcoFlow account email *</label><input type="text" id="c-email" value="${esc(conn.email || "")}" autocomplete="off"></div>
-          <div class="f"><label>EcoFlow account password *</label><input type="password" id="c-password" value="" placeholder="${conn.secret_saved && conn.email ? "(saved - leave blank to keep)" : ""}" autocomplete="new-password"></div></div>
-        <div class="f"><label>Battery serial number (starts ES22) *</label><input type="text" id="c-sn" value="${esc(conn.sn || "")}" autocomplete="off" placeholder="ES22…"></div>
-        <button class="btn" data-act="test-battery"><ha-icon icon="mdi:lan-check" style="--mdc-icon-size:16px"></ha-icon>Test connection</button>`;
     } else if (prof.driver === "modbus_generic") {
       const mp = conn.map || prof.preset_map || {};
       box.innerHTML = `${help}
