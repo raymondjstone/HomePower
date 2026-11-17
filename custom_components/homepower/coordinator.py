@@ -682,6 +682,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         _LOGGER.info("%s: %s", device_id, msg)
 
     async def _notify(self, key: str, message: str, raised: bool) -> None:
+        """Tell the user: a notification in Home Assistant and, if chosen, one on the phone. Each is tried on its own, so a
+        failure of one never stops the other (and alerts never break the control loop)."""
         nid = f"homepower_alert_{key}"
         try:
             if raised:
@@ -689,6 +691,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                                                     {"title": "HomePower", "message": message, "notification_id": nid})
             else:
                 await self.hass.services.async_call("persistent_notification", "dismiss", {"notification_id": nid})
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("in-app alert delivery failed", exc_info=True)
+        try:
             svc = self.settings.notify_service
             if svc and "." in svc:
                 domain, name = svc.split(".", 1)
@@ -697,8 +702,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                     data["data"] = {"tag": nid, "actions": [{"action": ACTION_PAUSE, "title": "Pause HomePower"},
                                                             {"action": ACTION_HAND_BACK, "title": "Hand back to Auto"}]}
                 await self.hass.services.async_call(domain, name, data)
-        except Exception:  # noqa: BLE001 - alerts must never break the control loop
-            _LOGGER.debug("alert delivery failed", exc_info=True)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("phone alert delivery failed", exc_info=True)
 
     async def _check_events(self, now: datetime, now_s: float, actuals: dict[str, Actual], rates: RateTable | None) -> None:
         """Optional heads-up messages: battery full, battery low, cheap rate starting soon with a low battery."""
@@ -1335,13 +1340,13 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             return ok
 
         caps = a.config.caps
-        if not step("control allowed", bool(a.config.extra.get("control_enabled", True)),
-                    "turn on 'Let HomePower send commands' for this battery first"):
+        allowed = bool(a.config.extra.get("control_enabled", True))
+        if not step("control allowed", allowed, "" if allowed else "turn on 'Let HomePower send commands' for this battery first"):
             return {"ok": False, "steps": steps}
         self.testing.add(device_id)
         try:
             before = await a.read()
-            if not step("battery readable", before.online, "could not read the battery"):
+            if not step("battery readable", before.online, "" if before.online else "could not read the battery"):
                 return {"ok": False, "steps": steps}
             soc = before.soc if before.soc is not None else 50
             if Mode.CHARGE in caps.supported_modes and soc < 95:
@@ -1375,7 +1380,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 after = await a.read()
             ok_mode = after.mode == want.mode
             ok_pw = want.power_w is None or after.set_power_w is None or abs(after.set_power_w - want.power_w) <= 10
-            step(f"sent {want.mode.value}" + (f" {want.power_w} W" if want.power_w else ""), ok_mode and ok_pw,
+            step(f"sent {want.mode.value}" + (f" {want.power_w} W" if want.power_w and caps.power_control else ""), ok_mode and ok_pw,
                  f"battery reports mode={after.mode.value if after.mode else '?'}, setpoint={after.set_power_w}")
             if slow and want.mode is Mode.CHARGE:
                 if drv is not None and hasattr(drv, "_cache"):

@@ -1,0 +1,6 @@
+[run]
+source = custom_components/homepower
+branch = False
+parallel = False
+[report]
+omit = */__pycache__/*

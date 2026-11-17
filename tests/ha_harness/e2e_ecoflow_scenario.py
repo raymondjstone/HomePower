@@ -139,6 +139,94 @@ async def main():
     print("5 fallback : three failed Charge commands -> Charge dropped, no more sent;", coord.view()["devices"]["deaf"]["report"]["advice"][:60])
     # the good one is still fine
     assert coord.traces.verdict("good") == "works"
+    await mgr.delete_schedule("Night")
+    await cycles(30)
+
+    # ---- Test control on batteries that pick their own rate: Hold first, then Charge, then report what really happened
+    class Shim:                                              # asyncio.sleep advances the test clock instead of waiting
+        def __getattr__(self, n): return getattr(asyncio, n)
+        async def sleep(self, secs):
+            CLOCK.now += secs
+            for f in fakes.values():
+                f.tick(secs)
+            await asyncio.sleep(0)
+    real_asyncio, C.asyncio = C.asyncio, Shim()
+    try:
+        r_good = await coord.test_control("good")
+        r_deaf = await coord.test_control("deaf")
+    finally:
+        C.asyncio = real_asyncio
+    names = [x["name"] for x in r_good["steps"]]
+    assert r_good["ok"] and names == ["control allowed", "battery readable", "sent hold", "sent charge", "battery actually charged", "handed back"], r_good
+    assert r_good["steps"][0]["detail"] == "" and r_good["steps"][1]["detail"] == "", r_good      # a passing step shows no failure hint
+    assert [x for x in r_good["steps"] if x["name"] == "battery actually charged"][0]["ok"] is True
+    charged = [x for x in r_deaf["steps"] if x["name"] == "battery actually charged"][0]
+    assert charged["ok"] is False and charged["info"] and "ignore the reserve" in charged["detail"], charged
+    assert r_deaf["ok"] is True                                # the pass/fail result does not depend on the info line
+    assert fakes["good"].reserve == 30 and fakes["deaf"].reserve == 30, (fakes["good"].reserve, fakes["deaf"].reserve)   # both handed back
+    assert coord.traces.verdict("deaf") == "unreliable"       # a test that saw no charging does not clear the evidence
+    print("6 test     : good ->", [x["name"] for x in r_good["steps"] if x["ok"]][-3:], "| deaf ->", charged["detail"][:55])
+
+    # ---- the setup check names the first-command step until it is allowed
+    mgr.confirmed.discard("good"); mgr.tests.pop("good", None)
+    item = [i for i in coord.setup_check() if i["key"] == "first:good"]
+    assert item and item[0]["ok"] is False and "Allow first command" in item[0]["detail"], item
+    mgr.confirmed.add("good")
+    assert [i for i in coord.setup_check() if i["key"] == "first:good"][0]["ok"] is True
+    print("7 setup    : the checklist shows the first-command step")
+
+    # ---- daily command cap: stops Hold/Charge commands, never the hand-back
+    from custom_components.homepower.core.sanity import CommandBudget
+    coord.budget = CommandBudget(1)                           # a fresh day with a limit of one command
+    g = fakes["good"]
+    await mgr.save_schedule({"id": "Flap", "start": "00:00", "end": "23:59", "mode": "charge", "power_w": 2000, "target_soc": 95})
+    await cycles(14)
+    assert g.reserve == 95, g.reserve                          # the one command the day allows: it is charging now
+    await mgr.save_schedule({"id": "Flap", "start": "00:00", "end": "23:59", "mode": "hold"})          # a different command: the cap refuses it
+    await cycles(14)
+    assert g.reserve == 95 and st("good").last_error and "Daily limit of 1" in st("good").last_error, (g.reserve, st("good").last_error)
+    sent_now = len(g.sent)
+    await mgr.delete_schedule("Flap")
+    await cycles(30)
+    assert g.reserve == 30 and len(g.sent) > sent_now, "the hand-back must still go through at the cap"
+    print("8 cap      : the second command was refused (reserve stayed 95); the hand-back still restored", g.reserve, "%")
+    coord.budget = CommandBudget()
+
+    # ---- EcoFlow refuses commands (error 1006) then rate limits: friendly message, back-off, no hammering
+    from custom_components.homepower.drivers.ecoflow import EcoFlowError
+    flaky = fakes["good"]
+    calls = []
+
+    async def refuse(sn, params, cmd_id=17):
+        calls.append(params)
+        err = EcoFlowError("EcoFlow error 1006: not supported")
+        err.code = "1006"
+        raise err
+    flaky.command = refuse
+    st("good").last_error = None
+    await mgr.save_schedule({"id": "Night", "start": "00:00", "end": "23:59", "mode": "charge", "power_w": 2000, "target_soc": 80})
+    await cycles(30)
+    assert st("good").last_error and "1006" in st("good").last_error and "HomePower will not retry" in st("good").last_error, st("good").last_error
+    n_calls = len(calls)
+    assert 1 <= n_calls <= 2, n_calls
+    await cycles(10)                                          # still inside the five-minute back-off: no new attempts
+    assert len(calls) == n_calls, (len(calls), n_calls)
+    assert any(k.startswith("error:good") for k in coord.alerts.active())
+    print("9 refusal  : one refusal, a clear message,", n_calls, "attempt(s), then it backs off")
+    await mgr.delete_schedule("Night")
+
+    # ---- a notification to a phone carries the buttons
+    got = []
+
+    async def phone(call):
+        got.append(dict(call.data))
+    hass.services.async_register("notify", "mobile_app_phone", phone)
+    coord.apply_settings({"notify_service": "notify.mobile_app_phone"})
+    await coord._notify("stuck:good", "Good was told to charge but is not charging", True)
+    await coord._notify("stuck:good", "Good was told to charge but is not charging", False)
+    assert got[0]["data"]["actions"] == [{"action": "HOMEPOWER_PAUSE", "title": "Pause HomePower"}, {"action": "HOMEPOWER_HAND_BACK", "title": "Hand back to Auto"}], got
+    assert "data" not in got[1] and got[1]["message"].startswith("Resolved:"), got[1]
+    print("10 phone   : the alert has Pause and Hand back buttons; the resolved message does not")
     await coord.async_close()
     print("E2E11 OK")
 
