@@ -5,3 +5,6 @@ __pycache__/
 .vs/
 .idea/
 *.egg-info/
+
+.coverage
+.coveragerc
