@@ -869,16 +869,21 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 f"protect:{did}": (st.decision is Decision.SKIP_PROTECTED and not (st.actual and st.actual.off_grid), f"{name} has manufacturer protection active, so HomePower is not overriding it.", PROTECT_ALERT_AFTER_S),
             }
             act = st.actual
-            if act and act.online and did not in self.testing and not self.settings.dry_run and a.config.extra.get("control_enabled", True):
+            watching = bool(act and act.online and did not in self.testing and not self.settings.dry_run
+                            and a.config.extra.get("control_enabled", True))
+            if watching:
                 tgt = st.desired.target_soc if st.desired else None
                 stuck = self.charge_watch.stuck(did, self._grid_charging(st), act.soc, act.power_w, tgt, now_s)
-                checks[f"stuck:{did}"] = (stuck, f"{name} was told to charge but is not charging (no power and no rise in charge for "
-                                                 f"{int(self.charge_watch.after_s // 60)} min). Check the battery's own app for a mode or schedule overriding HomePower.", 0)
-            if act and act.online and a.config.extra.get("driver") == "ecoflow_stream":
-                checks[f"gridsign:{did}"] = (grid_sign_mismatch(self.last_grid, act.grid_w),
+            else:
+                self.charge_watch.forget(did)
+                stuck = False                       # offline, being tested or not controlled: the alert (if raised) clears
+            checks[f"stuck:{did}"] = (stuck, f"{name} was told to charge but is not charging (no power and no rise in charge for "
+                                             f"{int(self.charge_watch.after_s // 60)} min). Check the battery's own app for a mode or schedule overriding HomePower.", 0)
+            if a.config.extra.get("driver") == "ecoflow_stream":
+                checks[f"gridsign:{did}"] = (bool(act and act.online) and grid_sign_mismatch(self.last_grid, act.grid_w),
                                              f"{name}'s grid reading ({act.grid_w:g} W) points the opposite way to your grid meter ({self.last_grid:g} W). "
                                              "One of them is reversed or measures a different point: check Settings > grid sensor and its 'invert' option."
-                                             if self.last_grid is not None and act.grid_w is not None else "", 600)
+                                             if self.last_grid is not None and act and act.grid_w is not None else "", 600)
             for text in X1_ALARMS.values():     # alarms the X1 itself reports (a failed meter or inverter link, ...)
                 checks[f"alarm:{did}:{text}"] = (bool(act and text in act.alarms), f"{name} reports: {text}.", 0)
             fw, fw_key = act.firmware if act else None, f"fw:{did}"
@@ -1307,6 +1312,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             st.unconfirmed, st.waited = next_unconfirmed(st.unconfirmed, st.waited, bool(remaining), not a.config.caps.power_control,
                                                          self.traces.grace(did, self.settings.cooldown_s))
             st.last_command["result"] = "confirmed" if not remaining else ("waiting for the cloud to show it" if st.waited and not st.unconfirmed else "not yet confirmed")
+            if want.mode is Mode.AUTO:
+                self.traces.cancel(did)            # handed back: whatever it was doing before is no longer being judged
             if want.mode is Mode.AUTO and not remaining:
                 self._set_release(did, st, False)  # handed back and confirmed
             self._log(did, "verified" if not remaining else f"not yet confirmed: {remaining}")
@@ -1577,7 +1584,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 await self.manager.set_paused(True)
                 self._log("events", "paused from a notification button")
             elif action == ACTION_HAND_BACK:
-                await self.release_all()
+                await self.release_all(force=True)
                 await self.manager.set_paused(True)          # stay handed back: otherwise the plan would take them over again
                 self._log("events", "batteries handed back and HomePower paused from a notification button")
         except Exception:  # noqa: BLE001 - a button must never break the control loop
@@ -1591,14 +1598,16 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         for a in self.adapters:
             await a.close()
 
-    async def release_all(self) -> None:
-        """Best effort on shutdown: hand every battery we forced back to its own control."""
-        if self.paused:
+    async def release_all(self, force: bool = False) -> None:
+        """Best effort on shutdown: hand every battery we forced back to its own control. While paused nothing is touched,
+        unless `force` (safe mode, and the notification's hand-back button, mean it even when paused)."""
+        if self.paused and not force:
             return
         for a in self.adapters:
             st = self._snap.devices.get(a.config.device_id)
             if st and st.release_pending:
                 try:
+                    self.traces.cancel(a.config.device_id)
                     await a.apply(Desired(Mode.AUTO))
                     self._log(a.config.device_id, "released to the device's own control on shutdown")
                 except Exception as err:  # noqa: BLE001 - flag stays set, retried on next start

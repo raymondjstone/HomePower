@@ -126,12 +126,17 @@ def test_proven_battery_needs_no_confirmation_and_handback_is_never_held_up():
 def test_phone_notification_buttons_pause_and_hand_back():
     async def go():
         c = bare()
-        c.release_all = lambda: asyncio.sleep(0)
+        forced = []
+
+        async def release_all(force=False):
+            forced.append(force)
+        c.release_all = release_all
         await c._on_action(types.SimpleNamespace(data={"action": coordinator.ACTION_PAUSE}))
         assert c.manager.paused
         c.manager.paused = False
         await c._on_action(types.SimpleNamespace(data={"action": coordinator.ACTION_HAND_BACK}))
         assert c.manager.paused                                       # handed back, and stays that way
+        assert forced == [True]                                       # even if HomePower was already paused
         await c._on_action(types.SimpleNamespace(data={"action": "SOMETHING_ELSE"}))   # ignored
     asyncio.run(go())
 
@@ -179,3 +184,66 @@ def test_startup_note_says_what_was_restored_and_what_is_unreachable():
     c.adapters = [FakeAdapter(eco_cfg(), None)]
     c._startup_check({"e": Actual(online=False)})
     assert "1 saved EcoFlow original settings" in c.startup_note and "Could not reach: Eco" in c.startup_note
+
+
+def test_release_all_when_paused_only_with_force():
+    async def go():
+        c = bare()
+        c.manager.paused = True
+        a = FakeAdapter(eco_cfg(), Actual(online=True, soc=40))
+        c.adapters = [a]
+        c._snap.devices["e"] = coordinator.DeviceStatus(release_pending=True)
+
+        async def save():
+            pass
+        c.manager.save_runtime = save
+        await c.release_all()
+        assert a.sent == []                                           # paused: left alone (shutdown behaviour)
+        await c.release_all(force=True)
+        assert [w.mode for w in a.sent] == [Mode.AUTO]                # safe mode: handed back anyway
+    asyncio.run(go())
+
+
+def test_handing_back_ends_the_command_watch_so_a_short_charge_is_not_judged_a_failure():
+    async def go():
+        c = bare()
+        c.manager.confirmed.add("e")
+        a = FakeAdapter(eco_cfg(), Actual(online=True, soc=40, power_w=0, mode=Mode.AUTO))
+        st = coordinator.DeviceStatus(actual=a._actual)
+        await c._apply_and_verify(a, st, Desired(Mode.CHARGE, 2000, target_soc=80), [])
+        assert "e" in c.traces._open
+        await c._apply_and_verify(a, st, Desired(Mode.AUTO), [])
+        assert "e" not in c.traces._open and c.traces.results.get("e", []) == []
+    asyncio.run(go())
+
+
+def test_stuck_and_grid_sign_alerts_clear_when_the_battery_goes_offline():
+    async def go():
+        from hp.core.alerts import AlertTracker
+        from hp.core.sanity import ChargeWatch
+        c = bare()
+        c.alerts, c.charge_watch, c.testing, c._event_state = AlertTracker(), ChargeWatch(after_s=60), set(), {}
+        c.health = types.SimpleNamespace(degraded=lambda d: None)
+        c.grid_events = types.SimpleNamespace(observe=lambda *a: None)
+        c.trend = types.SimpleNamespace(update=lambda *a: None, warning=lambda d: None)
+        c._cover_text = lambda: ""
+        c.last_grid = 900.0
+        sent = []
+
+        async def notify(key, msg, raised):
+            sent.append((key, raised))
+        c._notify = notify
+        cfg = eco_cfg()
+        cfg.extra["driver"] = "ecoflow_stream"
+        a = FakeAdapter(cfg, None)
+        c.adapters = [a]
+        st = coordinator.DeviceStatus(desired=Desired(Mode.CHARGE, 2000, target_soc=90), reason="schedule x",
+                                      actual=Actual(online=True, soc=40, power_w=0, grid_w=-800.0))
+        c._snap.devices["e"] = st
+        await c._check_alerts(0, [a])
+        await c._check_alerts(120, [a])
+        assert ("stuck:e", True) in sent                              # asked to charge, nothing happened for two minutes
+        st.actual = Actual(online=False)
+        await c._check_alerts(240, [a])
+        assert ("stuck:e", False) in sent and "stuck:e" not in c.alerts.active()
+    asyncio.run(go())

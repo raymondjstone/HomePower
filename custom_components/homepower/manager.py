@@ -297,7 +297,7 @@ class HomePowerManager:
         """Safe mode: hand every battery back to its own control, then send nothing until it is switched off."""
         if on:
             if self.coordinator:
-                await self.coordinator.release_all()      # must happen before pausing: release_all does nothing when paused
+                await self.coordinator.release_all(force=True)     # even if already paused: safe mode means handed back
             self.safe = True
             await self.set_paused(True)
             self.safe = True                               # set_paused(True) leaves it alone, but be explicit

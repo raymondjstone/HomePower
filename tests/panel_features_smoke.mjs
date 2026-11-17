@@ -79,3 +79,28 @@ must("grid order list: saved order first, unused ones unticked", go.indexOf('dat
 const mkRow = (k, on) => ({ dataset: { key: k }, querySelector: () => ({ checked: on }) });
 els["st-grid_order"] = { querySelectorAll: () => [mkRow("battery", true), mkRow("glow", false), mkRow("sensor", true)] };
 must("grid order collects ticked rows in order", p._collectSettings().grid_order === "battery,sensor");
+
+// ---- EcoFlow report, plan versus actual, weather, why-idle chips, safe mode
+p.live.devices.a = { online: true, soc: 40, power_w: 1200, mode: "charge", desired_mode: "charge", why: "Held by the software charge limit.", awaiting_confirm: true,
+  charge_verdict: "unreliable", measured_charge_w: 2700, traces: [{ at: "2026-03-01T10:00:00", mode: "charge", ok: false, peak_w: 0 }], setting_changes: [{ at: "t", key: "workMode", from: "A", to: "B" }],
+  report: { sent: 6, worked: 5, avg_reaction_s: 40, charge_rate_w: 2700, follows_plan_pct: 88, verdict: "works", advice: "Control looks reliable." }, cycling: null };
+const rows = [];
+for (let i = 0; i < 48; i++) rows.push([new Date(Date.UTC(2026, 2, 1, 0, 30 * i)).toISOString(), i % 3 ? 1500 : null, i % 2 ? 1400 : -200]);
+p.live.plan_actual = { a: { rows, match_pct: 87 }, b: { rows: [], match_pct: null } };
+p.live.health = { a: { efficiency: [["w1", 90]], warning: null, cycling: { net_per_kwh: 0.12, worth_it: true, efficiency_pct: 85, measured: false } } };
+p.live.weather = { status: "raising the overnight target", tomorrow_c: -2, source: "weather entity (daily)", lately_c: 6, k_wh_per_degree: 800, days_learned: 14, extra_wh: 2100 };
+p.live.startup = "Started. Restored 2 learned charge rates.";
+p.data.safe = true; p.data.paused = true;
+const card = p._ecoflowCard();
+must("ecoflow report card", card.includes("5 of 6") && card.includes("40 s") && card.includes("Control looks reliable") && card.includes("88%"));
+const plan = p._planCard();
+must("plan versus actual card", plan.includes("Plan versus actual") && plan.includes("Followed the plan 87%") && plan.includes("stroke-dasharray") && !plan.includes("NaN"));
+must("weather text", p._weatherText().includes("-2 °C") && p._weatherText().includes("0.80 kWh") && p._weatherText().includes("raising"));
+const ovw = p._overview();
+must("battery chips: why idle, measured rate, confirm button, charge not working, changes",
+  ovw.includes("Why idle") && ovw.includes("measured") && ovw.includes('data-act="confirm-first"') && ovw.includes("Charge not working") && ovw.includes("Settings changed (1)"));
+must("health card shows cycling", p._healthCard().includes("Worth cycling") && p._healthCard().includes("Yes: about"));
+must("settings has the cold weather group", p._settingsView().includes("weather_boost") && p._settingsView().includes("Open-Meteo"));
+p._diag = { alerts: [], devices: {}, decisions: [], events: [] };
+const dv = p._diagView();
+must("diagnostics: download button and startup note", dv.includes('data-act="download-debug"') && dv.includes("Restored 2 learned charge rates"));
