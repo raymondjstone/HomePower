@@ -197,8 +197,13 @@ def test_release_all_when_paused_only_with_force():
         async def save():
             pass
         c.manager.save_runtime = save
+        saved = []
+
+        async def save2():
+            saved.append(1)
+        c.manager.save_runtime = save2
         await c.release_all()
-        assert a.sent == []                                           # paused: left alone (shutdown behaviour)
+        assert a.sent == [] and saved == [1]                          # paused: left alone, but the running totals are still saved
         await c.release_all(force=True)
         assert [w.mode for w in a.sent] == [Mode.AUTO]                # safe mode: handed back anyway
     asyncio.run(go())

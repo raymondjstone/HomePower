@@ -86,7 +86,11 @@ async def main():
     coord.set_override(["a"], Desired(Mode.CHARGE, 700), 30)      # a new instruction, so it is sent at once
     await coord._async_update_data()
     assert dev.hold[10064] == 3
+    assert hass.bus.async_listeners().get("mobile_app_notification_action") == 1      # the phone-button listener is registered
     ok = await HP.async_unload_entry(hass, entry)
+    assert not hass.bus.async_listeners().get("mobile_app_notification_action"), "phone-button listener left behind after unload"
+    hass.bus.async_fire("mobile_app_notification_action", {"action": "HOMEPOWER_PAUSE"}); await asyncio.sleep(0.2)
+    assert not mgr.paused, "a stale coordinator answered a notification button after unload"
     print("unload   : mode reg", dev.hold[10064])
     assert dev.hold[10064] == 0
     print("unload   :", ok, unloaded, "| manager gone:", "manager" not in hass.data[DOMAIN])

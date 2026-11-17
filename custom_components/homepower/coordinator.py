@@ -1620,10 +1620,15 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         except Exception:  # noqa: BLE001 - a button must never break the control loop
             _LOGGER.warning("notification action failed", exc_info=True)
 
-    async def async_close(self) -> None:
-        unsub = getattr(self, "_unsub_action", None)
+    def stop_listening(self) -> None:
+        """Stop reacting to phone notification buttons. Safe to call more than once; needed on unload or reload, or the
+        old coordinator would keep answering taps through a manager that no longer owns the saved state."""
+        unsub, self._unsub_action = getattr(self, "_unsub_action", None), None
         if unsub:
             unsub()
+
+    async def async_close(self) -> None:
+        self.stop_listening()
         await self.manager.save_runtime()
         for a in self.adapters:
             await a.close()
@@ -1632,6 +1637,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         """Best effort on shutdown: hand every battery we forced back to its own control. While paused nothing is touched,
         unless `force` (safe mode, and the notification's hand-back button, mean it even when paused)."""
         if self.paused and not force:
+            await self.manager.save_runtime()      # nothing to hand back, but the running totals must still be kept
             return
         for a in self.adapters:
             st = self._snap.devices.get(a.config.device_id)

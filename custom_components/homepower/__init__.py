@@ -58,6 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = HomePowerCoordinator(hass, entry, manager, adapters, schedules, goals)
     manager.coordinator = coordinator
     entry.async_on_unload(entry.add_update_listener(_options_updated))
+    entry.async_on_unload(coordinator.stop_listening)      # the phone-notification buttons: gone when this setup is
 
     # If HA shuts down while a battery is being forced, hand it back (best effort; the
     # persisted flag makes the next start retry if this does not complete).
@@ -69,6 +70,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await coordinator.async_config_entry_first_refresh()
     except BaseException:
+        coordinator.stop_listening()
         await manager.async_close()     # Home Assistant retries setup: don't leave battery connections open meanwhile
         raise
     domain_data[entry.entry_id] = coordinator
@@ -167,6 +169,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         mgr = hass.data.get(DOMAIN, {}).get("manager")
         coord = hass.data.get(DOMAIN, {}).get(entry.entry_id)
         if coord:
+            coord.stop_listening()
             # Reloaded, disabled or removed: nothing will be steering the batteries, so hand back any we are forcing.
             try:
                 await coord.release_all()
