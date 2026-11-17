@@ -119,7 +119,7 @@ await p._scanPorts();
 must("first scan: nothing listening, one request with the typed address", p._portScanCard().includes("Nothing is listening") && sent.at(-1).host === "192.168.1.50" && !p._portScanCard().includes("Changed since"));
 await p._scanPorts();
 const after = p._portScanCard();
-must("second scan: shows the open ports and what changed", after.includes("2 open: 502 (Modbus TCP), 80 (HTTP)") && after.includes("502 was closed, now open") && after.includes("OPEN"));
+must("second scan: shows the open ports and what changed", after.includes("2 open: 502 (Modbus TCP), 80 (HTTP)") && after.includes("502 is now open") && after.includes("OPEN"));
 must("a banner is escaped, never run as HTML", after.includes("nginx &lt;b&gt;x&lt;/b&gt;") && !after.includes("<b>x</b>"));
 p._hass.callWS = async () => { throw new Error("this only scans devices on your own network"); };
 await p._scanPorts();
@@ -127,3 +127,22 @@ must("a refused address shows the reason", p._portScanCard().includes("only scan
 els["ps-host"] = { value: "   " };
 await p._scanPorts();
 must("an empty address asks for one and sends nothing", p._portScanCard().includes("Type the device&#39;s IP address") && sent.length === 2);
+
+// ---- wide scan
+els["ps-host"] = { value: "10.0.0.213" };
+const wideReply = (open, counts, complete = true) => ({ host: "10.0.0.213", address: "10.0.0.213", wide: true, total: 10000, complete, counts: { open: open.length, closed: 9990, "no answer": 0, skipped: 0, ...counts }, results: open.map((x) => row(...x, "open")) });
+const wides = [wideReply([]), wideReply([[8883, "MQTT over TLS"], [4321, ""]]), wideReply([[4321, ""]], { skipped: 300, closed: 9600 }, false)];
+let widN = 0; sent.length = 0;
+p._hass.callWS = async (m) => { sent.push(m); return wides[widN++]; };
+must("wide scan button is on the card", p._portScanCard().includes('data-act="scan-ports-wide"') && p._portScanCard().includes("Wide scan (1-10,000)"));
+await p._scanPorts(true);
+must("wide scan sends wide=true and says no open port", sent[0].wide === true && p._portScanCard().includes("No open port found") && p._portScanCard().includes("Checked ports 1 to 10,000"));
+await p._scanPorts(true);
+const w2 = p._portScanCard();
+must("second wide scan lists open ports and what changed", w2.includes("2 open") && w2.includes("4321 is now open") && w2.includes("8883 (MQTT over TLS)") && w2.includes("wide scan"));
+await p._scanPorts(true);
+const w3 = p._portScanCard();
+must("an incomplete wide scan says so and shows a port that closed", w3.includes("Incomplete") && w3.includes("300 ports were not checked") && w3.includes("8883 is no longer open"));
+p._hass.callWS = async (m) => ({ host: "10.0.0.213", address: "10.0.0.213", wide: false, results: [row(502, "Modbus TCP", "closed")] });
+await p._scanPorts(false);
+must("a normal scan after wide ones does not compare against a wide scan", !p._portScanCard().includes("Changed since") && !p._portScanCard().includes("No change since"));

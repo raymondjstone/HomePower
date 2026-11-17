@@ -41,6 +41,10 @@ const server = http.createServer((req, res) => {
       await import("/homepower-panel.js?v=1.2.3-browser");
       const el = document.createElement("homepower-panel"); document.body.appendChild(el);
       el.hass = { states: {}, language: "en", callWS: async (m) => { window.__calls.push(m.type); window.__scanHosts = window.__scanHosts || [];
+        if (m.type === "homepower/scan_ports" && m.wide) {
+          return { host: m.host, address: m.host, wide: true, total: 10000, complete: true, counts: { open: 2, closed: 9998, "no answer": 0, skipped: 0 },
+                   results: [{ port: 502, service: "Modbus TCP", state: "open", banner: "" }, { port: 4321, service: "", state: "open", banner: "EF" }] };
+        }
         if (m.type === "homepower/scan_ports") {                      // first scan: all closed; the second: Modbus and a web page are open
           window.__scanHosts.push(m.host); const n = window.__scanHosts.length, st = (p, on) => (n > 1 && on ? "open" : "closed");
           return { host: m.host, address: m.host, results: [[22, "SSH", 0], [80, "HTTP", 1], [502, "Modbus TCP", 1], [1883, "MQTT", 0], [8883, "MQTT over TLS", 0]].map(([port, service, on]) => ({ port, service, state: st(port, on), banner: on && n > 1 && port === 80 ? "nginx" : "" })) };
@@ -119,8 +123,14 @@ await page.locator("#ps-host").fill("192.168.1.50");
 await page.locator('[data-act="scan-ports"]').click();
 await page.waitForFunction(() => window.__panel.shadowRoot.textContent.includes("Changed since"), null, { timeout: 5000 });
 const portText = await page.evaluate(() => window.__panel.shadowRoot.textContent);
-must("port scan: the second scan shows 502 and 80 open and what changed", portText.includes("2 open: 80 (HTTP), 502 (Modbus TCP)") && portText.includes("502 was closed, now open") && portText.includes("nginx"));
+must("port scan: the second scan shows 502 and 80 open and what changed", portText.includes("2 open: 80 (HTTP), 502 (Modbus TCP)") && portText.includes("502 is now open") && portText.includes("nginx"));
 await page.locator(".card", { has: page.locator("h2", { hasText: "Find local control ports" }) }).first().screenshot({ path: path.join(SHOTS, "diagnostics-ports.png") });
+await page.locator("#ps-host").fill("192.168.1.50");
+await page.locator('[data-act="scan-ports-wide"]').click();
+await page.waitForFunction(() => window.__panel.shadowRoot.textContent.includes("Checked ports 1 to 10,000"), null, { timeout: 5000 });
+const wideText = await page.evaluate(() => window.__panel.shadowRoot.textContent);
+must("wide scan: real click, shows the open ports and the counts", wideText.includes("2 open: 502 (Modbus TCP), 4321") && wideText.includes("9,998 closed") && wideText.includes("wide scan"));
+await page.locator(".card", { has: page.locator("h2", { hasText: "Find local control ports" }) }).first().screenshot({ path: path.join(SHOTS, "diagnostics-ports-wide.png") });
 
 must("no console errors, warnings or failed requests", errors.length === 0, errors.slice(0, 5).join(" | "));
 await browser.close(); server.close();

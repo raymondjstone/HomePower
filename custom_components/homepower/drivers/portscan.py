@@ -1,14 +1,16 @@
 """Which of a handful of well-known ports a device on your own network is listening on.
 
 Made for finding out whether a battery now offers a local connection (Modbus TCP, MQTT ...) after a firmware update. It only
-opens a TCP connection to each port and listens for a few bytes; it never sends data, never tries a login and never scans a
-range. It refuses any address that is not on a private network, so it cannot be used to probe the internet.
+opens a TCP connection to each port and listens for a few bytes; it never sends data and never tries a login. The normal scan
+checks a short fixed list of ports. The wide scan checks ports 1-10000 of ONE device, opt-in and one at a time. Both refuse any
+address that is not on a private network, so neither can be used to probe the internet.
 """
 from __future__ import annotations
 
 import asyncio
 import ipaddress
 import socket
+import time
 
 # A short, fixed list: the ports local control of an energy device is likely to use. Nothing else is ever tried.
 PORTS: dict[int, str] = {
@@ -19,6 +21,12 @@ PORTS: dict[int, str] = {
 CONNECT_TIMEOUT_S = 1.5
 BANNER_WAIT_S = 0.4
 PARALLEL = 8
+
+WIDE_PORTS = range(1, 10001)          # the wide scan: every port from 1 to 10000 (read at call time, so tests can shrink it)
+WIDE_PARALLEL = 200                   # many at once, each with a short timeout, so a silent device does not take half an hour
+WIDE_TIMEOUT_S = 0.8
+WIDE_DEADLINE_S = 90                  # stop starting new probes after this long and say the scan was incomplete
+_wide_running = False                 # only one wide scan at a time
 
 
 # Exactly the ranges used inside a home or office network (Python's own is_private is wider: it also counts documentation ranges).
@@ -94,4 +102,38 @@ async def scan(host: str, ports: dict[int, str] | None = None, timeout: float = 
         return row
 
     rows = await asyncio.gather(*(one(p) for p in sorted(ports)))
-    return {"host": host.strip(), "address": ip, "results": list(rows)}
+    return {"host": host.strip(), "address": ip, "wide": False, "results": list(rows)}
+
+
+async def scan_wide(host: str, ports=None, timeout: float = WIDE_TIMEOUT_S, deadline_s: float = WIDE_DEADLINE_S,
+                    parallel: int = WIDE_PARALLEL) -> dict:
+    """Every port in the wide range on one device. Only open ports are listed, with counts for the rest. If the device is so
+    silent that the time limit is reached, the probes not yet started are skipped and the result says it is incomplete."""
+    global _wide_running
+    ports = list(WIDE_PORTS if ports is None else ports)
+    ip = await check_host(host)
+    if _wide_running:
+        raise ValueError("a wide scan is already running: wait for it to finish")
+    _wide_running = True
+    try:
+        gate = asyncio.Semaphore(max(1, parallel))
+        stop = time.monotonic() + deadline_s
+        counts = {"open": 0, "closed": 0, "no answer": 0, "skipped": 0}
+        found: list[dict] = []
+
+        async def one(port: int) -> None:
+            async with gate:
+                if time.monotonic() >= stop:
+                    counts["skipped"] += 1
+                    return
+                row = await _probe(ip, port, timeout)
+            counts[row["state"]] += 1
+            if row["state"] == "open":
+                row["service"] = PORTS.get(port, "")
+                found.append(row)
+
+        await asyncio.gather(*(one(p) for p in ports))
+    finally:
+        _wide_running = False
+    return {"host": host.strip(), "address": ip, "wide": True, "total": len(ports), "counts": counts,
+            "complete": counts["skipped"] == 0, "results": sorted(found, key=lambda r: r["port"])}

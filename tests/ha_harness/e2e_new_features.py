@@ -142,6 +142,14 @@ async def main():
     assert refused[0] == "err" and "own network" in refused[2], refused
     refused = await call("homepower/scan_ports", host="http://192.168.1.1/x")
     assert refused[0] == "err", refused
+    import custom_components.homepower.drivers.portscan as PS
+    PS.WIDE_PORTS = range(1, 300)                              # a small range keeps this check quick
+    wide = await must("homepower/scan_ports", host="127.0.0.1", wide=True)
+    assert wide["wide"] is True and wide["total"] == 299 and wide["complete"] and sum(wide["counts"].values()) == 299, wide
+    assert all(r["state"] == "open" for r in wide["results"]) and len(wide["results"]) == wide["counts"]["open"]
+    refused = await call("homepower/scan_ports", host="8.8.8.8", wide=True)
+    assert refused[0] == "err" and "own network" in refused[2], refused
+    assert PS._wide_running is False
     print("ports    : local scan ok,", sum(r["state"] == "open" for r in scan["results"]), "open here; public and malformed addresses refused")
 
     # new state is saved and comes back after a reload

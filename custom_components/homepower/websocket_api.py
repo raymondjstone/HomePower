@@ -327,16 +327,17 @@ async def ws_control(hass, msg):
     return {}
 
 
-@websocket_api.websocket_command({vol.Required("type"): "homepower/scan_ports", vol.Required("host"): vol.All(str, vol.Length(min=1, max=253))})
+@websocket_api.websocket_command({vol.Required("type"): "homepower/scan_ports", vol.Required("host"): vol.All(str, vol.Length(min=1, max=253)),
+                                  vol.Optional("wide", default=False): bool})
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
 async def ws_scan_ports(hass, msg):
     """Which well-known ports a device on the local network is listening on (read-only: connects and listens, sends nothing)."""
-    from .drivers.portscan import scan
+    from .drivers.portscan import scan, scan_wide
 
     try:
-        return await scan(msg["host"])
+        return await (scan_wide if msg["wide"] else scan)(msg["host"])
     except ValueError as err:
         raise ValidationError(str(err)) from err
 

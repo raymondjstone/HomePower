@@ -7,30 +7,40 @@ export default (U) => {
     const ps = this._ports || {}, rows = ps.results || [];
     let out = "";
     if (ps.error) out = `<div class="err">${esc(ps.error)}</div>`;
-    else if (ps.busy) out = `<div class="sub">Scanning… this takes a few seconds.</div>`;
-    else if (rows.length) {
-      const before = ps.prev && ps.prev.results ? Object.fromEntries(ps.prev.results.map((r) => [r.port, r.state])) : null;
-      const open = rows.filter((r) => r.state === "open"), changed = before ? rows.filter((r) => before[r.port] && before[r.port] !== r.state) : [];
-      const sum = open.length ? `<b class="ok">${open.length} open: ${open.map((r) => r.port + (r.service ? " (" + esc(r.service) + ")" : "")).join(", ")}</b>` : "<b>Nothing is listening on these ports.</b>";
-      const diff = before ? (changed.length ? `<div class="ok" style="margin-top:4px">Changed since the scan at ${new Date(ps.prev.at).toLocaleTimeString()}: ${changed.map((r) => `${r.port} was ${esc(before[r.port])}, now ${esc(r.state)}`).join("; ")}</div>`
-        : `<div class="sub" style="margin-top:4px">No change since the scan at ${new Date(ps.prev.at).toLocaleTimeString()}.</div>`) : "";
-      out = `<p style="margin:8px 0 4px">${sum} <span class="sub" style="font-size:12px;color:var(--secondary-text-color)">(${esc(ps.address || ps.host)})</span></p>${diff}
-        <table class="tbl"><tr><th>Port</th><th>Service</th><th>State</th><th>It says</th></tr>${rows.map((r) => `<tr><td>${r.port}</td><td>${esc(r.service)}</td><td class="${r.state === "open" ? "ok" : ""}">${r.state === "open" ? "OPEN" : esc(r.state)}</td><td>${esc(r.banner)}</td></tr>`).join("")}</table>`;
+    else if (ps.busy) out = `<div class="sub">${ps.wide ? "Wide scan running: ports 1 to 10,000, up to a minute. Please wait…" : "Scanning… this takes a few seconds."}</div>`;
+    else if (rows.length || ps.wide) {
+      const wide = !!ps.wide, prev = ps.prev && !!ps.prev.wide === wide ? ps.prev : null, at = prev ? new Date(prev.at).toLocaleTimeString() : "";
+      const open = rows.filter((r) => r.state === "open");
+      const sum = open.length ? `<b class="ok">${open.length} open: ${open.map((r) => r.port + (r.service ? " (" + esc(r.service) + ")" : "")).join(", ")}</b>`
+        : (wide ? "<b>No open port found.</b>" : "<b>Nothing is listening on these ports.</b>");
+      let diff = "";
+      if (prev) {
+        const was = new Set(prev.results.filter((r) => r.state === "open").map((r) => r.port)), now = new Set(open.map((r) => r.port));
+        const gained = [...now].filter((p) => !was.has(p)), lost = [...was].filter((p) => !now.has(p));
+        diff = gained.length || lost.length ? `<div class="ok" style="margin-top:4px">Changed since the scan at ${at}: ${[...gained.map((p) => `${p} is now open`), ...lost.map((p) => `${p} is no longer open`)].join("; ")}</div>`
+          : `<div class="sub" style="margin-top:4px">No change since the scan at ${at}.</div>`;
+      }
+      const c = ps.counts || {};
+      const tally = wide ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:4px">Checked ports 1 to ${(ps.total || 0).toLocaleString()}: ${c.open || 0} open, ${(c.closed || 0).toLocaleString()} closed, ${(c["no answer"] || 0).toLocaleString()} no answer${ps.complete === false ? `. <b class="bad">Incomplete: the device answered too slowly, so ${(c.skipped || 0).toLocaleString()} ports were not checked.</b>` : "."}</div>` : "";
+      const table = rows.length ? `<table class="tbl"><tr><th>Port</th><th>Service</th><th>State</th><th>It says</th></tr>${rows.map((r) => `<tr><td>${r.port}</td><td>${esc(r.service)}</td><td class="${r.state === "open" ? "ok" : ""}">${r.state === "open" ? "OPEN" : esc(r.state)}</td><td>${esc(r.banner)}</td></tr>`).join("")}</table>` : "";
+      out = `<p style="margin:8px 0 4px">${sum} <span class="sub" style="font-size:12px;color:var(--secondary-text-color)">(${esc(ps.address || ps.host)}${wide ? ", wide scan" : ""})</span></p>${diff}${tally}${table}`;
     }
     return `<div class="card" style="margin-bottom:12px"><h2>Find local control ports</h2>
-      <p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:0">Checks whether a device on your network is listening on the ports local control usually uses (502 Modbus TCP, 1883 MQTT, ...). Use it after a firmware update or after switching something on in the vendor app: scan again and it shows what changed. It only connects and listens: it sends nothing, and it refuses addresses outside your own network.</p>
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:0">Checks whether a device on your network is listening on the ports local control usually uses (502 Modbus TCP, 1883 MQTT, ...). Use it after a firmware update or after switching something on in the vendor app: scan again and it shows what changed. The wide scan checks every port from 1 to 10,000 on that one device (up to a minute) and lists only the open ones, in case local control uses an unusual port. Both only connect and listen: they send nothing, and they refuse addresses outside your own network.</p>
       <div class="row2"><input type="text" id="ps-host" placeholder="192.168.1.50" value="${esc(ps.host || "")}" style="min-width:200px" aria-label="Device IP address">
-      <button class="btn pri" data-act="scan-ports"${ps.busy ? " disabled" : ""}><ha-icon icon="mdi:lan-connect" style="--mdc-icon-size:16px"></ha-icon>Scan</button></div>${out}</div>`;
+      <button class="btn pri" data-act="scan-ports"${ps.busy ? " disabled" : ""}><ha-icon icon="mdi:lan-connect" style="--mdc-icon-size:16px"></ha-icon>Scan</button>
+      <button class="btn" data-act="scan-ports-wide"${ps.busy ? " disabled" : ""} title="Checks every port from 1 to 10,000 on this one device. Takes up to a minute. Read-only, like the normal scan."><ha-icon icon="mdi:radar" style="--mdc-icon-size:16px"></ha-icon>Wide scan (1-10,000)</button></div>${out}</div>`;
   },
 
-  async _scanPorts() {
+  async _scanPorts(wide = false) {
     const host = ((this.shadowRoot.getElementById("ps-host") || {}).value || "").trim(), old = this._ports || {};
     if (!host) { this._ports = { ...old, host, busy: false, error: "Type the device's IP address first (find it in your router's device list)." }; return this._render(); }
-    this._ports = { host, busy: true, prev: old.host === host && old.results ? { results: old.results, at: old.at } : (old.host === host ? old.prev : null) };
+    // the previous scan of the same kind of the same address, to show what changed
+    const last = old.host === host && old.results ? { results: old.results, at: old.at, wide: !!old.wide } : (old.host === host ? old.prev : null);
+    this._ports = { host, busy: true, wide, prev: last };
     this._render();
-    const keep = this._ports.prev;
-    const r = await this._call({ type: "homepower/scan_ports", host }, (m) => { this._ports = { host, busy: false, error: m, prev: keep }; }, true);
-    if (r) this._ports = { host, results: r.results || [], address: r.address, at: Date.now(), prev: keep };
+    const r = await this._call({ type: "homepower/scan_ports", host, wide }, (m) => { this._ports = { host, busy: false, wide, error: m, prev: last }; }, true);
+    if (r) this._ports = { host, wide, results: r.results || [], address: r.address, counts: r.counts, total: r.total, complete: r.complete, at: Date.now(), prev: last };
     this._render();
   },
 
