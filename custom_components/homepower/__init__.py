@@ -30,9 +30,9 @@ def _asset_tag() -> str:
     import hashlib
 
     h = hashlib.sha1()
-    for name in ("homepower-panel.js", "homepower-card.js"):
+    for path in sorted((Path(__file__).parent / "frontend").glob("*.js")):   # the panel is split over several files
         try:
-            h.update((Path(__file__).parent / "frontend" / name).read_bytes())
+            h.update(path.read_bytes())
         except OSError:
             pass
     return f"{VERSION}-{h.hexdigest()[:8]}"

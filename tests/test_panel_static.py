@@ -2,7 +2,24 @@
 import re
 from pathlib import Path
 
-JS = (Path(__file__).parent.parent / "custom_components" / "homepower" / "frontend" / "homepower-panel.js").read_text(encoding="utf8")
+FRONTEND = Path(__file__).parent.parent / "custom_components" / "homepower" / "frontend"
+# the panel is split over several files that add their methods to one class: check them together
+JS = "\n".join(p.read_text(encoding="utf8") for p in sorted(FRONTEND.glob("panel*.js")) + [FRONTEND / "homepower-panel.js"])
+
+
+def test_every_panel_part_the_main_file_loads_exists_and_parses():
+    import shutil
+    import subprocess
+
+    main = (FRONTEND / "homepower-panel.js").read_text(encoding="utf8")
+    files = re.search(r"const FILES = \[(.*?)\]", main).group(1)
+    for part in re.findall(r'"(\w+)"', files):
+        assert (FRONTEND / f"panel-{part}.js").exists(), part
+    unlisted = {p.name for p in FRONTEND.glob("panel-*.js")} - {"panel-util.js"} - {f"panel-{x}.js" for x in re.findall(r'"(\w+)"', files)}
+    assert unlisted == set(), unlisted                      # a part that is never loaded would silently lose its methods
+    if shutil.which("node"):
+        for p in FRONTEND.glob("*.js"):
+            assert subprocess.run(["node", "--check", str(p)], capture_output=True).returncode == 0, p.name
 
 
 def test_every_called_method_is_defined():
