@@ -690,3 +690,42 @@ def test_ecoflow_refusal_and_rate_limit_back_off_and_say_so():
         await d.apply(Desired(Mode.AUTO))                         # handing back is still attempted while backing off
         assert d.api.sent
     asyncio.run(go())
+
+
+def test_ultra_x_auto_puts_back_the_reserve_the_user_had_not_the_minimum():
+    async def go():
+        saved = []
+        d = eco({"soc": 50, "backupReverseSoc": 30, "powGetBpCms": 0})            # the user keeps a 30 % reserve
+        d._on_orig = saved.append
+        await d.read()
+        await d.apply(Desired(Mode.HOLD))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 50}] and saved[-1] == {"reserve": 30}
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent[-1] == {"cfgBackupReverseSoc": 30} and saved[-1] is None
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))                                          # nothing of ours left to hand back
+        assert d.api.sent == []
+    asyncio.run(go())
+
+
+def test_ultra_x_original_reserve_survives_a_restart_and_a_raised_reserve_is_not_trusted():
+    async def go():
+        d = eco({"soc": 50, "backupReverseSoc": 30})
+        await d.read()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=80))
+        orig = d._orig
+        c = eco({"soc": 60, "backupReverseSoc": 80})                               # restarted while charging
+        again = EcoFlowStreamDriver(c.config, session=None, orig=orig)
+        again.api = c.api
+        await again.read()
+        await again.apply(Desired(Mode.AUTO))
+        assert again.api.sent[-1] == {"cfgBackupReverseSoc": 30}
+        h = eco({"soc": 60, "backupReverseSoc": 95})                               # left at 95 by something earlier
+        await h.read()
+        await h.apply(Desired(Mode.HOLD))
+        assert h._orig == {"reserve": None}
+        h.api.sent.clear()
+        await h.apply(Desired(Mode.AUTO))
+        assert h.api.sent[-1] == {"cfgBackupReverseSoc": 10}                       # unknown original: the battery's minimum
+    asyncio.run(go())

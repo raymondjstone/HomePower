@@ -79,7 +79,7 @@ class TempLog:
         for old in sorted(self.days)[:-self.KEEP]:
             del self.days[old]
 
-    def mean(self, day: str, min_samples: int = 20) -> float | None:
+    def mean(self, day: str, min_samples: int = 360) -> float | None:     # about an hour of readings, so a day seen for minutes is not trusted
         d = self.days.get(day)
         return d[0] / d[1] if d and d[1] >= min_samples else None
 
@@ -105,7 +105,7 @@ class ColdModel:
             if day == today or t is None or not load or len(load) != 48:
                 continue
             kwh = sum(load)
-            if kwh > 0.5:
+            if kwh > 0.5 and sum(1 for x in load if x > 0) >= 40:     # a whole day: not one HomePower only saw part of
                 xs.append(degree_days(t))
                 ys.append(kwh)
         self.days = len(xs)

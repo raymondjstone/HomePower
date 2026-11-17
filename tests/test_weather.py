@@ -49,7 +49,7 @@ def _history(slope_kwh=0.8, base=10.0, days=14, temps=None):
     temps = temps or [2 + (i * 3) % 17 for i in range(days)]
     for i, t in enumerate(temps):
         day = (date(2026, 10, 1) + timedelta(days=i)).isoformat()
-        for _ in range(30):
+        for _ in range(400):
             log.add(day, t)
         usage[day] = {"load": [(base + slope_kwh * degree_days(t)) / 48] * 48}
     return log, usage
@@ -60,6 +60,19 @@ def test_the_model_learns_how_much_more_a_cold_day_uses():
     m = ColdModel()
     m.fit(log, usage, today="2026-12-31")
     assert m.days == 14 and m.k is not None and abs(m.k - 800) < 5                # 0.8 kWh per degree-day
+
+
+def test_a_day_seen_only_in_part_is_not_used():
+    log, usage = _history()
+    first = sorted(usage)[0]
+    usage[first] = {"load": [0.0] * 30 + [0.5] * 18}                  # HomePower started late that day
+    m = ColdModel()
+    m.fit(log, usage, "2026-12-31")
+    assert m.days == 13
+    short = TempLog()
+    for _ in range(50):
+        short.add("2026-10-01", 5.0)
+    assert short.mean("2026-10-01") is None                           # minutes of readings are not a day's temperature
 
 
 def test_the_model_refuses_to_guess_without_a_real_link():

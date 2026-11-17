@@ -376,6 +376,11 @@ class EcoFlowStreamDriver:
             if desired.mode is Mode.AUTO:
                 return
             raise ValueError("this EcoFlow model's settings are not known to HomePower: read-only for now")
+        if desired.mode in (Mode.HOLD, Mode.CHARGE) and self._orig is None:
+            # Remember the reserve the user had, so Auto puts exactly that back (not a made-up minimum). A reserve already
+            # near the top was probably left raised by an earlier run: its original is unknown, so it is not trusted.
+            cur = _first(self._state or self.last_quota, "backupReverseSoc")
+            self._orig = {"reserve": int(cur) if cur is not None and cur < 90 else None}
         if desired.mode is Mode.HOLD:
             # Raise the reserve to where the battery is now: it stops discharging, and is not told to charge from the grid
             # (a reserve above the charge level could make it top up at whatever the price is).
@@ -384,8 +389,12 @@ class EcoFlowStreamDriver:
                 raise ValueError("cannot hold: the battery's charge level is not known yet")
             await self.api.command(self.sn, {"cfgBackupReverseSoc": int(max(3, min(HOLD_RESERVE, soc)))})
         elif desired.mode is Mode.AUTO:
+            o, self._orig = self._orig, None
+            if o is None and self._decode(self._state or self.last_quota, self.config.caps.min_soc).mode is Mode.AUTO:
+                return                            # nothing of ours to hand back: leave the user's own reserve alone
+            saved = o.get("reserve") if o else None
             await self.api.command(self.sn, {"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}})
-            await self.api.command(self.sn, {"cfgBackupReverseSoc": max(3, self.config.caps.min_soc)})
+            await self.api.command(self.sn, {"cfgBackupReverseSoc": int(saved) if saved is not None else max(3, self.config.caps.min_soc)})
         elif desired.mode is Mode.CHARGE:
             # A reserve above the charge level makes the battery top itself up from the grid, at its own rate (the power
             # cannot be set). It stops when it reaches the reserve, so the reserve is the target (95 % at most).
