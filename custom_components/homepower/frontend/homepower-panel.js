@@ -317,6 +317,7 @@ class HomePowerPanel extends HTMLElement {
         alert(`Restored ${a.devices || 0} batteries, ${a.schedules || 0} schedules, ${a.goals || 0} goals and ${a.scenes || 0} scenes.` + ((res.skipped || []).length ? `\n\nSkipped:\n- ${res.skipped.join("\n- ")}` : ""));
         return;
       }
+      case "scan-ports": return this._scanPorts();
       case "scan-save": case "scan-compare": return this._scanRegisters(id, act === "scan-compare");
       case "confirm-first": {
         if (!confirm("Allow HomePower to send its first real command to this battery? It will raise the battery's backup reserve; Auto puts it back.")) return;

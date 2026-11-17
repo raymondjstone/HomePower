@@ -134,6 +134,16 @@ async def main():
     bad = await call("homepower/device/confirm", device_id="nope")
     assert bad[0] == "err", bad
 
+    # the local port scan: works on a local address, refuses a public one, and is JSON-safe
+    scan = await must("homepower/scan_ports", host="127.0.0.1")
+    from custom_components.homepower.drivers.portscan import PORTS
+    assert [r["port"] for r in scan["results"]] == sorted(PORTS) and all(r["state"] in ("open", "closed", "no answer") for r in scan["results"]), scan
+    refused = await call("homepower/scan_ports", host="8.8.8.8")
+    assert refused[0] == "err" and "own network" in refused[2], refused
+    refused = await call("homepower/scan_ports", host="http://192.168.1.1/x")
+    assert refused[0] == "err", refused
+    print("ports    : local scan ok,", sum(r["state"] == "open" for r in scan["results"]), "open here; public and malformed addresses refused")
+
     # new state is saved and comes back after a reload
     coord.traces.start("a", "charge", 0, "t", 40, 0); coord.traces.observe("a", 800, 40, 0, None)
     coord.rate_learner.rates["a"] = 2600

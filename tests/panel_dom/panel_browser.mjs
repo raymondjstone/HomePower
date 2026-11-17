@@ -40,7 +40,12 @@ const server = http.createServer((req, res) => {
       const reply = (m) => ({ "homepower/get": get, "homepower/diagnostics": diag, "homepower/preview": preview, "homepower/tariffs/compare": tariffs, "homepower/backups": { backups: [] } }[m.type] ?? {});
       await import("/homepower-panel.js?v=1.2.3-browser");
       const el = document.createElement("homepower-panel"); document.body.appendChild(el);
-      el.hass = { states: {}, language: "en", callWS: async (m) => { window.__calls.push(m.type); return JSON.parse(JSON.stringify(reply(m))); },
+      el.hass = { states: {}, language: "en", callWS: async (m) => { window.__calls.push(m.type); window.__scanHosts = window.__scanHosts || [];
+        if (m.type === "homepower/scan_ports") {                      // first scan: all closed; the second: Modbus and a web page are open
+          window.__scanHosts.push(m.host); const n = window.__scanHosts.length, st = (p, on) => (n > 1 && on ? "open" : "closed");
+          return { host: m.host, address: m.host, results: [[22, "SSH", 0], [80, "HTTP", 1], [502, "Modbus TCP", 1], [1883, "MQTT", 0], [8883, "MQTT over TLS", 0]].map(([port, service, on]) => ({ port, service, state: st(port, on), banner: on && n > 1 && port === 80 ? "nginx" : "" })) };
+        }
+        return JSON.parse(JSON.stringify(reply(m))); },
                   connection: { subscribeMessage: (cb) => { setTimeout(() => cb(get.live), 20); return Promise.resolve(() => {}); } } };
       window.__panel = el; window.__ready = true;
     </script></body></html>`);
@@ -104,6 +109,18 @@ const onInsights = await page.evaluate(() => window.__panel.tab);
 must("a real click on a tab switches to it", onInsights === "insights", onInsights);
 const calls = await page.evaluate(() => window.__calls);
 must("a real click on Safe mode asked for confirmation and reached the backend call", calls.includes("homepower/safe") && dialogs.some((d) => d.includes("Safe mode")), calls.join(",") + " | " + dialogs.join(" / "));
+
+// the port-scan card, with real typing and real clicks
+await page.evaluate(async () => { const p = window.__panel; p.tab = "diagnostics"; await p._tabLoad(); p._render(); });
+await page.locator("#ps-host").fill("192.168.1.50");
+await page.locator('[data-act="scan-ports"]').click();
+await page.waitForFunction(() => window.__panel.shadowRoot.textContent.includes("Nothing is listening"), null, { timeout: 5000 });
+await page.locator("#ps-host").fill("192.168.1.50");
+await page.locator('[data-act="scan-ports"]').click();
+await page.waitForFunction(() => window.__panel.shadowRoot.textContent.includes("Changed since"), null, { timeout: 5000 });
+const portText = await page.evaluate(() => window.__panel.shadowRoot.textContent);
+must("port scan: the second scan shows 502 and 80 open and what changed", portText.includes("2 open: 80 (HTTP), 502 (Modbus TCP)") && portText.includes("502 was closed, now open") && portText.includes("nginx"));
+await page.locator(".card", { has: page.locator("h2", { hasText: "Find local control ports" }) }).first().screenshot({ path: path.join(SHOTS, "diagnostics-ports.png") });
 
 must("no console errors, warnings or failed requests", errors.length === 0, errors.slice(0, 5).join(" | "));
 await browser.close(); server.close();

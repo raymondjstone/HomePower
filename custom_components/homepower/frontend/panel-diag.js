@@ -3,6 +3,37 @@ export default (U) => {
   const { MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS } = U;
   return {
   // ---- diagnostics tab -----------------------------------------------------------
+  _portScanCard() {
+    const ps = this._ports || {}, rows = ps.results || [];
+    let out = "";
+    if (ps.error) out = `<div class="err">${esc(ps.error)}</div>`;
+    else if (ps.busy) out = `<div class="sub">Scanning… this takes a few seconds.</div>`;
+    else if (rows.length) {
+      const before = ps.prev && ps.prev.results ? Object.fromEntries(ps.prev.results.map((r) => [r.port, r.state])) : null;
+      const open = rows.filter((r) => r.state === "open"), changed = before ? rows.filter((r) => before[r.port] && before[r.port] !== r.state) : [];
+      const sum = open.length ? `<b class="ok">${open.length} open: ${open.map((r) => r.port + (r.service ? " (" + esc(r.service) + ")" : "")).join(", ")}</b>` : "<b>Nothing is listening on these ports.</b>";
+      const diff = before ? (changed.length ? `<div class="ok" style="margin-top:4px">Changed since the scan at ${new Date(ps.prev.at).toLocaleTimeString()}: ${changed.map((r) => `${r.port} was ${esc(before[r.port])}, now ${esc(r.state)}`).join("; ")}</div>`
+        : `<div class="sub" style="margin-top:4px">No change since the scan at ${new Date(ps.prev.at).toLocaleTimeString()}.</div>`) : "";
+      out = `<p style="margin:8px 0 4px">${sum} <span class="sub" style="font-size:12px;color:var(--secondary-text-color)">(${esc(ps.address || ps.host)})</span></p>${diff}
+        <table class="tbl"><tr><th>Port</th><th>Service</th><th>State</th><th>It says</th></tr>${rows.map((r) => `<tr><td>${r.port}</td><td>${esc(r.service)}</td><td class="${r.state === "open" ? "ok" : ""}">${r.state === "open" ? "OPEN" : esc(r.state)}</td><td>${esc(r.banner)}</td></tr>`).join("")}</table>`;
+    }
+    return `<div class="card" style="margin-bottom:12px"><h2>Find local control ports</h2>
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:0">Checks whether a device on your network is listening on the ports local control usually uses (502 Modbus TCP, 1883 MQTT, ...). Use it after a firmware update or after switching something on in the vendor app: scan again and it shows what changed. It only connects and listens: it sends nothing, and it refuses addresses outside your own network.</p>
+      <div class="row2"><input type="text" id="ps-host" placeholder="192.168.1.50" value="${esc(ps.host || "")}" style="min-width:200px" aria-label="Device IP address">
+      <button class="btn pri" data-act="scan-ports"${ps.busy ? " disabled" : ""}><ha-icon icon="mdi:lan-connect" style="--mdc-icon-size:16px"></ha-icon>Scan</button></div>${out}</div>`;
+  },
+
+  async _scanPorts() {
+    const host = ((this.shadowRoot.getElementById("ps-host") || {}).value || "").trim(), old = this._ports || {};
+    if (!host) { this._ports = { ...old, host, busy: false, error: "Type the device's IP address first (find it in your router's device list)." }; return this._render(); }
+    this._ports = { host, busy: true, prev: old.host === host && old.results ? { results: old.results, at: old.at } : (old.host === host ? old.prev : null) };
+    this._render();
+    const keep = this._ports.prev;
+    const r = await this._call({ type: "homepower/scan_ports", host }, (m) => { this._ports = { host, busy: false, error: m, prev: keep }; }, true);
+    if (r) this._ports = { host, results: r.results || [], address: r.address, at: Date.now(), prev: keep };
+    this._render();
+  },
+
   _diagView() {
     const dg = this._diag;
     if (!dg) return `<div class="bar-actions"><h2>Diagnostics</h2></div><div class="card">Loading…</div>`;
@@ -27,7 +58,7 @@ export default (U) => {
     }).join("");
     return `<div class="bar-actions"><h2>Diagnostics</h2><span><button class="btn" data-act="download-debug" title="One file with the readings, command results, plan against actual and recent events (no keys or serial numbers): attach it to a bug report"><ha-icon icon="mdi:download" style="--mdc-icon-size:16px"></ha-icon>Download debug file</button> <button class="btn" data-act="copy-debug"><ha-icon icon="mdi:content-copy" style="--mdc-icon-size:16px"></ha-icon>Copy debug info</button></span></div>
       ${this.live.startup ? `<p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin:0 0 8px">${esc(this.live.startup)}</p>` : ""}
-      ${(dg.alerts || []).length ? `<div class="banner warn">Active alerts: ${esc(dg.alerts.join(", "))}</div>` : ""}${this._setupCard(true)}${rows || '<div class="card empty">No batteries yet.</div>'}
+      ${(dg.alerts || []).length ? `<div class="banner warn">Active alerts: ${esc(dg.alerts.join(", "))}</div>` : ""}${this._setupCard(true)}${rows || '<div class="card empty">No batteries yet.</div>'}${this._portScanCard()}
       <div class="card" style="margin-bottom:12px"><h2>Why it did that</h2><p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:0">Each time a battery's instruction changed: what it was told, the reason, and the readings behind it. Click one to open it.</p>${dec || '<span class="sub">Nothing yet.</span>'}</div>
       <div class="card"><h2>Recent activity</h2><div class="log">${ev || "Nothing yet."}</div></div>`;
   },

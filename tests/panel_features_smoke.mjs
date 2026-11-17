@@ -104,3 +104,26 @@ must("settings has the cold weather group", p._settingsView().includes("weather_
 p._diag = { alerts: [], devices: {}, decisions: [], events: [] };
 const dv = p._diagView();
 must("diagnostics: download button and startup note", dv.includes('data-act="download-debug"') && dv.includes("Restored 2 learned charge rates"));
+
+// ---- find local control ports
+els["ps-host"] = { value: "192.168.1.50" };
+const row = (port, service, state, banner = "") => ({ port, service, state, banner });
+const scans = [
+  { host: "192.168.1.50", address: "192.168.1.50", results: [row(502, "Modbus TCP", "closed"), row(1883, "MQTT", "closed"), row(80, "HTTP", "no answer")] },
+  { host: "192.168.1.50", address: "192.168.1.50", results: [row(502, "Modbus TCP", "open"), row(1883, "MQTT", "closed"), row(80, "HTTP", "open", "nginx <b>x</b>")] },
+];
+let scanN = 0; const sent = []; p._render = () => {};      // this fake page cannot re-render; the card is built straight from the stored state
+p._hass.callWS = async (m) => { sent.push(m); if (m.type === "homepower/scan_ports") return scans[scanN++]; return {}; };
+must("port scan card is on the diagnostics tab", p._portScanCard().includes("Find local control ports") && p._portScanCard().includes('data-act="scan-ports"') && p._portScanCard().includes('id="ps-host"'));
+await p._scanPorts();
+must("first scan: nothing listening, one request with the typed address", p._portScanCard().includes("Nothing is listening") && sent.at(-1).host === "192.168.1.50" && !p._portScanCard().includes("Changed since"));
+await p._scanPorts();
+const after = p._portScanCard();
+must("second scan: shows the open ports and what changed", after.includes("2 open: 502 (Modbus TCP), 80 (HTTP)") && after.includes("502 was closed, now open") && after.includes("OPEN"));
+must("a banner is escaped, never run as HTML", after.includes("nginx &lt;b&gt;x&lt;/b&gt;") && !after.includes("<b>x</b>"));
+p._hass.callWS = async () => { throw new Error("this only scans devices on your own network"); };
+await p._scanPorts();
+must("a refused address shows the reason", p._portScanCard().includes("only scans devices on your own network"));
+els["ps-host"] = { value: "   " };
+await p._scanPorts();
+must("an empty address asks for one and sends nothing", p._portScanCard().includes("Type the device&#39;s IP address") && sent.length === 2);

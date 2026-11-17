@@ -48,7 +48,7 @@ def async_register(hass: HomeAssistant) -> None:
     for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device, ws_reorder_devices, ws_scan_registers, ws_read_registers, ws_register_notes, ws_whatif, ws_backups, ws_backup_now, ws_restore_backup, ws_compare_tariffs,
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
                 ws_override, ws_clear_override,
-                ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control, ws_confirm, ws_safe, ws_debug,
+                ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control, ws_confirm, ws_safe, ws_debug, ws_scan_ports,
                 ws_save_goal, ws_delete_goal, ws_flag, ws_preview, ws_diagnostics, ws_test,
                 ws_save_scene, ws_delete_scene, ws_apply_scene, ws_export, ws_import):
         websocket_api.async_register_command(hass, cmd)
@@ -325,6 +325,20 @@ async def ws_control(hass, msg):
         raise ValidationError("unknown battery")
     await mgr.save_device({**dev, "control_enabled": msg["enabled"]})
     return {}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/scan_ports", vol.Required("host"): vol.All(str, vol.Length(min=1, max=253))})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_scan_ports(hass, msg):
+    """Which well-known ports a device on the local network is listening on (read-only: connects and listens, sends nothing)."""
+    from .drivers.portscan import scan
+
+    try:
+        return await scan(msg["host"])
+    except ValueError as err:
+        raise ValidationError(str(err)) from err
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/safe", vol.Required("enabled"): bool})
