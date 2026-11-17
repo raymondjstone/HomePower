@@ -29,6 +29,7 @@ export default (U) => {
         { k: "offpeak_start", t: "time", label: "Cheap rate starts", hint: "Leave both times empty to use the period found from history." }, { k: "offpeak_end", t: "time", label: "Cheap rate ends" },
         { k: "offpeak_extra", t: "text", label: "More cheap periods (optional)", hint: "For tariffs with several cheap periods a day, e.g. 13:00-16:00, 22:00-00:00" },
         { k: "save_for_peak", t: "bool", label: "Save the battery for peak hours: don't let it discharge during cheap-rate periods" },
+        { k: "hold_for_dearer", t: "bool", label: "Keep stored energy for dearer hours: don't discharge when a clearly dearer price is coming in the next 6 hours (not while solar is charging the battery)" },
         { k: "currency", t: "text", label: "Currency symbol" }]],
       ["Solar forecast", "mdi:weather-sunny", [
         { k: "solar_room", t: "bool", label: "Leave room for the solar forecast: charge batteries with panels overnight only as far as the next day's solar allows" },

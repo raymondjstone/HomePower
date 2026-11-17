@@ -37,7 +37,7 @@ def _payload(hass: HomeAssistant) -> dict:
         "goals": list(mgr.goals.values()),
         "settings": _settings(entry) if entry else {},
         "catalogue": catalogue(),
-        "paused": mgr.paused, "backup": mgr.backup, "away": mgr.away, "scenes": list(mgr.scenes.values()),
+        "paused": mgr.paused, "safe": mgr.safe, "backup": mgr.backup, "away": mgr.away, "scenes": list(mgr.scenes.values()),
         "entity_ids": mgr.entity_ids(),
         "live": mgr.coordinator.view() if mgr.coordinator else {"devices": {}, "events": []},
     }
@@ -48,7 +48,7 @@ def async_register(hass: HomeAssistant) -> None:
     for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device, ws_reorder_devices, ws_scan_registers, ws_read_registers, ws_register_notes, ws_whatif, ws_backups, ws_backup_now, ws_restore_backup, ws_compare_tariffs,
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
                 ws_override, ws_clear_override,
-                ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control, ws_confirm,
+                ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control, ws_confirm, ws_safe, ws_debug,
                 ws_save_goal, ws_delete_goal, ws_flag, ws_preview, ws_diagnostics, ws_test,
                 ws_save_scene, ws_delete_scene, ws_apply_scene, ws_export, ws_import):
         websocket_api.async_register_command(hass, cmd)
@@ -207,7 +207,9 @@ async def ws_delete_device(hass, msg):
 @websocket_api.async_response
 @_guard
 async def ws_save_schedule(hass, msg):
-    return await _mgr(hass).save_schedule(msg["schedule"])
+    mgr = _mgr(hass)
+    saved = await mgr.save_schedule(msg["schedule"])
+    return {**saved, "warnings": mgr.warnings_for("schedule", saved)}
 
 
 @websocket_api.websocket_command(
@@ -325,6 +327,28 @@ async def ws_control(hass, msg):
     return {}
 
 
+@websocket_api.websocket_command({vol.Required("type"): "homepower/safe", vol.Required("enabled"): bool})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_safe(hass, msg):
+    """Safe mode: hand every battery back and stop sending commands (or leave it)."""
+    await _mgr(hass).set_safe(msg["enabled"])
+    return {}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/debug"})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_debug(hass, msg):
+    """Everything useful for a bug report in one file: readings, command results, plan against actual, recent events."""
+    c = _mgr(hass).coordinator
+    if c is None:
+        raise ValidationError("HomePower is still starting")
+    return c.debug_bundle()
+
+
 @websocket_api.websocket_command({vol.Required("type"): "homepower/device/confirm", vol.Required("device_id"): str})
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -340,7 +364,9 @@ async def ws_confirm(hass, msg):
 @websocket_api.async_response
 @_guard
 async def ws_save_goal(hass, msg):
-    return await _mgr(hass).save_goal(msg["goal"])
+    mgr = _mgr(hass)
+    saved = await mgr.save_goal(msg["goal"])
+    return {**saved, "warnings": mgr.warnings_for("goal", saved)}
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/goal/delete", vol.Required("goal_id"): str})

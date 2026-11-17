@@ -60,6 +60,14 @@ class CommandTrace:
             return "works"
         return "unreliable" if len(rows) >= UNRELIABLE_AFTER else "unknown"
 
+    def grace(self, did: str, retry_s: float) -> int:
+        """How many retries to wait before a cloud battery counts as not following commands: enough to cover how long it has
+        really taken to react (the slowest of its recent reactions), at least one and at most four."""
+        times = [r["reaction_s"] for r in self.results.get(did, [])[-10:] if r.get("ok") and isinstance(r.get("reaction_s"), (int, float))]
+        if len(times) < 3 or retry_s <= 0:
+            return 1
+        return max(1, min(4, 1 + int(max(times) // retry_s)))
+
     def recent(self, did: str, n: int = 6) -> list[dict]:
         return list(self.results.get(did, []))[-n:]
 

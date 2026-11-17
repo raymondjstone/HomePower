@@ -48,6 +48,7 @@ class HomePowerManager:
         self.paused = False
         self.backup = False       # manual "backup mode" (keep a reserve)
         self.away = False         # manual "away / holiday" mode
+        self.safe = False         # safe mode: everything handed back, nothing sent until it is switched off
         self.energy: dict[str, float] = {}       # lifetime kWh counters
         self.ledger_days: dict[str, dict] = {}   # savings ledger
         self.ledger_stores: dict | None = None   # cost of the energy stored in each battery (None = saved by an older version)
@@ -83,6 +84,7 @@ class HomePowerManager:
         self.paused = bool(data.get("paused", False))
         self.backup = bool(data.get("backup", False))
         self.away = bool(data.get("away", False))
+        self.safe = bool(data.get("safe", False)) and self.paused
         self.forced = set(data.get("forced", []))
         self.energy = dict(data.get("energy", {}))
         self.ledger_days = dict(data.get("ledger", {}))
@@ -108,7 +110,7 @@ class HomePowerManager:
         c = self.coordinator
         await self._store.async_save({
             "devices": list(self.devices.values()), "schedules": list(self.schedules.values()),
-            "goals": list(self.goals.values()), "paused": self.paused, "backup": self.backup, "away": self.away,
+            "goals": list(self.goals.values()), "paused": self.paused, "backup": self.backup, "away": self.away, "safe": self.safe,
             "forced": sorted(self.forced),
             "energy": c.meter.totals if c else self.energy, "ledger": c.ledger.dump() if c else self.ledger_days,
             "ledger_stores": c.ledger.stores if c else (self.ledger_stores or {}),
@@ -282,9 +284,23 @@ class HomePowerManager:
     # ------------------------------------------------------------------ flags
     async def set_paused(self, paused: bool) -> None:
         self.paused = paused
+        if not paused:
+            self.safe = False
         await self._save()
         if self.coordinator:
             self.coordinator.async_update_listeners()
+
+    async def set_safe(self, on: bool) -> None:
+        """Safe mode: hand every battery back to its own control, then send nothing until it is switched off."""
+        if on:
+            if self.coordinator:
+                await self.coordinator.release_all()      # must happen before pausing: release_all does nothing when paused
+            self.safe = True
+            await self.set_paused(True)
+            self.safe = True                               # set_paused(True) leaves it alone, but be explicit
+            await self._save()
+        else:
+            await self.set_paused(False)
 
     async def set_backup(self, on: bool) -> None:
         self.backup = on
@@ -582,6 +598,13 @@ class HomePowerManager:
         return {"added": added, "skipped": skipped}
 
     # ------------------------------------------------------------------ views
+    def warnings_for(self, kind: str, row: dict) -> list[str]:
+        """Plain-language heads-ups about a schedule or goal that has just been saved (it is saved either way)."""
+        from .core.report import goal_warnings, schedule_warnings
+
+        devs = self.public_devices()
+        return (schedule_warnings if kind == "schedule" else goal_warnings)(row, devs)
+
     def public_devices(self) -> list[dict]:
         """Devices for the UI: secrets are never sent to the browser."""
         out = []

@@ -19,6 +19,7 @@ from .insights import auto_target_soc
 from .grid import apply_load_rules, backup_desired, export_guard, peak_shave, split_power
 from .limits import apply_totals, charge_ceiling, soc_guard
 from .models import Actual, Capabilities, Desired, DeviceConfig, Mode
+from .report import hold_for_dearer
 from .planner import Alloc, Need, adjust_target_for_forecast, plan_charge, power_now
 from .rates import RateTable
 from .reconcile import clamp
@@ -48,6 +49,7 @@ class Settings:
     peak_shaving: bool = False
     backup_pct: int = 50
     save_for_peak: bool = False   # during cheap hours, hold batteries instead of letting them discharge
+    hold_for_dearer: bool = False   # hold stored energy when a clearly dearer price is coming within hours
     forecast_share: float = 0.5
 
 
@@ -72,6 +74,9 @@ class World:
     cheap_now: bool | None = None                  # is this a cheap-rate period? None = unknown / flat tariff
     usage_wh: Callable[[datetime, float], float | None] | None = None   # learned household use: (from, hours) -> Wh
     solar_ceiling: dict[str, int] = field(default_factory=dict)   # battery -> highest charge that leaves room for the coming solar
+    efficiency: dict[str, float] = field(default_factory=dict)    # battery -> charging efficiency (measured, else the default is used)
+    price_now: float | None = None                 # current import price (main units)
+    price_later_max: float | None = None           # the dearest import price in the next few hours
 
 
 @dataclass
@@ -157,7 +162,7 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         allocs: list[Alloc] = []
         if g.source != "solar" and w.rates is not None:
             needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d),
-                          not d.config.caps.power_control) for d in devs]
+                          not d.config.caps.power_control, w.efficiency.get(d.config.device_id)) for d in devs]
             slots = w.rates.slots_between(w.now, deadline)
             if not slots:
                 res.notes.append(f"goal '{g.id}': no price data before {deadline:%H:%M}")
@@ -358,6 +363,10 @@ def compute(w: World) -> Result:
             res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "kept in reserve while other batteries have charge"
         elif S.save_for_peak and w.cheap_now:
             res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "saving charge for peak-rate hours"
+        elif (S.hold_for_dearer and Mode.HOLD in caps.supported_modes and hold_for_dearer(w.price_now, w.price_later_max)
+              and (d.actual.pv_w or 0) < 100 and d.actual.soc is not None and d.actual.soc > caps.min_soc + 5):
+            # not while solar is charging it (Hold would stop that), and only when a clearly dearer price is coming
+            res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "saving charge for dearer hours later"
 
     # ---- 5. hand back batteries we forced earlier and nothing wants any more
     for d in w.devices:

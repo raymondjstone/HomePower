@@ -146,3 +146,36 @@ def test_plan_is_recorded_for_the_chart():
     c._record_plan(now.replace(minute=30), {"e": Actual(online=True, power_w=-200)})
     rows = {r[0][11:16]: r[1:] for r in c.plan_log.view("e", now.replace(minute=40))["rows"]}
     assert rows["12:00"] == [1500, 1400] and rows["12:30"] == [None, -200]
+
+
+def test_tariff_drift_alerts_only_when_the_history_disagrees_for_long_enough():
+    from hp.core.alerts import AlertTracker
+    from datetime import time as _t
+    sent = []
+
+    async def go():
+        c = bare()
+        c.alerts = AlertTracker()
+        c.settings = types.SimpleNamespace(offpeak_start=_t(23, 30), offpeak_end=_t(7, 30))
+        c._tariff = types.SimpleNamespace(start=_t(0, 30), end=_t(5, 30), days=6)
+
+        async def notify(key, msg, raised):
+            sent.append((key, raised))
+        c._notify = notify
+        await c._check_tariff_drift(0)
+        assert sent == []                                                # just noticed: wait
+        await c._check_tariff_drift(7 * 3600)
+        assert sent == [("tariffdrift", True)]
+        c._tariff = types.SimpleNamespace(start=_t(23, 30), end=_t(7, 30), days=6)
+        await c._check_tariff_drift(8 * 3600)
+        assert sent[-1] == ("tariffdrift", False)                        # resolved when it matches again
+    asyncio.run(go())
+
+
+def test_startup_note_says_what_was_restored_and_what_is_unreachable():
+    c = bare()
+    c.manager.ecoflow_orig, c.manager.forced = {"e": {}}, set()
+    c.rate_learner.rates["e"] = 2800
+    c.adapters = [FakeAdapter(eco_cfg(), None)]
+    c._startup_check({"e": Actual(online=False)})
+    assert "1 saved EcoFlow original settings" in c.startup_note and "Could not reach: Eco" in c.startup_note

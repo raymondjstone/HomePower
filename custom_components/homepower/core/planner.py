@@ -17,6 +17,7 @@ class Need:
     max_charge_w: int
     target_soc: float
     fixed_rate: bool = False   # the battery picks its own charge rate (cannot be set): it is either charging flat out or not
+    efficiency: float | None = None   # this battery's charging efficiency (None = use the default)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +44,8 @@ def adjust_target_for_forecast(target: int, forecast_kwh: float | None, capacity
 def plan_charge(now: datetime, deadline: datetime, needs: list[Need], slots: list[Slot],
                 ceiling_w: int | None = None, efficiency: float = 0.92) -> tuple[list[Alloc], dict[str, float]]:
     """Fill the cheapest slots first. Returns (allocations, unmet energy in Wh per device)."""
-    remaining = {n.device_id: max(0.0, (n.target_soc - n.soc) / 100 * n.capacity_wh) / efficiency for n in needs}
+    eff = {n.device_id: n.efficiency or efficiency for n in needs}
+    remaining = {n.device_id: max(0.0, (n.target_soc - n.soc) / 100 * n.capacity_wh) / eff[n.device_id] for n in needs}
     maxw = {n.device_id: n.max_charge_w for n in needs}
     fixed = {n.device_id for n in needs if n.fixed_rate}
     usable = [c for s in slots if (c := s.clipped(now, deadline))]
@@ -53,7 +55,8 @@ def plan_charge(now: datetime, deadline: datetime, needs: list[Need], slots: lis
         if hours <= 0:
             continue
         budget = ceiling_w if ceiling_w is not None else sum(maxw.values())
-        for did in sorted(remaining, key=lambda k: -remaining[k]):
+        # when the house limit cannot feed everyone at once, the most efficient battery gets the cheapest slots
+        for did in sorted(remaining, key=lambda k: (-eff[k], -remaining[k])):
             if remaining[did] <= 0 or budget <= 0:
                 continue
             if did in fixed:

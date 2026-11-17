@@ -17,13 +17,13 @@ DEFAULTS: dict = {
     "forecast_entity": "", "forecast_share": 0.5,
     "storm_entity": "", "backup_reserve_pct": 50, "away_entity": "", "notify_service": "",
     "load_rules": [],
-    "ecoflow_live": False, "dry_run": False, "erase_on_remove": False, "solar_room": True, "base_load_w": 0, "notify_full": False, "offpeak_extra": "", "save_for_peak": False,
+    "ecoflow_live": False, "dry_run": False, "erase_on_remove": False, "solar_room": True, "base_load_w": 0, "notify_full": False, "offpeak_extra": "", "save_for_peak": False, "hold_for_dearer": False,
     "compare_tariffs": "", "weekly_digest": False, "forecast_reserve_kwh": 0, "forecast_reserve_pct": 50, "divert_cheap": False, "x1_grid_limits": False, "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
             "notify_low_pct", "cheap_soon_below_pct", "forecast_reserve_kwh", "forecast_reserve_pct", "divert_export_w", "divert_min_soc", "base_load_w")
 FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price")
-BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "notify_full", "notify_cheap_soon")
+BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "hold_for_dearer", "notify_full", "notify_cheap_soon")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
             "forecast_entity", "storm_entity", "away_entity", "notify_service",
             "offpeak_extra", "daily_summary_time", "divert_entity", "grid_order", "compare_tariffs")
@@ -196,7 +196,7 @@ def build(cfg: dict) -> AppSettings:
         charge_cap_w=c["total_charge_limit_w"] or None, discharge_cap_w=c["total_discharge_limit_w"] or None,
         import_limit_w=c["import_limit_w"] or None, export_limit_w=c["export_limit_w"] or None,
         zero_import_device=c["zero_import_device"] or None, peak_shaving=bool(c["peak_shaving"]),
-        backup_pct=int(c["backup_reserve_pct"]), save_for_peak=bool(c["save_for_peak"]), forecast_share=float(c["forecast_share"] if c["forecast_share"] is not None else 0.5),
+        backup_pct=int(c["backup_reserve_pct"]), save_for_peak=bool(c["save_for_peak"]), hold_for_dearer=bool(c["hold_for_dearer"]), forecast_share=float(c["forecast_share"] if c["forecast_share"] is not None else 0.5),
     )
     return AppSettings(
         engine=eng, cooldown_s=c["cooldown_s"], grid_entity=c["grid_import_entity"], grid_export_entity=c["grid_export_entity"], grid_invert=bool(c["grid_invert"]), grid_order=parse_grid_order(c["grid_order"] or ",".join(GRID_SOURCES)),

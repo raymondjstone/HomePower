@@ -25,6 +25,7 @@ from .core.meter import MeterReader
 from .core.anker_x1_map import X1_ALARMS
 from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, PlanLog, UsageHistory, combine
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
+from .core.report import charge_efficiency, ecoflow_report, startup_summary, window_drift
 from .core.traces import CommandTrace
 from .core.sanity import ChargeWatch, CommandBudget, RateLearner, cycling_margin, explain_idle, grid_sign_mismatch, next_unconfirmed
 from .core.reconcile import Decision, decide, materially_different
@@ -109,6 +110,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.usage = UsageHistory(manager.usage_data)          # grid import/export per half-hour, for the tariff comparison
         self.daily = DailyStats(manager.daily_data)         # self-consumption / cheap-rate share per day
         self._unsub_action = hass.bus.async_listen("mobile_app_notification_action", self._on_action)
+        self.startup_note: str | None = None
+        self._started = False
         self.rate_learner = RateLearner(manager.charge_rates)   # real charge rate of batteries that pick their own
         self.budget = CommandBudget()                       # daily cap on commands to cloud batteries
         self.charge_watch = ChargeWatch()                    # told to charge but nothing happens
@@ -804,6 +807,12 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                     add(f"tested:{did}", bool(t and t.get("ok")), f"{name}: control tested",
                         "" if t and t.get("ok") else ("The last test failed." if t else "Run Test control once to check the battery follows commands."),
                         "test", did)
+        for a in self.adapters:
+            if not a.config.caps.power_control and a.config.extra.get("control_enabled", True):
+                did, t = a.config.device_id, self.manager.tests.get(a.config.device_id)
+                ok = did in self.manager.confirmed or bool(t and t.get("ok"))
+                add(f"first:{did}", ok, f"{a.config.name}: first command allowed", "" if ok else
+                    "Press 'Allow first command' on its card (or pass Test control). This battery's control has not been proven yet.", "tab", "overview")
         rates = self._rates()
         add("prices", rates is not None, "Electricity prices known", "" if rates is not None else
             "Pick a rates sensor or type your standard and cheap rate.", "tab", "settings")
@@ -924,6 +933,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                            bool(a.config.extra.get("control_enabled", True)), self._has_solar(a.config)) for a in adapters],
             export_better=self._export_better(rates, now),
             solar_ceiling=self._solar_ceilings(now, actuals, rates),
+            efficiency={a.config.device_id: charge_efficiency((self.health.efficiency(a.config.device_id) or [(None, None)])[-1][1]) for a in adapters},
+            price_now=self._price_now(rates, now), price_later_max=self._price_later_max(rates, now),
         )
         try:
             res = compute(world)
@@ -962,10 +973,16 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             elif st.decision is Decision.OK:
                 st.unconfirmed = 0
 
+        if not self._started:
+            self._started = True
+            try:
+                self._startup_check(actuals)
+            except Exception:  # noqa: BLE001 - a report must never stop control
+                _LOGGER.debug("startup check failed", exc_info=True)
         if not self.paused:
             await self._keepalive(mono, adapters)
         self.last_grid = grid
-        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals),
+        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals), lambda: self._check_tariff_drift(wall),
                      lambda: self._check_events(now, wall, actuals, rates),
                      lambda: self._divert(wall, actuals, grid), lambda: self._sync_x1_limits(mono, adapters)):
             try:   # accounting / alerts are secondary: a bug there must not stop control
@@ -1063,6 +1080,31 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             self.ledger.add(day, did, d_in, 1.0 if did in forced else free_share, d_out, exp_share, price, exp_price, stored, first)
         self.ledger.forget(set(caps))
 
+    def _price_later_max(self, rates: RateTable | None, now: datetime, hours: int = 6) -> float | None:
+        """The dearest import price in the next few hours (main units), for 'keep it for later'."""
+        if rates is None:
+            return None
+        ahead = [to_main_units(x.price, self.settings.rates_unit) for x in rates.slots_between(now, now + timedelta(hours=hours))]
+        return max(ahead) if ahead else None
+
+    async def _check_tariff_drift(self, wall: float) -> None:
+        """Alert when the cheap hours in the price history no longer match the hours typed into Settings."""
+        s, inf = self.settings, self._tariff
+        msg = window_drift(s.offpeak_start, s.offpeak_end, inf.start, inf.end) if inf is not None and inf.days >= 5 else None
+        ev = self.alerts.observe("tariffdrift", bool(msg), wall, 6 * 3600)
+        if ev:
+            await self._notify("tariffdrift", msg or "Your cheap-rate hours match the price history again.", ev == "raised")
+
+    def _startup_check(self, actuals: dict[str, Actual]) -> None:
+        """Once after each start: what was picked up again, and which batteries cannot be reached."""
+        m = self.manager
+        restored = {"saved EcoFlow original settings": len(m.ecoflow_orig), "learned charge rates": len(self.rate_learner.rates),
+                    "command results": sum(len(v) for v in self.traces.results.values()),
+                    "days of plan history": len(self.plan_log.days), "batteries held from before": len(m.forced)}
+        down = [a.config.name for a in self.adapters if not (actuals.get(a.config.device_id) and actuals[a.config.device_id].online)]
+        self.startup_note = startup_summary(restored, down)
+        self._log("events", self.startup_note)
+
     def _effective_config(self, cfg):
         """The battery's config with the charge rate it has really shown (batteries that pick their own rate)."""
         if cfg.caps.power_control:
@@ -1158,7 +1200,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                     self.traces.cancel(did)
             # Vendor state can lag; a remaining mismatch is retried after the cooldown.
             _, remaining = decide(want, st.actual, now=st.last_apply, last_apply=None)
-            st.unconfirmed, st.waited = next_unconfirmed(st.unconfirmed, st.waited, bool(remaining), not a.config.caps.power_control)
+            st.unconfirmed, st.waited = next_unconfirmed(st.unconfirmed, st.waited, bool(remaining), not a.config.caps.power_control,
+                                                         self.traces.grace(did, self.settings.cooldown_s))
             st.last_command["result"] = "confirmed" if not remaining else ("waiting for the cloud to show it" if st.waited and not st.unconfirmed else "not yet confirmed")
             if want.mode is Mode.AUTO and not remaining:
                 self._set_release(did, st, False)  # handed back and confirmed
@@ -1285,6 +1328,21 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                  "cheap": rates.in_cheap_window(x.start.astimezone(now.tzinfo).time()) if rates.windows else (x.price < 0.9 * mean)}
                 for x in found]
 
+    def debug_bundle(self) -> dict:
+        """One file for a bug report: everything below is already free of keys; serial numbers and addresses are removed too."""
+        now = dt_util.now()
+        diag = self.diagnostics()
+        for d in diag.values():
+            d["connection"] = {k: v for k, v in (d.get("connection") or {}).items() if k in ("region", "port", "unit_id")}
+        from dataclasses import fields
+
+        plain = {f.name: getattr(self.settings, f.name) for f in fields(self.settings)
+                 if isinstance(getattr(self.settings, f.name), (int, float, str, bool, type(None))) and not re.search(r"notify|entity", f.name)}
+        return {"made_at": now.isoformat(), "startup": self.startup_note, "settings": plain,
+                "batteries": diag, "command_traces": self.traces.dump(), "charge_rates": dict(self.rate_learner.rates),
+                "plan_against_actual": {a.config.device_id: self.plan_log.view(a.config.device_id, now) for a in self.adapters},
+                "events": [list(e) for e in list(self._snap.events)[-150:]], "alerts": sorted(self.alerts.active())}
+
     def diagnostics(self) -> dict:
         out = {}
         for a in self.adapters:
@@ -1346,6 +1404,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "awaiting_confirm": st.awaiting_confirm,
                 "charge_verdict": self.traces.verdict(did) if not a.config.caps.power_control else None,
                 "traces": self.traces.recent(did) if not a.config.caps.power_control else [],
+                "report": (ecoflow_report(self.traces.results.get(did, []), self.plan_log.view(did, now)["match_pct"],
+                                          self.rate_learner.rates.get(did), self.traces.verdict(did))
+                           if not a.config.caps.power_control else None),
                 "measured_charge_w": self.rate_learner.rates.get(did) if not a.config.caps.power_control else None,
                 "why": explain_idle(control_enabled=bool(a.config.extra.get("control_enabled", True)), paused=self.paused,
                                     dry_run=self.settings.dry_run, online=bool(act and act.online), off_grid=bool(act and act.off_grid),
@@ -1381,7 +1442,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                                              "cycling": self._cycling(a.config.device_id, rates, now)} for a in self.adapters},
             "grid_events": self.grid_events.view(),
             "trend": {a.config.device_id: {"days": self.trend.series(a.config.device_id, 60), "warning": self.trend.warning(a.config.device_id)} for a in self.adapters},
-            "forecast_reserve": self.forecast_floor, "readiness": self.readiness(),
+            "forecast_reserve": self.forecast_floor, "readiness": self.readiness(), "startup": self.startup_note,
             "learning": {"known_slots": sum(1 for n in self.profile.n["wd"] if n >= self.profile.MIN_VISITS)},
             "tariff_inferred": ({"start": self._tariff.start.strftime("%H:%M"), "end": self._tariff.end.strftime("%H:%M"),
                                  "offpeak": self._tariff.offpeak, "peak": self._tariff.peak, "days": round(self._tariff.days, 1)}

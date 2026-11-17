@@ -84,12 +84,12 @@ class RateLearner:
         self._samples.pop(did, None)
 
 
-def next_unconfirmed(unconfirmed: int, waited: int, remaining: bool, slow: bool) -> tuple[int, int]:
+def next_unconfirmed(unconfirmed: int, waited: int, remaining: bool, slow: bool, grace: int = 1) -> tuple[int, int]:
     """After a command the battery still disagrees. A slow (cloud) battery gets one cycle's grace before that counts as
     'not following commands'. Returns the new (unconfirmed, waited)."""
     if not remaining:
         return 0, 0
-    if slow and waited < 1:
+    if slow and waited < grace:
         return unconfirmed, waited + 1
     return unconfirmed + 1, waited
 

@@ -52,6 +52,19 @@ export default (U) => {
       <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Charging is above the line, discharging below. The dashed line is what HomePower told the battery to do (it stops where the battery was left to its own control); the solid line is what it really did. A big gap means the battery is not following commands, or something else (the app, a schedule on the battery) is overriding them.</p></div>`;
   },
 
+  _ecoflowCard() {
+    const rows = this.data.devices.map((d) => {
+      const r = ((this.live.devices || {})[d.device_id] || {}).report;
+      if (!r) return "";
+      const cls = r.verdict === "unreliable" ? "bad" : r.sent >= 3 && r.worked / r.sent >= 0.8 ? "ok" : "";
+      return `<tr><td>${esc(d.name)}</td><td>${r.worked} of ${r.sent}</td><td>${r.avg_reaction_s == null ? "–" : r.avg_reaction_s + " s"}</td><td>${r.charge_rate_w ? fmtW(r.charge_rate_w) : "–"}</td><td>${r.follows_plan_pct == null ? "–" : r.follows_plan_pct + "%"}</td><td class="${cls}">${esc(r.advice)}</td></tr>`;
+    }).join("");
+    if (!rows) return "";
+    return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:clipboard-pulse"></ha-icon>EcoFlow control report</h2>
+      <table class="tbl"><tr><th>Battery</th><th>Commands that worked</th><th>Average reaction</th><th>Real charge rate</th><th>Followed the plan</th><th>Verdict</th></tr>${rows}</table>
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Built from HomePower's log of every Hold and Charge sent to batteries that pick their own charge rate. Use it to decide whether to leave control on.</p></div>`;
+  },
+
   _healthCard() {
     const h = (this.live.health || {}), rows = this.data.devices.map((d) => {
       const x = h[d.device_id] || { efficiency: [], warning: null }, e = x.efficiency || [];
@@ -186,7 +199,7 @@ export default (U) => {
         ${tile("Solar", `${kwh("pv_in")} kWh`, "As reported by your batteries")}
         ${L.daily && L.daily.self_consumption != null ? tile("Solar used at home today", `${L.daily.self_consumption}%`, "Not exported to the grid") : ""}
         ${L.daily && L.daily.cheap_share != null ? tile("Cheap-rate share today", `${L.daily.cheap_share}%`, "Of the grid energy you imported") : ""}
-      </div>${this._tariffCard(cur)}${this._healthCard()}${this._planCard()}${this._trendCard()}${this._gridEventsCard()}${this._whatifCard()}
+      </div>${this._tariffCard(cur)}${this._healthCard()}${this._ecoflowCard()}${this._planCard()}${this._trendCard()}${this._gridEventsCard()}${this._whatifCard()}
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:battery-sync"></ha-icon>Batteries (since HomePower started recording)</h2>
         <table class="tbl"><tr><th>Battery</th><th>Charged</th><th>Discharged</th><th>Round-trip</th><th>Cycles</th></tr>${rows || ""}</table>
         <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">These are also Home Assistant sensors, so you can add them to the Energy dashboard.</p></div>

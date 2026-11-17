@@ -156,7 +156,8 @@ class HomePowerPanel extends HTMLElement {
     const html = `<header><ha-menu-button></ha-menu-button><h1><ha-icon icon="mdi:home-battery"></ha-icon>Home Power</h1>
       <button class="btn sm" data-act="flag" data-flag="backup" data-on="${this.live.backup ? 0 : 1}" title="Keep a reserve for power cuts">${this.live.backup ? "Backup: ON" : "Backup mode"}</button>
       <button class="btn sm" data-act="flag" data-flag="away" data-on="${this.live.away ? 0 : 1}" title="Use the away schedules">${this.live.away ? "Away: ON" : "Away mode"}</button>
-      <button class="btn sm" data-act="pause" title="Stop HomePower sending any commands">${paused ? "Resume control" : "Pause control"}</button></header>
+      <button class="btn sm" data-act="pause" title="Stop HomePower sending any commands">${paused ? "Resume control" : "Pause control"}</button>
+      <button class="btn sm ${this.data.safe ? "pri" : ""}" data-act="safe" title="Hand every battery back to its own control and send nothing until you switch this off (stronger than Pause, which leaves them as they are)">${this.data.safe ? "Leave safe mode" : "Safe mode"}</button></header>
       ${!paused && (this.data.settings || {}).dry_run ? `<div style="background:#2563eb;color:#fff;padding:10px 20px;font-weight:500">Test run: HomePower works out its plan but sends no commands. Turn it off in Settings.</div>` : ""}
       ${paused ? `<div style="background:#b45309;color:#fff;padding:10px 20px;font-weight:500">HomePower is paused: it is only reading your batteries and will not send any commands. Batteries keep whatever they were last told to do.</div>` : ""}
       <nav>${tabs.map(([k, i, l]) => `<button class="${this.tab === k ? "on" : ""}" data-tab="${k}"><ha-icon icon="${i}"></ha-icon>${l}</button>`).join("")}</nav>
@@ -218,6 +219,21 @@ class HomePowerPanel extends HTMLElement {
               target_soc: charging ? +r.getElementById("o-soc").value : null, minutes: +r.getElementById("o-min").value }))) return;
         return this._closeModal();
       }
+      case "safe": {
+        const next = !this.data.safe;
+        if (next && !confirm("Safe mode hands every battery back to its own control and stops HomePower sending any commands until you switch it off. Continue?")) return;
+        if (await this._call({ type: "homepower/safe", enabled: next }, (m) => alert(m))) { await this._reload(); }
+        return;
+      }
+      case "download-debug": {
+        const r = await this._call({ type: "homepower/debug" }, (m) => alert(m), true);
+        if (!r) return;
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" }));
+        a.download = `homepower-debug-${new Date().toISOString().slice(0, 10)}.json`;
+        a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        return;
+      }
       case "pause": {
         const next = !this.data.paused;
         if (next && !confirm("Pause HomePower? It will stop sending commands. Batteries stay in whatever mode they were last put in.")) return;
@@ -231,9 +247,12 @@ class HomePowerPanel extends HTMLElement {
         if (!s.id) return this._err("Give the schedule a name.");
         if (!orig && this.data.schedules.some((x) => x.id === s.id)) return this._err("A schedule with that name already exists.");
         if (orig) s.enabled = (this.data.schedules.find((x) => x.id === orig) || {}).enabled !== false;
-        if (!(await this._call({ type: "homepower/schedule/save", schedule: s }))) return;
+        const saved = await this._call({ type: "homepower/schedule/save", schedule: s }, undefined, true);
+        if (!saved) return;
         if (orig && orig !== s.id) await this._call({ type: "homepower/schedule/delete", schedule_id: orig });
-        await this._reload(); return this._closeModal();
+        await this._reload(); this._closeModal();
+        if ((saved.warnings || []).length) alert("Saved, but note:\n\n" + saved.warnings.join("\n\n"));
+        return;
       }
       case "del-schedule":
         if (!confirm(`Delete schedule "${id}"?`)) return;
@@ -354,9 +373,12 @@ class HomePowerPanel extends HTMLElement {
         if (!g.id) return this._err("Give the goal a name.");
         if (!orig && (this.data.goals || []).some((x) => x.id === g.id)) return this._err("A goal with that name already exists.");
         if (orig) g.enabled = ((this.data.goals || []).find((x) => x.id === orig) || {}).enabled !== false;
-        if (!(await this._call({ type: "homepower/goal/save", goal: g }))) return;
+        const saved = await this._call({ type: "homepower/goal/save", goal: g }, undefined, true);
+        if (!saved) return;
         if (orig && orig !== g.id) await this._call({ type: "homepower/goal/delete", goal_id: orig });
-        await this._reload(); this._closeModal(); return this._tabLoad();
+        await this._reload(); this._closeModal(); this._tabLoad();
+        if ((saved.warnings || []).length) alert("Saved, but note:\n\n" + saved.warnings.join("\n\n"));
+        return;
       }
       case "del-goal":
         if (!confirm(`Delete goal "${id}"?`)) return;
