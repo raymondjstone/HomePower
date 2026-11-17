@@ -15,7 +15,7 @@ def ecoflow_report(results: list[dict], match_pct: int | None, rate_w: int | Non
     if sent < 3:
         advice = "Not enough commands yet: leave control on for a few days, then check back."
     elif verdict == "unreliable":
-        advice = ("Charge is not working on this battery, so HomePower holds instead. Check its app (operating mode, backup reserve), "
+        advice = ("Charge is not working on this battery, so HomePower no longer sends it Charge (schedules that ask for it leave the battery on its own control). Check its app (operating mode, backup reserve), "
                   "or leave it on its own control.")
     elif worked / sent >= 0.8 and (match_pct is None or match_pct >= 70):
         advice = "Control looks reliable: it reacts to commands and follows the plan."

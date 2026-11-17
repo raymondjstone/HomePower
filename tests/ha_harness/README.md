@@ -17,6 +17,8 @@ socket. They are not part of the normal `pytest` run because they need Home Assi
     python tests/ha_harness/e2e_weather.py
     python tests/ha_harness/e2e_damaged_state.py
     python tests/ha_harness/e2e_debug_privacy.py
+    python tests/ha_harness/e2e_ecoflow_scenario.py
+    python tests/ha_harness/e2e_es5000_restart.py
 
 What they cover: every module imports and every Home Assistant function used has the signature HomePower calls;
 the Configure flow for every battery model; the whole control loop (monitor-only, control, hand-back, override,
