@@ -18,14 +18,15 @@ DEFAULTS: dict = {
     "storm_entity": "", "backup_reserve_pct": 50, "away_entity": "", "notify_service": "",
     "load_rules": [],
     "ecoflow_live": False, "dry_run": False, "erase_on_remove": False, "solar_room": True, "base_load_w": 0, "notify_full": False, "offpeak_extra": "", "save_for_peak": False, "hold_for_dearer": False,
+    "weather_boost": False, "weather_entity": "", "temp_sensor_entity": "", "forecast_temp_entity": "", "weather_online": False,
     "compare_tariffs": "", "weekly_digest": False, "forecast_reserve_kwh": 0, "forecast_reserve_pct": 50, "divert_cheap": False, "x1_grid_limits": False, "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
             "notify_low_pct", "cheap_soon_below_pct", "forecast_reserve_kwh", "forecast_reserve_pct", "divert_export_w", "divert_min_soc", "base_load_w")
 FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price")
-BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "hold_for_dearer", "notify_full", "notify_cheap_soon")
+BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "hold_for_dearer", "weather_boost", "weather_online", "notify_full", "notify_cheap_soon")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
-            "forecast_entity", "storm_entity", "away_entity", "notify_service",
+            "forecast_entity", "storm_entity", "away_entity", "notify_service", "weather_entity", "temp_sensor_entity", "forecast_temp_entity",
             "offpeak_extra", "daily_summary_time", "divert_entity", "grid_order", "compare_tariffs")
 
 
@@ -165,6 +166,11 @@ class AppSettings:
     offpeak_auto: bool = True   # learn the cheap window from the rates entity's price history
     currency: str = "£"
     forecast_entity: str = ""
+    weather_boost: bool = False     # raise the overnight target before a cold day
+    weather_entity: str = ""        # a Home Assistant weather entity (tomorrow's forecast)
+    temp_sensor_entity: str = ""    # outdoor temperature sensor (learning how cold affects use)
+    forecast_temp_entity: str = ""  # a sensor holding tomorrow's temperature (fallback)
+    weather_online: bool = False    # also ask Open-Meteo (sends the home's rounded location to it)
     storm_entity: str = ""
     away_entity: str = ""
     notify_service: str = ""
@@ -202,7 +208,7 @@ def build(cfg: dict) -> AppSettings:
         engine=eng, cooldown_s=c["cooldown_s"], grid_entity=c["grid_import_entity"], grid_export_entity=c["grid_export_entity"], grid_invert=bool(c["grid_invert"]), grid_order=parse_grid_order(c["grid_order"] or ",".join(GRID_SOURCES)),
         rates_entity=c["rates_entity"], rates_unit=c["rates_unit"] or "auto", price_peak=c["price_peak"],
         price_offpeak=c["price_offpeak"], export_price=c["export_price"], offpeak_start=_t(c["offpeak_start"]), offpeak_end=_t(c["offpeak_end"]), offpeak_auto=bool(c["offpeak_auto"]),
-        currency=c["currency"] or "£", forecast_entity=c["forecast_entity"], storm_entity=c["storm_entity"],
+        currency=c["currency"] or "£", forecast_entity=c["forecast_entity"], weather_boost=bool(c["weather_boost"]), weather_entity=c["weather_entity"], temp_sensor_entity=c["temp_sensor_entity"], forecast_temp_entity=c["forecast_temp_entity"], weather_online=bool(c["weather_online"]), storm_entity=c["storm_entity"],
         away_entity=c["away_entity"], notify_service=c["notify_service"], load_rules=list(c["load_rules"] or []),
         ecoflow_live=bool(c["ecoflow_live"]), dry_run=bool(c["dry_run"]), divert_cheap=bool(c["divert_cheap"]), x1_grid_limits=bool(c["x1_grid_limits"]), compare_tariffs=c["compare_tariffs"], weekly_digest=bool(c["weekly_digest"]), forecast_reserve_kwh=int(c["forecast_reserve_kwh"] or 0), forecast_reserve_pct=int(c["forecast_reserve_pct"] or 0), solar_room=bool(c["solar_room"]), base_load_w=int(c["base_load_w"] or 0), offpeak_extra=parse_windows(c["offpeak_extra"]),
         daily_summary_time=_t(c["daily_summary_time"]), divert_entity=c["divert_entity"],

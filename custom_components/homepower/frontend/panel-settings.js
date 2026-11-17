@@ -37,6 +37,13 @@ export default (U) => {
         { k: "solar_room_note", t: "note", label: this._solarRoomText() },
         { k: "forecast_entity", t: "entity", dom: ["sensor"], label: "Tomorrow's solar forecast (kWh) - optional", hint: "Leave empty to use Forecast.Solar or Solcast automatically. If you pick one, use its 'tomorrow' sensor." },
         num("forecast_share", "Share of forecast solar that reaches the battery (0-1)", "", "0.05")]],
+      ["Cold weather", "mdi:snowflake-thermometer", [
+        { k: "weather_boost", t: "bool", label: "Charge more overnight before a cold day: raise the goal targets by the extra energy the house is expected to use (off by default)" },
+        { k: "weather_entity", t: "entity", dom: ["weather"], label: "Weather entity (tomorrow's forecast)", hint: "Any weather integration (Met.no, OpenWeatherMap, ...). It is also used for the current temperature if you pick no sensor below." },
+        { k: "temp_sensor_entity", t: "entity", dom: ["sensor"], label: "Outdoor temperature sensor (optional)", hint: "HomePower learns from your own recorded days how much more the house uses per degree of cold. It needs about a week with a spread of temperatures." },
+        { k: "forecast_temp_entity", t: "entity", dom: ["sensor"], label: "Tomorrow's temperature sensor (optional fallback)", hint: "Used only if the weather entity gives no forecast, e.g. a template sensor holding tomorrow's mean temperature." },
+        { k: "weather_online", t: "bool", label: "Also ask Open-Meteo if nothing else has a forecast. This sends your home's location, rounded to about 10 km, to api.open-meteo.com (no account or key)" },
+        { k: "weather_note", t: "note", label: this._weatherText() }]],
       ["Backup & away", "mdi:shield-home", [
         num("backup_reserve_pct", "Backup reserve (%)", "Backup mode tops up to this and never discharges below it."),
         { k: "forecast_reserve_note", t: "note", label: this._forecastReserveText() },

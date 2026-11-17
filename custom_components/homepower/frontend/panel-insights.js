@@ -65,6 +65,14 @@ export default (U) => {
       <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Built from HomePower's log of every Hold and Charge sent to batteries that pick their own charge rate. Use it to decide whether to leave control on.</p></div>`;
   },
 
+  _weatherText() {
+    const w = this.live.weather || {};
+    if (!w.status) return "Switch the first option on, pick a weather entity, and HomePower works out each hour whether tomorrow is colder than lately.";
+    const bits = [w.tomorrow_c != null ? `Tomorrow ${w.tomorrow_c} °C (${w.source})` : "", w.lately_c != null ? `lately about ${w.lately_c} °C` : "",
+      w.k_wh_per_degree != null ? `your house uses about ${(w.k_wh_per_degree / 1000).toFixed(2)} kWh more per degree of cold (from ${w.days_learned} days)` : "", w.extra_wh ? `expected extra use ${(w.extra_wh / 1000).toFixed(1)} kWh` : ""].filter(Boolean);
+    return `${bits.join(" · ")}${bits.length ? ". " : ""}Status: ${w.status}.`;
+  },
+
   _healthCard() {
     const h = (this.live.health || {}), rows = this.data.devices.map((d) => {
       const x = h[d.device_id] || { efficiency: [], warning: null }, e = x.efficiency || [];

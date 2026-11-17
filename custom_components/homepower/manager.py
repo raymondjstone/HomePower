@@ -67,6 +67,7 @@ class HomePowerManager:
         self.divert_on: str = ""                 # the solar-surplus load we switched on (to switch it off after a restart)
         self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
+        self.weather_data: dict = {}                 # outdoor temperature by day and what it did to the house's use
         self.trace_data: dict = {}                   # what happened after each command to EcoFlow batteries
         self.confirmed: set[str] = set()             # batteries whose first command the user has allowed
         self.plan_log_data: dict = {}                # planned against actual power per half hour
@@ -100,6 +101,7 @@ class HomePowerManager:
         self.forecast_days = dict(data.get("forecast_days", {}))
         self.plan_log_data = dict(data.get("plan_log", {}))
         self.trace_data = dict(data.get("traces", {}))
+        self.weather_data = dict(data.get("weather", {}))
         self.confirmed = set(data.get("confirmed", []))
         self.charge_rates = {k: int(v) for k, v in data.get("charge_rates", {}).items() if isinstance(v, (int, float))}
         self.ecoflow_orig = {k: dict(v) for k, v in data.get("ecoflow_orig", {}).items() if isinstance(v, dict)}
@@ -120,7 +122,8 @@ class HomePowerManager:
             "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen), "forecast_days": self.forecast_days,
             "ecoflow_orig": self.ecoflow_orig, "charge_rates": c.rate_learner.rates if c else self.charge_rates,
             "plan_log": c.plan_log.dump() if c else self.plan_log_data,
-            "traces": c.traces.dump() if c else self.trace_data, "confirmed": sorted(self.confirmed),
+            "traces": c.traces.dump() if c else self.trace_data,
+            "weather": ({"temps": c.temp_log.dump(), "model": c.cold_model.dump()} if c else self.weather_data), "confirmed": sorted(self.confirmed),
         })
 
     async def save_runtime(self) -> None:

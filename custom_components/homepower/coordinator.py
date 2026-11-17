@@ -27,6 +27,8 @@ from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Hea
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
 from .core.report import charge_efficiency, ecoflow_report, startup_summary, window_drift
 from .core.traces import CommandTrace
+from .core.weather import (BASE_C, ColdModel, TempLog, cold_extra_wh, degree_days, parse_open_meteo, pick_tomorrow,
+                           recent_degree_days, to_celsius)
 from .core.sanity import ChargeWatch, CommandBudget, RateLearner, cycling_margin, explain_idle, grid_sign_mismatch, next_unconfirmed
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
@@ -111,6 +113,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.daily = DailyStats(manager.daily_data)         # self-consumption / cheap-rate share per day
         self._unsub_action = hass.bus.async_listen("mobile_app_notification_action", self._on_action)
         self.startup_note: str | None = None
+        self.temp_log = TempLog((manager.weather_data or {}).get("temps"))       # outdoor temperature per day
+        self.cold_model = ColdModel((manager.weather_data or {}).get("model"))   # extra use per degree of cold
+        self.weather: dict = {}                                                  # tomorrow's temperature and what it means, for the panel
+        self._weather_at, self._weather_busy = -1e9, False
         self._started = False
         self.rate_learner = RateLearner(manager.charge_rates)   # real charge rate of batteries that pick their own
         self.budget = CommandBudget()                       # daily cap on commands to cloud batteries
@@ -918,7 +924,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             if act.online:
                 self._snap.devices[did].last_read_ok = wall
 
+        self._observe_temp(now)
         self.hass.async_create_task(self._refresh_tariff())
+        self.hass.async_create_task(self._refresh_weather())
         grid = self._grid_w(actuals)
         rates = self._rates()
         world = World(
@@ -935,6 +943,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             solar_ceiling=self._solar_ceilings(now, actuals, rates),
             efficiency={a.config.device_id: charge_efficiency((self.health.efficiency(a.config.device_id) or [(None, None)])[-1][1]) for a in adapters},
             price_now=self._price_now(rates, now), price_later_max=self._price_later_max(rates, now),
+            cold_extra_wh=self.weather.get("extra_wh", 0.0) if self.settings.weather_boost else 0.0,
+            cold_note=self.weather.get("note", ""),
         )
         try:
             res = compute(world)
@@ -1079,6 +1089,100 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             stored = act.soc / 100 * caps.get(did, 0) / 1000 if act.online and act.soc is not None and did in caps else None
             self.ledger.add(day, did, d_in, 1.0 if did in forced else free_share, d_out, exp_share, price, exp_price, stored, first)
         self.ledger.forget(set(caps))
+
+    # ------------------------------------------------------------------ weather (cold-day target)
+    def _state_temp(self, entity: str) -> float | None:
+        """A temperature (°C) from a sensor, or from a weather entity's current temperature."""
+        st = self.hass.states.get(entity) if entity else None
+        if st is None:
+            return None
+        attrs = getattr(st, "attributes", {}) or {}
+        try:
+            if str(entity).startswith("weather."):
+                return to_celsius(float(attrs["temperature"]), attrs.get("temperature_unit"))
+            return to_celsius(float(st.state), attrs.get("unit_of_measurement"))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _observe_temp(self, now: datetime) -> None:
+        """Remember today's outdoor temperature (from the sensor, else the weather entity) to learn how cold affects use."""
+        s = self.settings
+        t = self._state_temp(s.temp_sensor_entity) if s.temp_sensor_entity else self._state_temp(s.weather_entity)
+        if t is not None and -60 < t < 60:
+            self.temp_log.add(now.strftime("%Y-%m-%d"), t)
+
+    async def _fetch_json(self, url: str) -> dict | None:
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+        from aiohttp import ClientTimeout
+
+        async with async_get_clientsession(self.hass).get(url, timeout=ClientTimeout(total=15)) as resp:
+            return await resp.json(content_type=None) if resp.status == 200 else None
+
+    async def _tomorrow_temp(self, tomorrow) -> tuple[float | None, str]:
+        """Tomorrow's mean temperature (°C) and where it came from: the weather entity, then a sensor, then (only if switched on) Open-Meteo."""
+        s, tz = self.settings, dt_util.now().tzinfo
+        if s.weather_entity:
+            unit = getattr(self.hass.config.units, "temperature_unit", "°C")
+            for kind in ("daily", "hourly"):
+                try:
+                    reply = await self.hass.services.async_call("weather", "get_forecasts", {"entity_id": s.weather_entity, "type": kind},
+                                                                 blocking=True, return_response=True)
+                    t = pick_tomorrow((reply or {}).get(s.weather_entity, {}).get("forecast", []), tomorrow, tz, unit)
+                    if t is not None:
+                        return t, f"weather entity ({kind})"
+                except Exception:  # noqa: BLE001 - this entity may not support that forecast type: try the next source
+                    _LOGGER.debug("weather forecast (%s) unavailable", kind, exc_info=True)
+        if s.forecast_temp_entity:
+            t = self._state_temp(s.forecast_temp_entity)
+            if t is not None:
+                return round(t, 1), "forecast sensor"
+        if s.weather_online:
+            try:   # the home's location is rounded to about 10 km before it leaves Home Assistant
+                lat, lon = round(self.hass.config.latitude, 1), round(self.hass.config.longitude, 1)
+                data = await self._fetch_json("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&daily=temperature_2m_max,temperature_2m_min"
+                                              "&forecast_days=3&timezone=auto" % (lat, lon))
+                t = parse_open_meteo(data or {}, tomorrow)
+                if t is not None:
+                    return t, "Open-Meteo"
+            except Exception:  # noqa: BLE001 - optional source
+                _LOGGER.debug("Open-Meteo unavailable", exc_info=True)
+        return None, ""
+
+    async def _refresh_weather(self) -> None:
+        """Hourly: tomorrow's temperature, how the house responds to cold, and the extra energy that implies."""
+        s = self.settings
+        if self._weather_busy or _time.monotonic() - self._weather_at < 3600 or not (
+                s.weather_boost or s.weather_entity or s.temp_sensor_entity):
+            return
+        self._weather_busy, self._weather_at = True, _time.monotonic()
+        try:
+            now = dt_util.now()
+            today = now.strftime("%Y-%m-%d")
+            self.cold_model.fit(self.temp_log, self.usage.days, today)
+            tomorrow_c, source = await self._tomorrow_temp((now + timedelta(days=1)).date()) if s.weather_boost else (None, "")
+            recent = recent_degree_days(self.temp_log, today)
+            extra = cold_extra_wh(self.cold_model.k, tomorrow_c, recent)
+            if not s.weather_boost:
+                status = "off"
+            elif tomorrow_c is None:
+                status = "no forecast temperature: pick a weather entity or sensor"
+            elif self.cold_model.k is None:
+                status = (f"still learning how cold affects your use ({self.cold_model.days} usable days; needs 7 with a spread of "
+                          "temperatures and an outdoor temperature sensor or weather entity)")
+            elif extra <= 0:
+                status = "tomorrow is not colder than lately: no change"
+            else:
+                status = "raising the overnight target"
+            lately = None if recent is None else round(BASE_C - recent, 1)
+            self.weather = {"tomorrow_c": tomorrow_c, "source": source, "k_wh_per_degree": self.cold_model.k,
+                            "days_learned": self.cold_model.days, "link": self.cold_model.r, "lately_c": lately,
+                            "extra_wh": extra, "status": status,
+                            "note": f"{tomorrow_c:g} °C forecast vs about {lately:g} °C lately" if tomorrow_c is not None and lately is not None else ""}
+        except Exception:  # noqa: BLE001 - weather is an extra: it must never disturb control
+            _LOGGER.debug("weather refresh failed", exc_info=True)
+        finally:
+            self._weather_busy = False
 
     def _price_later_max(self, rates: RateTable | None, now: datetime, hours: int = 6) -> float | None:
         """The dearest import price in the next few hours (main units), for 'keep it for later'."""
@@ -1442,7 +1546,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                                              "cycling": self._cycling(a.config.device_id, rates, now)} for a in self.adapters},
             "grid_events": self.grid_events.view(),
             "trend": {a.config.device_id: {"days": self.trend.series(a.config.device_id, 60), "warning": self.trend.warning(a.config.device_id)} for a in self.adapters},
-            "forecast_reserve": self.forecast_floor, "readiness": self.readiness(), "startup": self.startup_note,
+            "forecast_reserve": self.forecast_floor, "readiness": self.readiness(), "startup": self.startup_note, "weather": self.weather,
             "learning": {"known_slots": sum(1 for n in self.profile.n["wd"] if n >= self.profile.MIN_VISITS)},
             "tariff_inferred": ({"start": self._tariff.start.strftime("%H:%M"), "end": self._tariff.end.strftime("%H:%M"),
                                  "offpeak": self._tariff.offpeak, "peak": self._tariff.peak, "days": round(self._tariff.days, 1)}

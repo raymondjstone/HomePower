@@ -20,6 +20,7 @@ from .grid import apply_load_rules, backup_desired, export_guard, peak_shave, sp
 from .limits import apply_totals, charge_ceiling, soc_guard
 from .models import Actual, Capabilities, Desired, DeviceConfig, Mode
 from .report import hold_for_dearer
+from .weather import boost_points
 from .planner import Alloc, Need, adjust_target_for_forecast, plan_charge, power_now
 from .rates import RateTable
 from .reconcile import clamp
@@ -75,6 +76,8 @@ class World:
     usage_wh: Callable[[datetime, float], float | None] | None = None   # learned household use: (from, hours) -> Wh
     solar_ceiling: dict[str, int] = field(default_factory=dict)   # battery -> highest charge that leaves room for the coming solar
     efficiency: dict[str, float] = field(default_factory=dict)    # battery -> charging efficiency (measured, else the default is used)
+    cold_extra_wh: float = 0.0                     # extra energy expected tomorrow because it is colder than lately
+    cold_note: str = ""                             # the temperatures behind that, for the plan
     price_now: float | None = None                 # current import price (main units)
     price_later_max: float | None = None           # the dearest import price in the next few hours
 
@@ -151,6 +154,13 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         if g.use_forecast:
             target = adjust_target_for_forecast(
                 target, w.forecast_kwh, sum(d.config.caps.capacity_wh for d in devs) / 1000, w.settings.forecast_share)
+        if w.cold_extra_wh > 0:
+            pts = boost_points(w.cold_extra_wh, sum(d.config.caps.capacity_wh for d in devs))
+            top = g.target_soc if g.auto_target else 100          # an auto target stays within the target the user set
+            if pts and min(top, target + pts) > target:
+                target = min(top, target + pts)
+                res.notes.append(f"goal '{g.id}': target raised to {target}% for the cold ({w.cold_note}: about {w.cold_extra_wh / 1000:.1f} kWh more use)")
+
         def tgt(d: DevIn, target: int = target) -> int:
             # grid charging stops short of the battery's room-for-solar ceiling; solar-only charging may fill it
             c = w.solar_ceiling.get(d.config.device_id)
