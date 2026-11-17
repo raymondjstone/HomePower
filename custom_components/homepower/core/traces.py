@@ -15,9 +15,9 @@ UNRELIABLE_AFTER = 3    # this many Charge commands in a row with no effect = it
 class CommandTrace:
     def __init__(self, data: dict | None = None) -> None:
         self.results: dict[str, list[dict]] = {}
-        for did, rows in (data or {}).items():
+        for did, rows in (data.items() if isinstance(data, dict) else ()):
             if isinstance(rows, list):
-                self.results[did] = [r for r in rows if isinstance(r, dict) and "mode" in r and "ok" in r][-KEEP:]
+                self.results[did] = [r for r in rows if isinstance(r, dict) and isinstance(r.get("mode"), str) and "ok" in r][-KEEP:]
         self._open: dict[str, dict] = {}
 
     def start(self, did: str, mode: str, now_s: float, at: str, soc: float | None, power_w: float | None) -> None:

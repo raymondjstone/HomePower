@@ -4,7 +4,7 @@ the combined "home battery" figures, and saved scenes."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import median
 
 # ---------------------------------------------------------------- usual load by time of day
@@ -413,8 +413,8 @@ class PlanLog:
 
     def __init__(self, data: dict | None = None) -> None:
         self.days: dict[str, dict[str, dict[str, list[float]]]] = {}
-        for day, devs in (data or {}).items():
-            for did, r in (devs or {}).items():
+        for day, devs in (data.items() if isinstance(data, dict) else ()):
+            for did, r in (devs.items() if isinstance(devs, dict) else ()):
                 try:
                     if all(len(r[k]) == 48 for k in ("ps", "pn", "as", "an")):
                         self.days.setdefault(day, {})[did] = {k: [float(x) for x in r[k]] for k in ("ps", "pn", "as", "an")}
@@ -439,9 +439,11 @@ class PlanLog:
         """The last `hours` hours as half-hour rows [start iso, planned W, actual W] (None = no reading), plus how closely
         the battery followed the plan over the slots that had both."""
         end = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0) + timedelta(minutes=30)
+        end_utc, local = end.astimezone(timezone.utc), now.tzinfo
         rows, num, den = [], 0.0, 0.0
         for k in range(hours * 2):
-            start = end - timedelta(minutes=30 * (hours * 2 - k))
+            # step in real time and only then look at the local clock, so rows stay evenly spaced when the clocks change
+            start = (end_utc - timedelta(minutes=30 * (hours * 2 - k))).astimezone(local)
             r = self.days.get(start.strftime("%Y-%m-%d"), {}).get(did)
             i = start.hour * 2 + start.minute // 30
             p = r["ps"][i] / r["pn"][i] if r and r["pn"][i] else None

@@ -60,7 +60,8 @@ class RateLearner:
     MIN_W = 500          # slower than this is a battery tapering or being throttled, not its rate
 
     def __init__(self, data: dict | None = None) -> None:
-        self.rates: dict[str, int] = {k: int(v) for k, v in (data or {}).items() if isinstance(v, (int, float)) and v > 0}
+        self.rates: dict[str, int] = {k: int(v) for k, v in (data.items() if isinstance(data, dict) else ())
+                                      if isinstance(v, (int, float)) and 0 < v < 1e6}
         self._samples: dict[str, list[float]] = {}
 
     def observe(self, did: str, charging_wanted: bool, power_w: float | None, soc: float | None) -> bool:

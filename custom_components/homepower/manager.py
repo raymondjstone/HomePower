@@ -99,12 +99,15 @@ class HomePowerManager:
         self.divert_on = str(data.get("divert_on") or "")
         self.pv_seen = set(data.get("pv_seen", []))
         self.forecast_days = dict(data.get("forecast_days", {}))
-        self.plan_log_data = dict(data.get("plan_log", {}))
-        self.trace_data = dict(data.get("traces", {}))
-        self.weather_data = dict(data.get("weather", {}))
-        self.confirmed = set(data.get("confirmed", []))
-        self.charge_rates = {k: int(v) for k, v in data.get("charge_rates", {}).items() if isinstance(v, (int, float))}
-        self.ecoflow_orig = {k: dict(v) for k, v in data.get("ecoflow_orig", {}).items() if isinstance(v, dict)}
+        def plain(key: str) -> dict:     # a damaged value in a newer field must never stop HomePower starting
+            v = data.get(key)
+            return v if isinstance(v, dict) else {}
+
+        self.plan_log_data, self.trace_data, self.weather_data = dict(plain("plan_log")), dict(plain("traces")), dict(plain("weather"))
+        conf = data.get("confirmed")
+        self.confirmed = {c for c in conf if isinstance(c, str)} if isinstance(conf, list) else set()
+        self.charge_rates = {k: int(v) for k, v in plain("charge_rates").items() if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")}
+        self.ecoflow_orig = {k: dict(v) for k, v in plain("ecoflow_orig").items() if isinstance(v, dict)}
         scenes = data.get("scenes")
         self.scenes = {s["name"]: s for s in (scenes if scenes is not None else DEFAULT_SCENES)}
 

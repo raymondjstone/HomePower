@@ -7,6 +7,7 @@ imports, so everything here is unit-tested directly.
 from __future__ import annotations
 
 from datetime import date, datetime, tzinfo
+from math import isfinite
 
 BASE_C = 18.0           # below this the house is assumed to need heating
 MIN_DAYS = 7            # days of use and temperature needed before the link is trusted
@@ -26,7 +27,7 @@ def degree_days(temp_c: float) -> float:
 
 
 def _num(v) -> float | None:
-    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and isfinite(v) else None
 
 
 def pick_tomorrow(forecast: list, tomorrow: date, tz: tzinfo | None, unit: str | None = "C") -> float | None:
@@ -68,8 +69,8 @@ class TempLog:
 
     def __init__(self, data: dict | None = None) -> None:
         self.days: dict[str, list[float]] = {}
-        for k, v in (data or {}).items():
-            if isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v):
+        for k, v in (data.items() if isinstance(data, dict) else ()):
+            if isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) and isfinite(x) for x in v):
                 self.days[k] = [float(v[0]), float(v[1])]
 
     def add(self, day: str, temp_c: float) -> None:
@@ -91,8 +92,8 @@ class ColdModel:
     """Extra watt-hours the house uses per degree-day, fitted from its own recorded days."""
 
     def __init__(self, data: dict | None = None) -> None:
-        d = data or {}
-        self.k: float | None = float(d["k"]) if isinstance(d.get("k"), (int, float)) else None     # Wh per degree-day
+        d = data if isinstance(data, dict) else {}
+        self.k: float | None = float(d["k"]) if isinstance(d.get("k"), (int, float)) and isfinite(d["k"]) else None     # Wh per degree-day
         self.days: int = int(d.get("days", 0)) if isinstance(d.get("days"), (int, float)) else 0
         self.r: float | None = float(d["r"]) if isinstance(d.get("r"), (int, float)) else None
 
@@ -138,13 +139,15 @@ def recent_degree_days(temps: TempLog, today: str, n: int = 7) -> float | None:
 
 def cold_extra_wh(k: float | None, tomorrow_c: float | None, recent_dd: float | None) -> float:
     """Extra energy tomorrow compared with the recent days, if tomorrow is colder (never negative)."""
-    if k is None or tomorrow_c is None or recent_dd is None:
+    if k is None or tomorrow_c is None or recent_dd is None or not all(isfinite(x) for x in (k, tomorrow_c, recent_dd)):
         return 0.0
     return max(0.0, k * (degree_days(tomorrow_c) - recent_dd))
 
 
 def boost_points(extra_wh: float, capacity_wh: float, max_points: int = MAX_POINTS) -> int:
     """The extra energy as percentage points of the batteries' capacity."""
-    if extra_wh <= 0 or capacity_wh <= 0:
+    if not (extra_wh > 0 and capacity_wh > 0):          # also false for NaN
         return 0
+    if not isfinite(extra_wh / capacity_wh):
+        return max_points
     return int(min(max_points, round(extra_wh / capacity_wh * 100)))

@@ -430,3 +430,23 @@ def test_plan_log_survives_a_save_and_ignores_damaged_days():
     log.add(t, "e", 100.0, 90.0)
     again = PlanLog({**log.dump(), "2026-03-02": {"e": {"ps": [1]}}})       # a damaged day alongside a good one
     assert "2026-03-02" not in again.days and again.days["2026-03-01"]["e"]["ps"][24] == 100.0
+
+
+def test_plan_chart_rows_stay_evenly_spaced_when_the_clocks_change():
+    import pytest
+    from datetime import datetime, timedelta, timezone
+    from hp.core.insights import PlanLog
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Europe/London")
+    except Exception:  # noqa: BLE001 - no time zone database on this machine
+        pytest.skip("no tz database")
+    for now in (datetime(2026, 10, 25, 12, 10, tzinfo=tz), datetime(2026, 3, 29, 12, 10, tzinfo=tz)):
+        log = PlanLog()
+        cur = now.astimezone(timezone.utc) - timedelta(hours=26)
+        while cur < now.astimezone(timezone.utc):
+            log.add(cur.astimezone(tz), "a", 1000.0, 900.0)
+            cur += timedelta(minutes=30)
+        rows = log.view("a", now)["rows"]
+        inst = [datetime.fromisoformat(r[0]).astimezone(timezone.utc) for r in rows]
+        assert len(rows) == 48 and {b - a for a, b in zip(inst, inst[1:])} == {timedelta(minutes=30)}, now
