@@ -610,7 +610,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         said = cfg.extra.get("grid_meter", "auto")
         if said != "auto":
             return said == "yes"
-        return bool(cfg.extra.get("house_meter")) or cfg.extra.get("driver") == "ecoflow_stream"
+        return bool(cfg.extra.get("house_meter")) or cfg.extra.get("driver") in ("ecoflow_stream", "ecoflow_modbus")
 
     def _entity_age(self, entity_id: str) -> float | None:
         st = self.hass.states.get(entity_id) if entity_id else None
@@ -884,7 +884,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 stuck = False                       # offline, being tested or not controlled: the alert (if raised) clears
             checks[f"stuck:{did}"] = (stuck, f"{name} was told to charge but is not charging (no power and no rise in charge for "
                                              f"{int(self.charge_watch.after_s // 60)} min). Check the battery's own app for a mode or schedule overriding HomePower.", 0)
-            if a.config.extra.get("driver") == "ecoflow_stream":
+            if a.config.extra.get("driver") in ("ecoflow_stream", "ecoflow_modbus"):
                 checks[f"gridsign:{did}"] = (bool(act and act.online) and grid_sign_mismatch(self.last_grid, act.grid_w),
                                              f"{name}'s grid reading ({act.grid_w:g} W) points the opposite way to your grid meter ({self.last_grid:g} W). "
                                              "One of them is reversed or measures a different point: check Settings > grid sensor and its 'invert' option."

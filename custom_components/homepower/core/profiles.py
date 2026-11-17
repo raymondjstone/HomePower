@@ -59,6 +59,22 @@ DRIVERS: dict[str, dict] = {
             "then HomePower lists the batteries on your account. No other integration is needed."
         ),
     },
+    "ecoflow_modbus": {
+        "modes": ALL_MODES,
+        "connection": [
+            {"k": "host", "label": "IP address of the battery", "type": "text", "req": True},
+            {"k": "port", "label": "Modbus TCP port", "type": "number", "req": False, "default": 502},
+            {"k": "unit_id", "label": "Modbus unit ID", "type": "number", "req": False, "default": 1},
+            {"k": "reverse_sign", "label": "Reverse the charge/discharge sign", "type": "bool", "req": False},
+        ],
+        "discover": None,
+        "setup_help": (
+            "In the EcoFlow app open the STREAM system > Energy management > Device integration > Third-party control "
+            "and switch on Modbus TCP (it is off by default; the entry is not on the combined System settings page). "
+            "HomePower then reads the battery every few seconds and sets its power in watts, directly on your network. "
+            "Do not change the same setting in the app and in HomePower at the same time."
+        ),
+    },
     "modbus_generic": {
         "modes": ALL_MODES,   # narrowed to Auto when the map is read-only
         "connection": [
@@ -137,6 +153,11 @@ PROFILES: list[dict] = [
        _EF + " This model uses EcoFlow's \"STREAM 5000 Series\" settings: Hold and Charge move its backup reserve switch and level, and "
        "HomePower puts it in Self-consumption while it manages it (your own operating mode is restored on Auto). Control is "
        "experimental and untested on hardware; the ES22 (AC) variant may be refused by EcoFlow's API.", default_charge_w=3000),
+    _p("ecoflow_stream_5000_local", "EcoFlow", "EcoFlow STREAM 5000 / AC 5000 (ES5000) - local Modbus", "ecoflow_modbus",
+       "Talks to the battery directly over Modbus TCP (EcoFlow's \"third-party control\", firmware 1.1.7.28 or later) instead of the cloud: "
+       "readings every few seconds, no rate limit, and Charge/Discharge are set in watts. Switch Modbus TCP on in the EcoFlow app first. "
+       "The register map is EcoFlow's own; the sign of the power setpoint is assumed (+ charging) until confirmed on hardware, so use "
+       "Test control and, if it does the opposite, tick \"Reverse the charge/discharge sign\".", restore_mode=0),
     _p("victron_gx", "Other", "Victron GX system (read-only)", "modbus_generic",
        "Reads the GX system registers over Modbus TCP (enable it in the GX device: Settings > Services > Modbus/TCP). "
        "Read-only: shown and recorded, never controlled. Unverified on hardware.",

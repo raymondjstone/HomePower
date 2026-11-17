@@ -55,12 +55,15 @@ def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
         return {"host": host, "port": _int(raw.get("port"), "port", 1, 65535, 502),
                 "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, int(profile.get("default_unit", 1))),
                 "map": raw.get("map") or profile.get("preset_map"), "_parsed": parsed}
-    if driver == "anker_modbus":
+    if driver in ("anker_modbus", "ecoflow_modbus"):
         host = str(raw.get("host") or "").strip()
         if not host:
             raise ValidationError("the battery's IP address is required")
-        return {"host": host, "port": _int(raw.get("port"), "port", 1, 65535, 502),
-                "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, 1)}
+        out = {"host": host, "port": _int(raw.get("port"), "port", 1, 65535, 502),
+               "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, 1)}
+        if driver == "ecoflow_modbus" and raw.get("reverse_sign"):
+            out["reverse_sign"] = True
+        return out
     if driver == "ecoflow_stream":
         region = str(raw.get("region") or "eu")
         if region not in ("eu", "america", "global"):

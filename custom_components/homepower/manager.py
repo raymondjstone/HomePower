@@ -28,6 +28,7 @@ from .core.serde import (
 from .drivers import discovery
 from .drivers.anker import AnkerModbusDriver
 from .drivers.ecoflow import EcoFlowApi, EcoFlowError, EcoFlowStreamDriver
+from .drivers.ecoflow_modbus import EcoFlowModbusDriver
 from .drivers.ecoflow_live import EcoFlowLive
 from .drivers.modbus_generic import GenericModbusDriver
 
@@ -145,6 +146,8 @@ class HomePowerManager:
             did = cfg.device_id
             return DirectAdapter(cfg, EcoFlowStreamDriver(cfg, async_get_clientsession(self.hass), self._live_hub(cfg),
                                                           orig=self.ecoflow_orig.get(did), on_orig=lambda v, did=did: self._keep_orig(did, v)))
+        if driver == "ecoflow_modbus":
+            return DirectAdapter(cfg, EcoFlowModbusDriver(cfg))
         if driver == "modbus_generic":
             return DirectAdapter(cfg, GenericModbusDriver(cfg))
         return HaEntityAdapter(self.hass, cfg)

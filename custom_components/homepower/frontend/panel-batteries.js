@@ -87,6 +87,13 @@ export default (U) => {
           <div class="f"><label>Port</label><input type="number" id="c-port" value="${conn.port || 502}"></div></div>
         <input type="hidden" id="c-unit_id" value="${conn.unit_id || 1}">
         <button class="btn" data-act="test-battery"><ha-icon icon="mdi:lan-check" style="--mdc-icon-size:16px"></ha-icon>Test connection</button>`;
+    } else if (prof.driver === "ecoflow_modbus") {
+      box.innerHTML = `${help}
+        <div class="three"><div class="f" style="grid-column:span 2"><label>Battery IP address *</label><input type="text" id="c-host" value="${esc(conn.host || "")}" placeholder="192.168.1.50"></div>
+          <div class="f"><label>Port</label><input type="number" id="c-port" value="${conn.port || 502}"></div></div>
+        <input type="hidden" id="c-unit_id" value="${conn.unit_id || 1}">
+        <div class="f"><label><input type="checkbox" id="c-reverse_sign" ${conn.reverse_sign ? "checked" : ""}> Reverse the charge/discharge sign</label><span class="hint">Only if Test control charges when it should discharge.</span></div>
+        <button class="btn" data-act="test-battery"><ha-icon icon="mdi:lan-check" style="--mdc-icon-size:16px"></ha-icon>Test connection</button>`;
     } else if (prof.driver === "ecoflow_stream") {
       const regions = spec.connection[0].options;
       box.innerHTML = `${help}
@@ -171,6 +178,7 @@ export default (U) => {
     const c = Object.fromEntries(spec.connection.map((f) => [f.k, v(f.k).trim()]));
     if (prof.driver === "modbus_generic") { c.port = +c.port || 502; c.unit_id = +c.unit_id || 1; c.map = v("map"); }
     if (prof.driver === "anker_modbus") { c.port = +c.port || 502; c.unit_id = +c.unit_id || 1; }
+    if (prof.driver === "ecoflow_modbus") { c.port = +c.port || 502; c.unit_id = +c.unit_id || 1; c.reverse_sign = !!(r.getElementById("c-reverse_sign") || {}).checked; }
     return c;
   },
 
