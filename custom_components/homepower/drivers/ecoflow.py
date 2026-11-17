@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from dataclasses import replace
 import re
 import logging
 import secrets
@@ -282,12 +283,20 @@ class EcoFlowStreamDriver:
             pv_w=_first(q, "powGetPvSum", "pvPwr"), load_w=_first(q, "powGetSysLoad", "loadPwr"),
         )
 
+    def _held_at_floor(self, actual: Actual) -> Actual:
+        """A battery HomePower is holding that sits at its own floor reads as Auto (its reserve cannot go lower), but it cannot
+        discharge, so it is held. Reporting that stops a Hold from being re-sent forever."""
+        floor = (self.config.caps.min_soc or 0) + 3.5
+        if self._orig is not None and actual.mode is Mode.AUTO and actual.soc is not None and actual.soc <= floor:
+            return replace(actual, mode=Mode.HOLD)
+        return actual
+
     async def read(self) -> Actual:
         now = time.monotonic()
         if self.hub is not None:
             self.hub.register(self.sn, self.merge_push)   # no-op once registered; retries a failed connection later
         if self._pushed and now - self._pushed < 120 and now - self._polled < 300 and self._state:
-            return self._decode(self._state, self.config.caps.min_soc)             # live data is flowing: no need to poll
+            return self._held_at_floor(self._decode(self._state, self.config.caps.min_soc))   # live data is flowing: no need to poll
         if self._cache and now - self._cache[0] < 30:
             return self._cache[1]
         if now < self._blocked_until:
@@ -297,7 +306,7 @@ class EcoFlowStreamDriver:
             self._note_changes(self._state, q)
             self._state, self._polled, self._pushed = dict(q), time.monotonic(), 0.0
             self.last_quota, self.last_error = q, None
-            actual = self._decode(q, self.config.caps.min_soc)
+            actual = self._held_at_floor(self._decode(q, self.config.caps.min_soc))
             if actual.soc is None and q:
                 _LOGGER.warning("%s: EcoFlow returned no charge level; readings it did return: %s",
                                 self.config.device_id, ", ".join(sorted(q)[:60]))

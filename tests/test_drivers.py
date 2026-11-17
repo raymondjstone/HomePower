@@ -738,3 +738,21 @@ def test_a_resting_reserve_three_above_the_discharge_limit_is_not_mistaken_for_h
         assert D._mode(13, soc, 10) is Mode.AUTO, soc
     assert D._mode(14, 40, 10) is Mode.AUTO and D._mode(45, 40, 10) is Mode.CHARGE      # a real raise is still seen
     assert D._mode(40, 40, 10) is Mode.HOLD and D._mode(95, 60, 10) is Mode.CHARGE
+
+
+def test_a_held_battery_resting_at_its_own_floor_reads_as_held_so_hold_is_not_resent():
+    async def go():
+        d = eco({"soc": 12, "backupReverseSoc": 10, "powGetBpCms": 0})
+        assert (await d.read()).mode is Mode.AUTO                      # nothing of ours: just a battery at its floor
+        await d.apply(Desired(Mode.HOLD))                              # the device raises/keeps its floor; reads as Auto again
+        d._cache = None
+        d.api._q = {"soc": 12, "backupReverseSoc": 13, "powGetBpCms": 0}
+        assert (await d.read()).mode is Mode.HOLD                      # held (it cannot discharge): the Hold counts as done
+        d._cache = None
+        d.api._q = {"soc": 40, "backupReverseSoc": 10, "powGetBpCms": -300}
+        assert (await d.read()).mode is Mode.AUTO                      # a battery well above its floor is not claimed as held
+        await d.apply(Desired(Mode.AUTO))
+        d._cache = None
+        d.api._q = {"soc": 12, "backupReverseSoc": 10}
+        assert (await d.read()).mode is Mode.AUTO                      # handed back: Auto again
+    asyncio.run(go())
