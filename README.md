@@ -10,7 +10,7 @@ sidebar panel, and schedules and optimises how they charge and discharge.
 [Limits and protection](#limits-and-protection) · [Modes, scenes and overrides](#modes-scenes-and-overrides) ·
 [Several batteries](#several-batteries) · [Messages and alerts](#messages-and-alerts) · [The panel](#the-panel) ·
 [Settings reference](#settings-reference) · [Entities, services and card](#entities-services-and-card) ·
-[Generic Modbus map](#generic-modbus-register-map) · [Savings](#how-savings-are-estimated) ·
+[EcoFlow protocol notes](#ecoflow-protocol-notes) · [Generic Modbus map](#generic-modbus-register-map) · [Savings](#how-savings-are-estimated) ·
 [Removing HomePower](#removing-homepower) · [Known limits](#known-limits)
 
 ## Install
@@ -39,8 +39,8 @@ HomePower is set up once per Home Assistant (a second copy cannot be added). Tes
 The four modes mean: **Auto** = the battery runs its own logic; **Charge** / **Discharge** = at a power HomePower sets;
 **Hold** = neither charge nor discharge from the battery's store.
 
-- **EcoFlow limitation:** EcoFlow's developer API has no charge/discharge power setpoint, and the ES5000's own commands are
-  not published there. Auto = self-powered. Hold = the backup reserve is raised to the battery's current charge level, so
+- **EcoFlow limitation:** EcoFlow's cloud developer API has no charge/discharge power setpoint (the ES5000 can use its local Modbus connection
+  instead, which does: see the table above and [EcoFlow protocol notes](#ecoflow-protocol-notes)). Auto = self-powered. Hold = the backup reserve is raised to the battery's current charge level, so
   it stops discharging and is not told to top up from the grid (its own panels still charge it). Charge = the reserve is
   raised to the target (95 % at most), so the battery tops itself up from the grid at its own rate: the power you set is
   not sent, and solar-only / follow-the-meter charging holds the battery instead of grid-charging it. There is no force discharge.
@@ -332,6 +332,104 @@ been tested against a live EcoFlow account.
 
 **Diagnostics download** on the integration page, with keys, addresses and serial numbers removed.
 
+## EcoFlow protocol notes
+
+Reference notes on how EcoFlow STREAM batteries are controlled, gathered from EcoFlow's official Home Assistant integration
+([EcoFlow-oasis-official/ha-EcoFlow-official](https://github.com/EcoFlow-oasis-official/ha-EcoFlow-official), MIT) and from
+reading the EcoFlow Android app (version 6.18.0.136, package `com.ecoflow`, a React Native app whose STREAM screens are the
+"EnergyStorage3" bundle) for interoperability with batteries the author owns. No EcoFlow code is included in HomePower. Everything
+here is read from those sources and is **not yet confirmed on a real ES5000** unless it says so.
+
+**Three ways to talk to a STREAM 5000 series battery**
+
+| Route | What it needs | What it gives |
+|---|---|---|
+| Cloud developer API (what HomePower uses for Ultra / Ultra X, and optionally the ES5000) | Access Key + Secret Key from developer.ecoflow.com | Settings and readings through EcoFlow's servers; no power setpoint; rate limited |
+| **Local Modbus TCP** (HomePower's "local Modbus" ES5000 profile) | Firmware 1.1.7.28 or later; Modbus TCP switched on in the app | Readings and a real power setpoint on your own network |
+| Local LAN channel (the app's own) | A token fetched from EcoFlow's cloud for each session | Not used by HomePower: see below |
+
+**Switching Modbus TCP on.** In the EcoFlow app: STREAM system > **Energy management** > section **Device integration** >
+**Third-party control** (id `third_party_control`) > turn on **Modbus TCP** and choose the access permission (read/write or
+read-only). It is off by default.
+- The combined **System settings** page hides this entry on purpose (it is built with `restrictLocalModeEntries`), so look on the Energy management page.
+- The entry is greyed out unless EcoFlow's cloud (`GET /thunder/compat/setting`) lists `MODBUS_TCP` as supported for the unit's firmware; otherwise the app says the firmware does not support it. What that check requires is not in the app.
+- Supported models named in the app: **STREAM 5000** and **STREAM AC 5000** (serial prefixes ES21 and ES22).
+- In the device message set the switch is `OpenApiConfig` (field 49 of the property command: `modbusTcpOnoff`, `localIpv4Addr`, `localPort`, `accessPermission` 0 = read/write, 1 = read only). Its current state, IP and port come back in the live readings (field 75).
+- Do not change the same setting in the app and over Modbus at the same time; turning third-party control off in the app takes Home Assistant's access away.
+- The app also has a separate **Local mode** ("cloud / local connection mode", `LocalModeConfig`, field 58). It cuts the device off from the cloud, allows Self-powered mode only, needs a meter or smart plug and disables firmware updates. It is **not** the Modbus switch and HomePower does not need it.
+
+**Modbus connection.** Port 502, unit id 1. Wire address = register offset + 40001 (so offset 0x0206 is read at 40519 and the
+system group id at 0x1004 is 44101). Function 03 for reads (at most 125 words) and 06 or 16 for writes. 32-bit values and
+floats put the **high word first**; floats are IEEE-754 single precision. The device wants a write to the **heartbeat register
+0x025F** at least once a minute while a client is connected (the official integration writes 1 every 20 s, HomePower does the
+same). Units that form one STREAM system share a group id (0x1004); with several units the system is controlled through its
+master unit (0x1001 is the master flag). The unit also advertises itself by mDNS as `_ecoflow._tcp.local.` with TXT fields
+`model` and `serial`.
+
+**Registers HomePower uses** (offset, type, access; the full map has about 200 points and is in the official integration)
+
+| Offset | Meaning | Type / unit | Access |
+|---|---|---|---|
+| 0x0003 | Serial number | 8 words of text | R |
+| 0x000B | Firmware version (e.g. 1.1.7.28 as four bytes) | UINT32 | R |
+| 0x0206 | System consumption (house load) | FLOAT W | R |
+| 0x0208 | System grid power | FLOAT W | R |
+| 0x020A | System PV power | FLOAT W | R |
+| 0x020C | System battery power (+ charging assumed) | FLOAT W | R |
+| 0x020E | System state of charge | UINT16 % | R |
+| 0x0217 | Backup reserve ratio | UINT16 % | RW |
+| 0x0221 / 0x0223 | Max active output / input power | UINT32 W | R |
+| 0x0227 | Battery full capacity | UINT32 Wh | R |
+| 0x025F | Heartbeat (keep-alive) | UINT16 | W |
+| 0x1400 / 0x1401 | Battery charge / discharge capability | UINT16 W | R |
+| 0x1600 / 0x1602 | Battery charge / discharge power limit | UINT32 W | RW |
+| 0x1604 - 0x160E | Meter point, inverter and grid port power limits (in / out) | UINT32 W | RW |
+| **0x1610** | **Control point**: 0 none (the device's own energy management), 1 battery, 2 meter, 3 inverter, 4 grid port | UINT16 | RW |
+| **0x1611** | **Battery target power** (used when the control point is battery) | INT16 W | RW |
+| 0x1612 - 0x1614 | Meter / inverter / grid port target power | INT16 W | RW |
+| 0x2200 / 0x2201 | SOC lower / upper limit | UINT16 % | RW |
+| 0x0820 - 0x0823, 0x2300 - 0x2302 | Online battery count, per-pack SOC and SOH | UINT16 | R |
+| 0x0800 - 0x080A, 0x2010 - 0x201A | System and device fault counts and codes | UINT16 | R |
+| 0x0870 / 0x0880 / 0x08B0 / 0x08C0 / 0x08D0 | Grid import / export, battery charge / discharge, solar energy totals | FLOAT kWh | R |
+
+When no control point is set, EcoFlow's own energy management runs the system and the limits above work together with the
+app's own controls. Regulation-related settings (power unlocking, permission to export to the grid) can only be changed in the
+app. All Modbus control stays inside the system's safety limits.
+
+**What is not known yet:** the sign convention of the target power registers (HomePower assumes + charging, like the power
+readings, and has a "Reverse the charge/discharge sign" option); whether the power limit registers must be raised before a
+target is followed; and what firmware 1.1.7.28 does when the heartbeat stops. Test control on the first real run answers these.
+
+**Cloud / app message format (the route HomePower already uses for the cloud).** Commands are protobuf messages with command
+set 254 (source 32 for the cloud, 33 for the app, destination 2) and these command ids: 17 configuration write (Ultra / Ultra X,
+for example `cfgBackupReverseSoc`), 37 action, **38 property command** (STREAM 5000 series), 39 live display upload, 40 runtime
+upload, 43 property read. The property command's action id selects one sub-message (the field number equals the action id):
+
+| Action id | Sub-message | Fields |
+|---|---|---|
+| 25 | `workMode` | SELF_CONSUMPTION 0, AI_MODE 1, TIMER_TASK 2, POU_MODE 3, EMERGENCY_STOP 4 |
+| 29 | `BpSocConfig` | `chargeSocUpperLimit`, `dischargeSocLowerLimit` |
+| 30 | `BpBackupConfig` | `backupSocOnOff`, `backupSoc` (the backup reserve HomePower raises on the cloud route) |
+| 10 | `BkwPowerParameterConfig` | `onGridFeedPowerLimit`, `onGridTakePowerLimit`, `feedToGridLimitOnOff`, `ratedPower`, `homeMainLoadBalanceSet` ... |
+| 24 | `CfgTimeScheduleTask` | schedules; task types AC_CHG 0, AC_DSG 1 ... |
+| 19 | `DevSwitch` | `acSocketOnoff` |
+| 49 | `OpenApiConfig` | Modbus TCP switch, address, port, access permission |
+| 58 | `LocalModeConfig` | `localModeEnable` |
+
+The app's cloud endpoints: `https://api-e.ecoflow.com` (Europe), `api-a` (Americas), `api` (elsewhere); live data comes from
+the MQTT broker whose credentials `GET /iot-auth/app/certification` returns, on topics `/app/<userId>/<sn>/thing/property/set`,
+`/set_reply`, `/get` and `/get_reply`. This matches what HomePower's cloud driver already sends.
+
+**The app's local LAN channel (not used).** The app can also reach a unit directly over UDP, port 51011: it broadcasts a
+`DISCOVER_REQ` and the unit answers with its serial, product type and port. Frames are little-endian: `0x5A5A`, version, encryption
+(0 none, 1 AES-128-CBC, 2 AES-128-GCM), packet type, service id, length, payload and a CRC-16. A session starts with a random
+number from each side; the key is HMAC-SHA256 based and needs a **token that EcoFlow's cloud issues**
+(`POST /iot-auth/local-lan/auth`) for each session, so it is not a cloud-free path. Bluetooth uses the same framing. HomePower
+uses neither; Modbus TCP is the supported local route.
+
+**Checking the switch took effect.** Use the Diagnostics port scan on the battery before and after turning Modbus TCP on:
+port 502 should open.
+
 ## Generic Modbus register map
 
 ```json
@@ -371,9 +469,9 @@ HomePower) before deleting. Home Assistant cannot ask at the moment of deleting,
 
 ## Known limits
 
-- Sending commands has only been run against simulators, not real hardware. New batteries are monitor-only until you allow
+- Sending commands has only been run against simulators, not real hardware (the local EcoFlow Modbus driver is built from EcoFlow's published register map and the app, and has never touched a real battery). New batteries are monitor-only until you allow
   control; run Test control before relying on it.
-- EcoFlow STREAM batteries can be set to Auto, Hold or Charge (no set power, no discharge), Charge has not been tried on a real battery.
+- Over the cloud, EcoFlow STREAM batteries can be set to Auto, Hold or Charge (no set power, no discharge); Charge has not been tried on a real battery. The ES5000's local Modbus profile does set watts, but has not been run on real hardware either.
 - **ES5000:** controlled through the same backup-reserve idea as the Ultra X, using EcoFlow's "STREAM 5000 Series" commands (reserve switch + level, operating mode). While HomePower holds or charges it, the unit is put in Self-consumption, and its own reserve and operating mode (for example Timer tasks) are put back on Auto. Untested on hardware: keep control off until Test control passes. An ES22 may be refused by EcoFlow's API. The reserve and mode HomePower replaced are saved, so a Home Assistant restart while a battery is held does not lose them.
 - **EcoFlow checks:** Test control on an EcoFlow battery waits for the cloud and then reports whether it really started charging (an info line, not a pass/fail). Diagnostics lists the settings that changed between readings (`recent_setting_changes`), which shows what the EcoFlow app changed. After error 1006 (a model that refuses the commands) or a rate limit, HomePower backs off for five minutes and says so. An alert is raised if a battery told to charge does not for 20 minutes, and another if an EcoFlow battery's grid reading has the opposite sign to your grid meter.
 - **Self-calibrating EcoFlow:** HomePower measures the power an EcoFlow battery really charges at (the median of recent readings while it was told to charge) and plans with that instead of the per-model estimate. A cloud battery gets one cycle to show a command's effect before it counts as unconfirmed, and at most 150 commands a day are sent to each (handing it back to Auto is never blocked). Each battery card can show "Why idle", the main thing in the way, and "Settings changed" with what the EcoFlow app changed.
@@ -384,7 +482,7 @@ HomePower) before deleting. Home Assistant cannot ask at the moment of deleting,
 - **Warnings on save:** saving a schedule or goal still works, but you are told if it cannot do anything (a battery that cannot discharge), if its power setting is ignored (EcoFlow picks its own rate), or if its target is not above the battery's minimum charge.
 - **Price changes:** if the cheap hours in the price history differ clearly from the ones in Settings for six hours, you get an alert to update them. **Keep stored energy for dearer hours** (Settings, off by default) holds a battery when the price in the next six hours is clearly higher than now, but not while solar is charging it. When several batteries compete for a limited import, the one with the better measured efficiency gets the cheapest slots.
 - **EcoFlow STREAM 5000 over local Modbus:** pick "EcoFlow STREAM 5000 / AC 5000 (ES5000) - local Modbus" when adding a battery. First switch it on in the EcoFlow app: STREAM system > **Energy management** (not the combined System settings page, which hides it) > Device integration > **Third-party control** > Modbus TCP. It is off by default and greyed out until EcoFlow's cloud accepts the firmware. HomePower then reads the battery every few seconds and sets its battery power in watts (control point 0x1610 = battery, target 0x1611), so Charge and Discharge work like the Anker batteries instead of the cloud reserve trick, with no rate limit. It writes EcoFlow's keep-alive register every 20 s and hands the battery back to its own energy management (control point 0) on Auto. The register map is from EcoFlow's official integration (EcoFlow-oasis-official/ha-EcoFlow-official, MIT); wire addresses are the register offset + 40001, unit id 1. **Not yet verified on hardware:** the sign of the power setpoint is assumed to be + charging; if Test control does the opposite, tick "Reverse the charge/discharge sign". Do not change the same setting in the app and in HomePower at once, and keep control off until Test control passes.
-- **Find local control ports** (Diagnostics): type a device's IP address and press Scan. It checks a short fixed list of ports local control usually uses (502 Modbus TCP, 1883 MQTT, 8883 MQTT over TLS, 80/443/8080 web, 4840 OPC UA and a few others) and shows which are open. Scan again after a firmware update, or after switching something on in the vendor app, and it shows what changed. The **Wide scan** button checks every port from 1 to 10,000 on that one device (up to a minute; it gives up and says "incomplete" after 90 seconds, only one runs at a time) and lists just the open ones with a count of the rest, in case local control uses an unusual port. Both only connect and listen for a few bytes: they send nothing, try no login, and refuse any address outside your own network (192.168.x.x, 10.x.x.x, 172.16-31.x.x, link-local and loopback). Meant for batteries that may have gained a local connection, for example an EcoFlow ES5000 after firmware 1.1.7.28, which says it adds local connection and third-party control; The local connection is Modbus TCP on port 502: see the next item.
+- **Find local control ports** (Diagnostics): type a device's IP address and press Scan. It checks a short fixed list of ports local control usually uses (502 Modbus TCP, 1883 MQTT, 8883 MQTT over TLS, 80/443/8080 web, 4840 OPC UA and a few others) and shows which are open. Scan again after a firmware update, or after switching something on in the vendor app, and it shows what changed. The **Wide scan** button checks every port from 1 to 10,000 on that one device (up to a minute; it gives up and says "incomplete" after 90 seconds, only one runs at a time) and lists just the open ones with a count of the rest, in case local control uses an unusual port. Both only connect and listen for a few bytes: they send nothing, try no login, and refuse any address outside your own network (192.168.x.x, 10.x.x.x, 172.16-31.x.x, link-local and loopback). Meant for batteries that may have gained a local connection, for example an EcoFlow ES5000 after firmware 1.1.7.28, which adds third-party control. That local connection is Modbus TCP on port 502 (see the previous item and [EcoFlow protocol notes](#ecoflow-protocol-notes)): after switching it on in the EcoFlow app, a scan should show 502 open.
 - **Debug file:** Diagnostics > Download debug file saves readings, command results, plan against actual and recent events in one file with no keys, serial numbers or addresses. The same scrubbing covers error messages and the event log, where addresses and serials otherwise end up, and "Copy debug info" gives the same text. The on-screen Diagnostics keep your own address and serial but never show keys. After each restart the Events list and Diagnostics show what was restored and which batteries could not be reached. The Setup check lists "first command allowed" for EcoFlow batteries.
 - **Cold-weather target** (Settings > Cold weather, off by default): when tomorrow is forecast to be colder than the last week, goal targets are raised by the extra energy the house is expected to use, at most 25 points (an auto-target goal stays within the target you set). The plan says why, for example "target raised to 90% for the cold (-3 °C forecast vs about 6 °C lately: about 2.1 kWh more use)". It needs two things. Tomorrow's temperature comes from the first of: your weather entity (any weather integration, daily or hourly forecast), a sensor holding tomorrow's temperature, or, only if you switch it on, Open-Meteo, which is sent your home's location rounded to about 10 km. How much more your house uses per degree of cold is learned from its own recorded days (about a week, with a spread of temperatures; today's outdoor temperature comes from your sensor or the weather entity). Until a clear link is found nothing changes, and the Settings note says how many usable days it has.
 - **Planning with EcoFlow batteries:** a battery whose charge power cannot be set is planned in whole slots at its own rate, never at a made-up fraction. The Health card shows whether cycling each battery is worth it over the next 24 hours, using its measured round-trip efficiency.
@@ -416,3 +514,6 @@ python -m pytest
 `custom_components/homepower/core/` must stay free of `homeassistant` imports so it tests without HA. The decision logic
 is in `core/engine.py` (one pure function, fuzz-tested against safety invariants). Checks against the real Home Assistant
 classes are in `tests/ha_harness/` (see its README). See [docs/DESIGN.md](docs/DESIGN.md).
+Other checks: `tests/*.mjs` run the panel in jsdom (`node tests/panel_features_smoke.mjs`), `tests/panel_dom/panel_browser.mjs` runs it in
+real headless Chromium (needs `npm install playwright`), and `tests/test_ecoflow_modbus.py` runs the local EcoFlow driver against a
+fake register space that follows EcoFlow's published map.
