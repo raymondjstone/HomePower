@@ -404,9 +404,9 @@ async def ws_preview(hass, msg):
 @_guard
 async def ws_diagnostics(hass, msg):
     c = _mgr(hass).coordinator
-    return {"devices": c.diagnostics(), "events": [list(e) for e in list(c._snap.events)[-100:]],
-            "alerts": sorted(c.alerts.active()), "notes": c.last_result.notes,
-            "decisions": list(reversed(c.why))[:40]}
+    return c.scrub({"devices": c.diagnostics(), "events": [list(e) for e in list(c._snap.events)[-100:]],
+                    "alerts": sorted(c.alerts.active()), "notes": c.last_result.notes,
+                    "decisions": list(reversed(c.why))[:40]})
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/tariffs/compare", vol.Optional("days", default=30): vol.All(int, vol.Range(min=1, max=90))})

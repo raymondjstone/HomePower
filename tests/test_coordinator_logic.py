@@ -247,3 +247,22 @@ def test_stuck_and_grid_sign_alerts_clear_when_the_battery_goes_offline():
         await c._check_alerts(240, [a])
         assert ("stuck:e", False) in sent and "stuck:e" not in c.alerts.active()
     asyncio.run(go())
+
+
+def test_scrub_removes_keys_always_and_addresses_and_serials_when_strict():
+    c = bare()
+    cfg = eco_cfg()
+    cfg.extra["connection"] = {"sn": "BKSERIAL0001", "access_key": "AKSECRET9876", "secret_key": "SKSECRET5432", "host": "nas.local"}
+    c.adapters = [FakeAdapter(cfg, None)]
+    c.manager.devices = {"old": {"connection": {"host": "10.9.9.9", "access_key": "OLDKEY12345"}}, "bad": "junk"}   # one that failed to build
+    text = "err BKSERIAL0001 AKSECRET9876 SKSECRET5432 nas.local 10.1.2.3:80 OLDKEY12345 10.9.9.9 v1.2.3.4x"
+    easy = c.scrub({"a": [text, ("t", text)]})
+    flat = str(easy)
+    assert "AKSECRET9876" not in flat and "SKSECRET5432" not in flat and "OLDKEY12345" not in flat    # keys: always
+    assert "BKSERIAL0001" in flat and "10.1.2.3" in flat                                               # the user's own screen keeps these
+    hard = c.scrub({"a": [text, ("t", text)]}, strict=True)
+    flat = str(hard)
+    for s in ("BKSERIAL0001", "AKSECRET9876", "SKSECRET5432", "nas.local", "10.1.2.3", "OLDKEY12345", "10.9.9.9"):
+        assert s not in flat, s
+    assert "v1.2.3.4x" in flat                                                                          # a version number is not an address
+    assert c.scrub(5, strict=True) == 5 and c.scrub(None) is None

@@ -440,7 +440,9 @@ class HomePowerPanel extends HTMLElement {
         return this._render();
       case "test-control": return this._runTest(id);
       case "copy-debug": {
-        const txt = JSON.stringify(this._diag, null, 2);
+        const dbg = await this._call({ type: "homepower/debug" }, (m) => alert(m), true);   // the same scrubbed text as the downloadable file
+        if (!dbg) return;
+        const txt = JSON.stringify(dbg, null, 2);
         try { await navigator.clipboard.writeText(txt); alert("Debug info copied (secrets are hidden)."); }
         catch (e) { prompt("Copy this debug info:", txt); }
         return;

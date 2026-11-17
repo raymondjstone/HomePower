@@ -1439,6 +1439,36 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                  "cheap": rates.in_cheap_window(x.start.astimezone(now.tzinfo).time()) if rates.windows else (x.price < 0.9 * mean)}
                 for x in found]
 
+    _IPV4 = re.compile(r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w])")
+
+    def scrub(self, obj, strict: bool = False):
+        """Remove what must never be shared from any text: the keys and passwords always, and (strict, for anything the
+        user may paste or attach) also each battery's address and serial number and any IPv4 address. Error messages are
+        where these end up, so this works on every string, however deep."""
+        secrets: set[str] = set()
+        conns = [a.config.extra.get("connection", {}) for a in self.adapters]
+        conns += [d.get("connection", {}) for d in self.manager.devices.values() if isinstance(d, dict)]   # also ones that failed to build
+        keys = ("access_key", "secret_key", "password", "token") + (("host", "sn", "serial") if strict else ())
+        for conn in conns:
+            if isinstance(conn, dict):
+                secrets |= {str(conn[k]) for k in keys if isinstance(conn.get(k), (str, int)) and len(str(conn[k])) >= 4}
+        ordered = sorted(secrets, key=len, reverse=True)
+
+        def clean(text: str) -> str:
+            for s in ordered:
+                text = text.replace(s, "<hidden>")
+            return self._IPV4.sub("<ip>", text) if strict else text
+
+        def walk(x):
+            if isinstance(x, str):
+                return clean(x)
+            if isinstance(x, dict):
+                return {k: walk(v) for k, v in x.items()}
+            if isinstance(x, (list, tuple)):
+                return [walk(v) for v in x]
+            return x
+        return walk(obj)
+
     def debug_bundle(self) -> dict:
         """One file for a bug report: everything below is already free of keys; serial numbers and addresses are removed too."""
         now = dt_util.now()
@@ -1449,10 +1479,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
 
         plain = {f.name: getattr(self.settings, f.name) for f in fields(self.settings)
                  if isinstance(getattr(self.settings, f.name), (int, float, str, bool, type(None))) and not re.search(r"notify|entity", f.name)}
-        return {"made_at": now.isoformat(), "startup": self.startup_note, "settings": plain,
+        return self.scrub({"made_at": now.isoformat(), "startup": self.startup_note, "settings": plain,
                 "batteries": diag, "command_traces": self.traces.dump(), "charge_rates": dict(self.rate_learner.rates),
                 "plan_against_actual": {a.config.device_id: self.plan_log.view(a.config.device_id, now) for a in self.adapters},
-                "events": [list(e) for e in list(self._snap.events)[-150:]], "alerts": sorted(self.alerts.active())}
+                "events": [list(e) for e in list(self._snap.events)[-150:]], "alerts": sorted(self.alerts.active())}, strict=True)
 
     def diagnostics(self) -> dict:
         out = {}
