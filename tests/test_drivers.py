@@ -729,3 +729,12 @@ def test_ultra_x_original_reserve_survives_a_restart_and_a_raised_reserve_is_not
         await h.apply(Desired(Mode.AUTO))
         assert h.api.sent[-1] == {"cfgBackupReverseSoc": 10}                       # unknown original: the battery's minimum
     asyncio.run(go())
+
+
+def test_a_resting_reserve_three_above_the_discharge_limit_is_not_mistaken_for_hold_or_charge():
+    """EcoFlow raises a reserve to at least the discharge limit + 3, so a nearly empty battery rests at 13 when min is 10."""
+    from hp.drivers.ecoflow import EcoFlowStreamDriver as D
+    for soc in (5, 11, 13, 14, 20, 80):
+        assert D._mode(13, soc, 10) is Mode.AUTO, soc
+    assert D._mode(14, 40, 10) is Mode.AUTO and D._mode(45, 40, 10) is Mode.CHARGE      # a real raise is still seen
+    assert D._mode(40, 40, 10) is Mode.HOLD and D._mode(95, 60, 10) is Mode.CHARGE

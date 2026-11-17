@@ -43,6 +43,11 @@ The four modes mean: **Auto** = the battery runs its own logic; **Charge** / **D
   it stops discharging and is not told to top up from the grid (its own panels still charge it). Charge = the reserve is
   raised to the target (95 % at most), so the battery tops itself up from the grid at its own rate: the power you set is
   not sent, and solar-only / follow-the-meter charging holds the battery instead of grid-charging it. There is no force discharge.
+  Raising the reserve is the same method other tools use to grid-charge a STREAM (the evcc EV-charging controller documents
+  setting the backup reserve to its upper limit for grid charging, and notes that EcoFlow keeps the reserve at least 3 points
+  above the discharge limit and that active control overwrites the reserve set in the EcoFlow app; HomePower puts your own
+  reserve back on Auto). That is independent support for the idea, not a test on your battery: use Test control, which reports
+  whether the battery really started charging.
 - **Regions:** Anker control is local and works in any region; grid feed-in is off by default in IT/ES/TH/VN/PH. For EcoFlow
   pick your account's region (`api-e.ecoflow.com` Europe, `api-a.ecoflow.com` Americas, `api.ecoflow.com` elsewhere).
 - **Anker's X1 register list:** Anker publishes the X1's Modbus registers as [Anker SOLIX X1 Series Modbus Protocol V1.0.0](https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf) (PDF). HomePower's X1 support and the register compare names are based on it; on a real X1 its 32-bit numbers come low word first and its text registers hold their characters low byte first, which HomePower handles.

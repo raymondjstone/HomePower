@@ -245,8 +245,10 @@ class EcoFlowStreamDriver:
 
     @staticmethod
     def _mode(reserve: float | None, soc: float | None, min_soc: float | None) -> Mode:
-        if reserve is None or reserve <= (min_soc or 0) + 2:
-            return Mode.AUTO                      # a reserve at its normal floor is just the battery's own control
+        if reserve is None or reserve <= (min_soc or 0) + 3.5:
+            # A reserve at its normal floor is just the battery's own control. EcoFlow keeps the reserve at least 3 points
+            # above the discharge limit (a lower one is raised), so a resting battery can read a little above min_soc.
+            return Mode.AUTO
         if soc is not None and reserve > soc + 1.5:
             return Mode.CHARGE
         if reserve >= HOLD_RESERVE or (soc is not None and reserve >= soc - 1.5):
