@@ -48,7 +48,7 @@ def async_register(hass: HomeAssistant) -> None:
     for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device, ws_reorder_devices, ws_scan_registers, ws_read_registers, ws_register_notes, ws_whatif, ws_backups, ws_backup_now, ws_restore_backup, ws_compare_tariffs,
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
                 ws_override, ws_clear_override,
-                ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control,
+                ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control, ws_confirm,
                 ws_save_goal, ws_delete_goal, ws_flag, ws_preview, ws_diagnostics, ws_test,
                 ws_save_scene, ws_delete_scene, ws_apply_scene, ws_export, ws_import):
         websocket_api.async_register_command(hass, cmd)
@@ -322,6 +322,16 @@ async def ws_control(hass, msg):
     if dev is None:
         raise ValidationError("unknown battery")
     await mgr.save_device({**dev, "control_enabled": msg["enabled"]})
+    return {}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/device/confirm", vol.Required("device_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_confirm(hass, msg):
+    """Allow the first real command to a battery whose control has not been tested yet."""
+    await _mgr(hass).confirm_first_command(msg["device_id"])
     return {}
 
 

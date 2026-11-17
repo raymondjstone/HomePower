@@ -115,7 +115,7 @@ class CommandBudget:
 
 
 def explain_idle(*, control_enabled: bool, paused: bool, dry_run: bool, online: bool, off_grid: bool, protected: bool,
-                 last_error: str | None, guard_held: bool, unconfirmed: int) -> str | None:
+                 last_error: str | None, guard_held: bool, unconfirmed: int, awaiting_confirm: bool = False) -> str | None:
     """The main reason a battery is not being driven right now, in plain words (None = nothing is in the way)."""
     if not online:
         return "Offline: HomePower cannot read it."
@@ -127,6 +127,8 @@ def explain_idle(*, control_enabled: bool, paused: bool, dry_run: bool, online: 
         return "HomePower is paused."
     if dry_run:
         return "Test run is on: plans are worked out but nothing is sent."
+    if awaiting_confirm:
+        return "Waiting for you to allow the first command to this battery (button on its card)."
     if protected:
         return "The battery's own protection is active; HomePower does not override it."
     if last_error:

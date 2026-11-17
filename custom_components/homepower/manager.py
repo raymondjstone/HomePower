@@ -66,6 +66,8 @@ class HomePowerManager:
         self.divert_on: str = ""                 # the solar-surplus load we switched on (to switch it off after a restart)
         self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
+        self.trace_data: dict = {}                   # what happened after each command to EcoFlow batteries
+        self.confirmed: set[str] = set()             # batteries whose first command the user has allowed
         self.plan_log_data: dict = {}                # planned against actual power per half hour
         self.charge_rates: dict[str, int] = {}       # measured charge power of batteries that pick their own rate
         self.ecoflow_orig: dict[str, dict] = {}     # EcoFlow settings as they were before HomePower held/charged (kept across restarts)
@@ -95,6 +97,8 @@ class HomePowerManager:
         self.pv_seen = set(data.get("pv_seen", []))
         self.forecast_days = dict(data.get("forecast_days", {}))
         self.plan_log_data = dict(data.get("plan_log", {}))
+        self.trace_data = dict(data.get("traces", {}))
+        self.confirmed = set(data.get("confirmed", []))
         self.charge_rates = {k: int(v) for k, v in data.get("charge_rates", {}).items() if isinstance(v, (int, float))}
         self.ecoflow_orig = {k: dict(v) for k, v in data.get("ecoflow_orig", {}).items() if isinstance(v, dict)}
         scenes = data.get("scenes")
@@ -114,6 +118,7 @@ class HomePowerManager:
             "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen), "forecast_days": self.forecast_days,
             "ecoflow_orig": self.ecoflow_orig, "charge_rates": c.rate_learner.rates if c else self.charge_rates,
             "plan_log": c.plan_log.dump() if c else self.plan_log_data,
+            "traces": c.traces.dump() if c else self.trace_data, "confirmed": sorted(self.confirmed),
         })
 
     async def save_runtime(self) -> None:
@@ -422,6 +427,15 @@ class HomePowerManager:
         await self._apply()
         return d
 
+    async def confirm_first_command(self, device_id: str) -> None:
+        """The user allowed the first real command to a battery whose control has not been proven yet."""
+        if device_id not in self.devices:
+            raise ValidationError("unknown battery")
+        self.confirmed.add(device_id)
+        await self._save()
+        if self.coordinator:
+            await self.coordinator.async_request_refresh()
+
     async def reorder_devices(self, device_ids: list[str]) -> None:
         """Put the batteries in the given order (ids not listed keep their place at the end)."""
         order = [i for i in dict.fromkeys(device_ids) if i in self.devices]
@@ -436,6 +450,7 @@ class HomePowerManager:
         self.forced.discard(device_id)
         self.tests.pop(device_id, None)
         self.ecoflow_orig.pop(device_id, None)
+        self.confirmed.discard(device_id)
         self.pv_seen.discard(device_id)
         self._remove_entities(device_id)
         for coll in (self.schedules, self.goals):  # drop references; an empty list would mean "all batteries"

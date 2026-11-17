@@ -94,3 +94,41 @@ def test_explain_idle_names_the_main_blocker():
     assert "Offline" in explain_idle(**{**ok, "online": False, "control_enabled": False})
     assert explain_idle(**{**ok, "last_error": "rate limit"}) == "rate limit"
     assert "not confirmed" in explain_idle(**{**ok, "unconfirmed": 1})
+
+
+def test_command_trace_records_whether_a_charge_command_did_anything():
+    from hp.core.traces import CommandTrace
+    t = CommandTrace()
+    t.start("e", "charge", 0, "t0", 40, 0)
+    assert t.observe("e", 30, 40, 100, "charge") is None                    # not yet
+    rec = t.observe("e", 60, 40, 2400, "charge")
+    assert rec["ok"] and rec["reaction_s"] == 60 and rec["peak_w"] == 2400
+    t.start("e", "charge", 100, "t1", 40, 0)
+    rec = t.observe("e", 800, 40, 0, "hold")                                # ten minutes of nothing
+    assert not rec["ok"] and rec["reaction_s"] is None
+    assert t.verdict("e") == "works"                                        # it did react once lately
+    t.start("e", "hold", 900, "t2", 40, 0)
+    assert t.observe("e", 910, 40, 0, "hold")["ok"]                         # a Hold is judged by the mode it reports
+
+
+def test_charge_is_called_unreliable_only_after_repeated_failures_and_can_be_reset():
+    from hp.core.traces import CommandTrace
+    t = CommandTrace()
+    for i in range(2):
+        t.start("e", "charge", 0, "t", 40, 0)
+        t.observe("e", 700, 40, 0, None)
+    assert t.verdict("e") == "unknown"
+    t.start("e", "charge", 0, "t", 40, 0)
+    t.observe("e", 700, 40, 0, None)
+    assert t.verdict("e") == "unreliable"
+    t.reset("e")
+    assert t.verdict("e") == "unknown"
+    assert CommandTrace(t.dump()).results == t.results                      # survives a restart
+    assert CommandTrace({"e": [{"bad": 1}, "junk"]}).results["e"] == []     # damaged rows are dropped
+
+
+def test_explain_idle_mentions_a_waiting_first_command():
+    from hp.core.sanity import explain_idle
+    ok = dict(control_enabled=True, paused=False, dry_run=False, online=True, off_grid=False, protected=False,
+              last_error=None, guard_held=False, unconfirmed=0)
+    assert "first command" in explain_idle(**ok, awaiting_confirm=True)

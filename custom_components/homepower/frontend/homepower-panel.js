@@ -444,6 +444,9 @@ class HomePowerPanel extends HTMLElement {
     if (d.control_enabled === false) chips.push(`<span class="chip warn" title="HomePower reads this battery but never sends it commands">Monitor only</span>`);
     if (lv.guard_held) chips.push(`<span class="chip" title="Held by the SOC limit">SOC limit reached</span>`);
     if (lv.last_error) chips.push(`<span class="chip bad" title="${esc(lv.last_error)}">Last write failed</span>`);
+    if (lv.awaiting_confirm) chips.push(`<button class="btn sm pri" data-act="confirm-first" data-id="${esc(d.device_id)}" title="This battery's control has not been proven yet. Allow HomePower to send its first real command (or pass Test control).">Allow first command</button>`);
+    if (lv.charge_verdict === "unreliable") chips.push(`<span class="chip bad" title="Several Charge commands had no effect on this battery, so HomePower no longer relies on Charge for it (it holds instead). Pass Test control to switch it back on.">Charge not working</span>`);
+    if ((lv.traces || []).length) chips.push(`<span class="chip" title="${esc(lv.traces.map((t) => `${(t.at || "").slice(5, 16).replace("T", " ")}  ${t.mode}: ${t.ok ? "reacted after " + t.reaction_s + " s" : "no effect"}, peak ${t.peak_w} W`).join("\n"))}">Command results (${lv.traces.length})</span>`);
     if (lv.why && !lv.last_error && d.control_enabled !== false && lv.online) chips.push(`<span class="chip warn" title="${esc(lv.why)}">Why idle: ${esc(lv.why.length > 48 ? lv.why.slice(0, 46) + "…" : lv.why)}</span>`);
     if (lv.measured_charge_w) chips.push(`<span class="chip" title="The charge power this battery has really shown while charging; it picks its own rate. Plans use it.">Charges at ~${fmtW(lv.measured_charge_w)} (measured)</span>`);
     if ((lv.setting_changes || []).length) chips.push(`<span class="chip" title="${esc(lv.setting_changes.map((c) => `${c.at}  ${c.key}: ${c.from} → ${c.to}`).join("\n"))}">Settings changed (${lv.setting_changes.length})</span>`);
@@ -1260,7 +1263,7 @@ class HomePowerPanel extends HTMLElement {
       <tr><th>Last good read</th><td>${x.last_read_ok ? new Date(x.last_read_ok).toLocaleString() : "never"}</td></tr>
       <tr><th>Battery reports</th><td>${esc(x.actual_mode || "?")}${x.word_order ? ` · 32-bit word order: ${esc(x.word_order)}` : ""}${(this.live.devices || {})[id] && this.live.devices[id].firmware ? ` · software ${esc(this.live.devices[id].firmware)}` : ""}</td></tr>
       <tr><th>HomePower wants</th><td>${x.desired ? esc(x.desired.mode) + (x.desired.power_w ? " " + fmtW(x.desired.power_w) : "") : "nothing (battery runs itself)"} ${x.reason ? "· " + esc(x.reason) : ""}</td></tr>
-      <tr><th>Last command</th><td>${x.last_command ? `${esc(x.last_command.mode)} ${x.last_command.power_w ? fmtW(x.last_command.power_w) : ""} at ${new Date(x.last_command.at).toLocaleTimeString()} - ${esc(x.last_command.result)}` : "none yet"}</td></tr>
+      <tr><th>Last command</th><td>${x.last_command ? `${esc(x.last_command.mode)} ${x.last_command.power_w ? fmtW(x.last_command.power_w) : ""} at ${new Date(x.last_command.at).toLocaleTimeString()} - ${esc(x.last_command.result)}${x.last_command.why ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color)">Because: ${esc(x.last_command.why)}${x.last_command.soc != null ? ` · charge ${Math.round(x.last_command.soc)}%` : ""}${x.last_command.target_soc != null ? ` → ${x.last_command.target_soc}%` : ""}${x.last_command.price != null ? ` · price ${(+x.last_command.price).toFixed(3)}` : ""}${x.last_command.grid_w != null ? ` · grid ${Math.round(x.last_command.grid_w)} W` : ""}</div>` : ""}` : "none yet"}</td></tr>
       <tr><th>Problems</th><td>${x.last_error ? `<span class="bad">${esc(x.last_error)}</span>` : "none"}${x.unconfirmed ? ` · ${x.unconfirmed} unconfirmed` : ""}${x.release_pending ? " · holding control" : ""}</td></tr></table>
       <div style="margin-top:10px"><button class="btn sm" data-act="test-control" data-id="${esc(id)}"><ha-icon icon="mdi:flask-outline" style="--mdc-icon-size:16px"></ha-icon>Test control</button>
         ${x.driver === "anker_modbus" ? `<button class="btn sm" data-act="scan-save" data-id="${esc(id)}" title="Read every register (read-only) and remember it as the starting point">Registers: save baseline</button> <button class="btn sm" data-act="scan-compare" data-id="${esc(id)}" title="Read the registers again and list what changed since the baseline">Registers: compare</button> <button class="btn sm" data-act="scan-show" data-id="${esc(id)}" title="Read every register (read-only) and list them all with their names and values">Registers: show all</button> <button class="btn sm" data-act="scan-watch" data-id="${esc(id)}" title="Watch chosen registers live (read-only): change one setting in the vendor app and see which register moves">Registers: watch</button> <a class="sub" style="font-size:12px" href="https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf" target="_blank" rel="noopener">Anker's X1 register list (PDF)</a>` : ""}</div>
@@ -1712,6 +1715,11 @@ class HomePowerPanel extends HTMLElement {
         return;
       }
       case "scan-save": case "scan-compare": return this._scanRegisters(id, act === "scan-compare");
+      case "confirm-first": {
+        if (!confirm("Allow HomePower to send its first real command to this battery? It will raise the battery's backup reserve; Auto puts it back.")) return;
+        if (await this._call({ type: "homepower/device/confirm", device_id: id }, (m) => alert(m))) await this._reload();
+        return;
+      }
       case "toggle-control": {
         const on = t.dataset.on === "1";
         if (on && !confirm("Allow HomePower to send charge/discharge commands to this battery?")) return;
