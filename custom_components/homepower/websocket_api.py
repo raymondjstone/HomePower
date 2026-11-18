@@ -434,7 +434,10 @@ async def ws_diagnostics(hass, msg):
 @websocket_api.async_response
 @_guard
 async def ws_compare_tariffs(hass, msg):
-    return _coord(hass).tariff_comparison(msg["days"])
+    try:
+        return _coord(hass).tariff_comparison(msg["days"])
+    except ValueError as err:          # the tariffs typed in Settings (e.g. one saved before a check was added): say what is wrong
+        raise ValidationError(str(err)) from err
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/device/test", vol.Required("device_id"): str})

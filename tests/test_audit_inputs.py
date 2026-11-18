@@ -89,3 +89,11 @@ def test_a_setting_of_zero_stays_zero():
     assert (s.divert_min_soc, s.divert_export_w, s.cheap_soon_below_pct) == (0, 0, 0)
     d = build({})
     assert (d.divert_min_soc, d.divert_export_w, d.cheap_soon_below_pct) == (95, 500, 60)
+
+
+def test_two_tariffs_with_the_same_name_are_refused():
+    import pytest
+    from core.tariffs import parse_tariffs
+    with pytest.raises(ValueError):
+        parse_tariffs("Agile; peak=0.30\nagile; peak=0.20")
+    assert len(parse_tariffs("Agile; peak=0.30\nGo; peak=0.28; cheap=0.08; window=00:30-04:30")) == 2

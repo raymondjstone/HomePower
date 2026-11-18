@@ -24,6 +24,8 @@ def parse_tariffs(text: str) -> list[dict]:
         name, *parts = [p.strip() for p in line.split(";")]
         if not name or "=" in name:
             raise ValueError(f"'{line}': start the line with the tariff's name")
+        if any(t["name"].lower() == name.lower() for t in out):
+            raise ValueError(f"'{name}' is listed twice: give each tariff its own name")     # results are kept by name
         kv: dict[str, str] = {}
         for p in parts:
             if "=" not in p:
