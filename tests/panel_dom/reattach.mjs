@@ -34,4 +34,13 @@ const box = el.shadowRoot.getElementById("ps-host");
 box.value = "192.168.1.5"; box.dispatchEvent(new w.Event("input", { bubbles: true, composed: true }));
 el._render();
 must("typed scan address survives a re-render", el.shadowRoot.getElementById("ps-host").value === "192.168.1.5", el.shadowRoot.getElementById("ps-host").value);
+// a header button redraws the page but keeps unsaved Settings edits
+el.tab = "settings"; await el._tabLoad(); el._render();
+const fld = [...el.shadowRoot.querySelectorAll('[id^="st-"]')].find((e) => e.type === "text" || e.type === "number");
+if (fld) {
+  const keep = fld.value; fld.value = "123456";
+  el.live.backup = !el.live.backup; el._keepForm = true; el._render(); el._keepForm = false;
+  const after = el.shadowRoot.getElementById(fld.id);
+  must("an unsaved Settings edit survives a header-button redraw", after.value === "123456", `${fld.id}: ${after.value} (was ${keep})`);
+} else must("a settings text field exists to test", false);
 process.exit(failures ? 1 : 0);

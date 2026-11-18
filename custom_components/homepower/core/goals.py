@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 
 ALL_DAYS = frozenset(range(7))
 
@@ -28,6 +28,6 @@ def next_deadline(goal: Goal, now: datetime, horizon_h: int = 36) -> datetime | 
     """The next deadline within the horizon on an allowed weekday, else None."""
     for add in range(0, 8):
         cand = datetime.combine(now.date() + timedelta(days=add), goal.by, tzinfo=now.tzinfo)
-        if cand > now and cand.weekday() in goal.days:
-            return cand if cand - now <= timedelta(hours=horizon_h) else None
+        if cand.astimezone(timezone.utc) > now.astimezone(timezone.utc) and cand.weekday() in goal.days:      # compared as real time
+            return cand if cand.astimezone(timezone.utc) - now.astimezone(timezone.utc) <= timedelta(hours=horizon_h) else None
     return None

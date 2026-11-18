@@ -509,10 +509,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if imp or exp:
             parts.append(f"Imported {imp:.0f} kWh from the grid and exported {exp:.0f} kWh.")
         cutoff = (now - timedelta(days=7)).isoformat()
-        outs = [e for e in self.grid_events.events if e["start"] >= cutoff]
-        if outs:
-            mins = sum(max(0, ((datetime.fromisoformat(e["end"]) if e["end"] else now) - datetime.fromisoformat(e["start"])).total_seconds()) for e in outs) / 60
-            parts.append(f"{len(outs)} grid outage{'s' if len(outs) != 1 else ''}, {mins:.0f} min in total.")
+        count, mins = self.grid_events.outages_since(cutoff, now)
+        if count:
+            parts.append(f"{count} grid outage{'s' if count != 1 else ''}, {mins:.0f} min in total.")
         for a in self.adapters:
             eff = self.health.efficiency(a.config.device_id)
             if eff:
@@ -1031,9 +1030,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if not self.paused:
             await self._keepalive(mono, adapters)
         self.last_grid = grid
-        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals), lambda: self._check_tariff_drift(wall),
+        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(mono, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals), lambda: self._check_tariff_drift(wall),
                      lambda: self._check_events(now, wall, actuals, rates),
-                     lambda: self._divert(wall, actuals, grid), lambda: self._sync_x1_limits(mono, adapters)):
+                     lambda: self._divert(mono, actuals, grid), lambda: self._sync_x1_limits(mono, adapters)):
             try:   # accounting / alerts are secondary: a bug there must not stop control
                 r = step()
                 if asyncio.iscoroutine(r):

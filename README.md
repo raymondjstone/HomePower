@@ -141,7 +141,7 @@ Prices are needed for goals, savings and the cheap-rate features. Any of these w
   rates sensor's history. Such sensors can run up to an hour late, so this is an estimate (the end is pulled back half an
   hour to be safe). Times you type always win.
 
-Rates in pence/cents or pounds/euros are detected automatically, or you can say which.
+Rates in pence/cents or pounds/euros are detected automatically from the whole price table (if any price is 5 or more it is pence/cents, so a 3.5p slot or a 4.1p export rate is read correctly), or you can say which. Clock-change days (23 and 25 hours) are planned in real time, so a fixed cheap window keeps its true length.
 
 **Save the battery for peak hours** (optional) holds the batteries during cheap-rate periods so their charge is kept for
 the expensive hours. It never holds while solar is producing.

@@ -450,3 +450,16 @@ def test_plan_chart_rows_stay_evenly_spaced_when_the_clocks_change():
         rows = log.view("a", now)["rows"]
         inst = [datetime.fromisoformat(r[0]).astimezone(timezone.utc) for r in rows]
         assert len(rows) == 48 and {b - a for a, b in zip(inst, inst[1:])} == {timedelta(minutes=30)}, now
+
+
+def test_outages_seen_by_two_batteries_are_counted_once():
+    from datetime import datetime, timedelta, timezone
+    from hp.core.insights import GridEvents
+    t0 = datetime(2026, 11, 10, 12, 0, tzinfo=timezone.utc)
+    g = GridEvents()
+    for did in ("a", "b"):                                   # both batteries report the same 30-minute outage (a little apart)
+        g.observe(did, did, True, t0 + (timedelta(seconds=20) if did == "b" else timedelta(0)), 50)
+        g.observe(did, did, False, t0 + timedelta(minutes=30), 40)
+    g.observe("a", "a", True, t0 + timedelta(days=2), 60)    # a second, separate outage (still open)
+    count, mins = g.outages_since((t0 - timedelta(days=1)).isoformat(), t0 + timedelta(days=2, minutes=10))
+    assert count == 2 and abs(mins - 40) < 0.5, (count, mins)

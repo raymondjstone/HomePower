@@ -174,7 +174,10 @@ class HomePowerPanel extends HTMLElement {
       <main>${body}</main>`;
     if (html === this._lastHtml) return;
     this._lastHtml = html;
+    // A header button (Pause, Backup, Away, Safe) redraws the page: keep what was typed into Settings and not yet saved.
+    const typed = this._keepForm && this.tab === "settings" ? [...app.querySelectorAll('[id^="st-"]')].filter((e) => "value" in e || "checked" in e).map((e) => [e.id, e.type === "checkbox" ? e.checked : e.value]) : null;
     app.innerHTML = html;
+    if (typed) { const now = [...app.querySelectorAll('[id^="st-"]')]; for (const [id, v] of typed) { const e = now.find((x) => x.id === id); if (e) { if (e.type === "checkbox") e.checked = v; else e.value = v; } } }
     const mb = app.querySelector("ha-menu-button");
     if (mb) { mb.hass = this._hass; mb.narrow = this._narrow; }
   }
@@ -232,7 +235,7 @@ class HomePowerPanel extends HTMLElement {
       case "safe": {
         const next = !this.data.safe;
         if (next && !confirm("Safe mode hands every battery back to its own control and stops HomePower sending any commands until you switch it off. Continue?")) return;
-        if (await this._call({ type: "homepower/safe", enabled: next }, (m) => alert(m))) { await this._reload(); }
+        if (await this._call({ type: "homepower/safe", enabled: next }, (m) => alert(m))) { this._keepForm = true; await this._reload(); this._keepForm = false; }
         return;
       }
       case "download-debug": {
@@ -247,7 +250,7 @@ class HomePowerPanel extends HTMLElement {
       case "pause": {
         const next = !this.data.paused;
         if (next && !confirm("Pause HomePower? It will stop sending commands. Batteries stay in whatever mode they were last put in.")) return;
-        if (await this._call({ type: "homepower/pause", paused: next }, (m) => alert(m))) { this.data.paused = next; this._render(); }
+        if (await this._call({ type: "homepower/pause", paused: next }, (m) => alert(m))) { this.data.paused = next; this._keepForm = true; this._render(); this._keepForm = false; }
         return;
       }
       case "add-schedule": return this._scheduleModal(this._blankSchedule(t.dataset.tpl), true);
@@ -377,7 +380,7 @@ class HomePowerPanel extends HTMLElement {
       case "add-rule": { this.shadowRoot.getElementById("st-rules").insertAdjacentHTML("beforeend", this._ruleRow({ block: "discharge" })); return; }
       case "del-rule": { t.closest(".rule").remove(); return; }
       case "flag":
-        if (await this._call({ type: "homepower/flag", flag: t.dataset.flag, enabled: t.dataset.on === "1" }, (m) => alert(m))) { this.live[t.dataset.flag] = t.dataset.on === "1"; this._render(); }
+        if (await this._call({ type: "homepower/flag", flag: t.dataset.flag, enabled: t.dataset.on === "1" }, (m) => alert(m))) { this.live[t.dataset.flag] = t.dataset.on === "1"; this._keepForm = true; this._render(); this._keepForm = false; }
         return;
       case "add-goal": return this._goalModal({ id: "", device_ids: [], target_soc: 90, by: "07:00", days: [0, 1, 2, 3, 4, 5, 6], use_forecast: false, auto_target: false, max_power_w: null, enabled: true }, true);
       case "edit-goal": return this._goalModal((this.data.goals || []).find((x) => x.id === id), false);

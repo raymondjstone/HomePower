@@ -115,10 +115,11 @@ export default (U) => {
     try { r = await this._hass.callWS({ type: "homepower/device/scan", device_id: id }); }
     catch (e) { return put(`<div class="bad">${esc(e.message || e)}</div>`); }
     const names = r.names || {}, notes = await this._loadNotes(id), addrs = [...new Set([...Object.keys(r.holding), ...Object.keys(r.input)])].sort((a, b) => a - b);
-    const text = (a) => {   // text registers (model, serial, software version) hold two characters each, low byte first
+    const text = (a) => {   // text registers (model, serial, software version) hold two characters each: low byte first on an X1, high byte first on a Solarbank
       const nm = (names[a] || [""])[0], v = r.input[a] ?? r.holding[a];
       if (!/model name|serial number|software version|hardware version/i.test(nm) || !v) return "";
-      return String.fromCharCode(v & 255, v >> 8).replace(/[^ -~]/g, "");
+      const lo = v & 255, hi = v >> 8;
+      return (r.text_low_first === false ? String.fromCharCode(hi, lo) : String.fromCharCode(lo, hi)).replace(/[^ -~]/g, "");
     };
     const dec = (a) => {   // a number held in two registers: worked out from the first of the pair, in the battery's word order
       const [, , , first, n] = names[a] || [];

@@ -369,6 +369,7 @@ class HomePowerManager:
             raise ValidationError(f"could not scan: {err}") from err
         from .core.anker_x1_map import describe_all
         out["order"] = driver._order      # 32-bit word order, so the panel can decode two-register values
+        out["text_low_first"] = bool(driver.config.extra.get("house_meter"))   # the X1 holds each text character pair low byte first; Solarbanks high byte first
         out["names"] = describe_all(bool(driver.config.extra.get("house_meter")))   # Anker's register lists: names, read/write, live-or-setting
         return out
 
@@ -543,7 +544,8 @@ class HomePowerManager:
         s = self.scenes.get(name)
         if s is None:
             raise ValidationError(f"no scene called {name}")
-        self.backup, self.away, self.paused = bool(s["backup"]), bool(s["away"]), bool(s["paused"])
+        self.backup, self.away = bool(s["backup"]), bool(s["away"])
+        self.paused = bool(s["paused"]) or self.safe          # safe mode means nothing is sent: a scene cannot quietly end it
         c = self.coordinator
         if s["settings"] and c is not None:
             entry = c.config_entry

@@ -66,7 +66,8 @@ def parse_rates(attrs: dict | None, tz=None) -> list[Slot]:
                 price = float(p)
             except (TypeError, ValueError):
                 continue
-            out.append(Slot(s, e if e is not None and e > s else s + SLOT, price))
+            e = e if e is not None and e > s else s + SLOT
+            out.append(Slot(s.astimezone(timezone.utc), e.astimezone(timezone.utc), price))
     out.sort(key=lambda x: x.start)
     return out
 
@@ -126,20 +127,25 @@ class RateTable:
         return self._fixed(t)
 
     def slots_between(self, lo: datetime, hi: datetime) -> list[Slot]:
-        """Price slots covering [lo, hi): parsed ones where known, fixed-tariff half-hours elsewhere."""
-        out = [c for s in self.slots if (c := s.clipped(lo, hi))]
+        """Price slots covering [lo, hi): parsed ones where known, fixed-tariff half-hours elsewhere. Slot times are UTC instants;
+        use .astimezone(local) for a time of day."""
+        tz = lo.tzinfo
+        lo_u, hi_u = lo.astimezone(timezone.utc), hi.astimezone(timezone.utc)      # real instants: a 23- or 25-hour day is stepped correctly
+        out = [c for s in self.slots if (c := s.clipped(lo_u, hi_u))]
         if self.peak is None and self.offpeak is None:
-            return out
+            return sorted(out, key=lambda x: x.start)
         covered = sorted((s.start, s.end) for s in out)
-        t = lo
-        while t < hi:
-            end = min(hi, (t.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=30 * (t.minute // 30 + 1))))
+        t = lo_u
+        while t < hi_u:
+            local = t.astimezone(tz) if tz else t
+            to_edge = timedelta(minutes=30 - local.minute % 30, seconds=-local.second, microseconds=-local.microsecond)   # to the next local half-hour
+            end = min(hi_u, t + to_edge)
             if not any(a <= t < b for a, b in covered):
-                p = self._fixed(t)
+                p = self._fixed(local)
                 if p is not None:
                     out.append(Slot(t, end, p))
             t = end
-        return sorted(out, key=lambda x: x.start)
+        return sorted(out, key=lambda x: x.start)         # UTC instants: subtracting two datetimes of one zone ignores a clock change
 
 
 def to_main_units(price: float, unit: str = "auto") -> float:
@@ -177,17 +183,19 @@ def infer_offpeak(samples: list[tuple[datetime, float]], until: datetime, tz=Non
     span = until - pts[0][0]
     if span < timedelta(days=min_days):
         return None
-    if tz is not None:
-        pts = [(t.astimezone(tz), p) for t, p in pts]
-        until = until.astimezone(tz)
+    zone = tz if tz is not None else pts[0][0].tzinfo           # the clock the half-hours are read on
+    utc = timezone.utc
+    pts = [(t.astimezone(utc), p) for t, p in pts]               # stepped as real time, so 23- and 25-hour days stay whole
+    until = until.astimezone(utc)
     per: list[list[float]] = [[] for _ in range(48)]
-    t = pts[0][0].replace(minute=(pts[0][0].minute // 30) * 30, second=0, microsecond=0)
+    first = pts[0][0].astimezone(zone)
+    t = pts[0][0] - timedelta(minutes=first.minute % 30, seconds=first.second, microseconds=first.microsecond)
     i = 0
     while t < until:
         while i + 1 < len(pts) and pts[i + 1][0] <= t:
             i += 1
         if pts[i][0] <= t:
-            per[_bucket(t)].append(pts[i][1])
+            per[_bucket(t.astimezone(zone))].append(pts[i][1])
         t += SLOT
     if any(not b for b in per):
         return None

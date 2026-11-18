@@ -780,3 +780,31 @@ def test_a_failed_ecoflow_hand_back_keeps_the_users_original_reserve_for_the_ret
         await d.apply(Desired(Mode.AUTO))
         assert {"cfgBackupReverseSoc": 30} in d.api.sent and d._orig is None
     asyncio.run(go())
+
+
+def test_live_connection_finishing_after_stop_is_closed_not_kept():
+    import types
+    from hp.drivers.ecoflow_live import EcoFlowLive
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            self.calls = []
+
+        def __getattr__(self, name):
+            return lambda *a, **k: self.calls.append(name)
+
+    made = []
+
+    def client_factory(*a, **k):
+        made.append(FakeClient())
+        return made[-1]
+    mqtt = types.SimpleNamespace(Client=client_factory, CallbackAPIVersion=types.SimpleNamespace(VERSION2=2))
+    cert = {"certificateAccount": "acc", "certificatePassword": "pw", "url": "x", "port": 8883}
+    live = EcoFlowLive(None, None)
+    live._connect(mqtt, cert, live._gen)                     # a normal connection is kept
+    assert live._client is made[0] and "loop_start" in made[0].calls
+    live.stop()
+    assert live._client is None and "disconnect" in made[0].calls
+    gen_then = live._gen - 1                                 # a connection that started before the stop and finishes after it
+    live._connect(mqtt, cert, gen_then)
+    assert live._client is None and "disconnect" in made[1].calls and "loop_stop" in made[1].calls

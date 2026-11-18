@@ -62,12 +62,15 @@ class LoadProfile:
 
     def expected_wh(self, start: datetime, hours: float) -> float | None:
         """Energy the house is expected to use from `start` for `hours`; None if any half-hour has not been learned yet."""
-        total, t, end = 0.0, start, start + timedelta(hours=hours)
+        tz = start.tzinfo
+        utc = timezone.utc
+        total, t, end = 0.0, start.astimezone(utc), start.astimezone(utc) + timedelta(hours=hours)      # real time: clock-change days keep their length
         while t < end:
-            if not self.known(t):
+            local = t.astimezone(tz) if tz else t
+            if not self.known(local):
                 return None
-            kind, i = self._slot(t)
-            nxt = min(end, (t.replace(minute=(t.minute // 30) * 30, second=0, microsecond=0)) + timedelta(minutes=30))
+            kind, i = self._slot(local)
+            nxt = min(end, t + timedelta(minutes=30 - local.minute % 30, seconds=-local.second, microseconds=-local.microsecond))
             total += self.avg[kind][i] * (nxt - t).total_seconds() / 3600
             t = nxt
         return total
@@ -239,6 +242,28 @@ class GridEvents:
 
     def dump(self) -> list[dict]:
         return self.events
+
+    def outages_since(self, cutoff_iso: str, now: datetime) -> tuple[int, float]:
+        """(number of outages, total minutes) since `cutoff_iso`, with batteries that saw the same outage counted once:
+        overlapping reports are merged, so two batteries do not double the figures."""
+        spans = []
+        for e in self.events:
+            if e.get("start", "") < cutoff_iso:
+                continue
+            try:
+                a = datetime.fromisoformat(e["start"])
+                b = datetime.fromisoformat(e["end"]) if e.get("end") else now
+            except (ValueError, TypeError):
+                continue
+            spans.append((a, max(a, b)))
+        spans.sort()
+        merged: list[list] = []
+        for a, b in spans:
+            if merged and a <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        return len(merged), sum((b - a).total_seconds() for a, b in merged) / 60
 
     def view(self, n: int = 20) -> list[dict]:
         return list(reversed(self.events[-n:]))
