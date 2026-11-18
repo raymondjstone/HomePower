@@ -91,6 +91,8 @@ class ModbusTcpClient:
                     await self._w.drain()
                     tid, _proto, length, _unit = struct.unpack(
                         ">HHHB", await asyncio.wait_for(self._r.readexactly(7), self.timeout))
+                    if not 2 <= length <= 260 or _proto != 0:           # not a Modbus reply (another service on this port, or garbage)
+                        raise OSError("not a Modbus TCP reply")
                     body = await asyncio.wait_for(self._r.readexactly(length - 1), self.timeout)
                     if tid != self._tid:
                         raise OSError("transaction id mismatch")
@@ -101,7 +103,8 @@ class ModbusTcpClient:
             else:
                 raise ModbusError(f"{self.host}:{self.port} unreachable: {last!r}")
         if body[0] & 0x80:
-            raise ModbusError(f"device returned exception {body[1]}", code=body[1])
+            code = body[1] if len(body) > 1 else 0
+            raise ModbusError(f"device returned exception {code}", code=code)
         return body
 
     async def _read(self, fc: int, addr: int, count: int) -> list[int]:
