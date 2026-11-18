@@ -179,8 +179,13 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
 
     def set_config(self, adapters: list[DeviceAdapter], schedules: list[ScheduleEntry], goals: list[Goal]) -> None:
         for gone in {a.config.device_id for a in self.adapters} - {a.config.device_id for a in adapters}:
-            self.alerts.forget(f"offline:{gone}"), self.alerts.forget(f"error:{gone}"), self.alerts.forget(f"grid:{gone}"), self.alerts.forget(f"alarm:{gone}:")
-            self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"stuck:{gone}"), self.alerts.forget(f"gridsign:{gone}"), self.charge_watch.forget(gone), self.rate_learner.forget(gone), self.traces.forget(gone), self._forget_plan(gone), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}"), self.alerts.forget(f"trend:{gone}")
+            dismissed: list[str] = []
+            for kind in ("offline", "error", "grid", "unconfirmed", "stuck", "gridsign", "protect", "health", "trend"):
+                dismissed += self.alerts.forget(f"{kind}:{gone}")
+            dismissed += self.alerts.forget(f"alarm:{gone}:")
+            for key in dismissed:                      # a notification about a battery that no longer exists must not stay on screen
+                self.hass.async_create_task(self._notify(key, "", False))
+            self.charge_watch.forget(gone), self.rate_learner.forget(gone), self.traces.forget(gone), self._forget_plan(gone)
             self.grid_events.forget(gone, dt_util.now())
             self.trend.days.pop(gone, None)
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
@@ -266,6 +271,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 # *end* would plan charging into peak-rate time, so the end is pulled back one half-hour.
                 a = inf.start
                 b = (datetime.combine(dt_util.now().date(), inf.end) - SLOT).time()
+                if b == a:
+                    b = inf.end                        # a one-slot window: pulling the end back would leave it empty (= all day)
             peak = inf.peak if peak is None else peak
             off = inf.offpeak if off is None else off
         if not slots and peak is None and off is None:
@@ -658,23 +665,36 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         cheapest = self._cheapest_price(rates, now)
         if cheapest is None:
             return False
-        unit = self.settings.rates_unit
+        unit = self._unit(rates)
         return to_main_units(exp, unit) > to_main_units(cheapest, unit) / 0.9
+
+    def _unit(self, rates: RateTable | None) -> str:
+        """pence or main units for the prices in use. With "auto" the whole table decides (any price of 5 or more means pence),
+        not each price on its own: otherwise a 3.5p slot or a 4.1p export rate would be read as 3.50 / 4.10 pounds."""
+        u = self.settings.rates_unit
+        if u != "auto":
+            return u
+        vals = [x.price for x in rates.slots] if rates is not None else []
+        if rates is not None:
+            vals += [v for v in (rates.peak, rates.offpeak) if v is not None]
+        if self.settings.export_price:
+            vals.append(self.settings.export_price)
+        return "pence" if any(abs(v) >= 5 for v in vals) else "main"
 
     def _is_cheap(self, rates: RateTable | None, now: datetime, price: float | None) -> bool | None:
         """Is `now` a cheap-rate period? None when there is nothing to compare with (a flat tariff)."""
         if rates is None or price is None:
             return None
         if rates.peak is not None and rates.offpeak is not None and rates.peak != rates.offpeak:
-            return price <= to_main_units((rates.peak + rates.offpeak) / 2, self.settings.rates_unit)
+            return price <= to_main_units((rates.peak + rates.offpeak) / 2, self._unit(rates))
         horizon = [s.price for s in rates.slots_between(now, now + timedelta(hours=24))]
         if len(horizon) < 4 or max(horizon) == min(horizon):
             return None
-        return to_main_units(sum(horizon) / len(horizon), self.settings.rates_unit) > price * 1.1
+        return to_main_units(sum(horizon) / len(horizon), self._unit(rates)) > price * 1.1
 
     def _price_now(self, rates: RateTable | None, now: datetime) -> float | None:
         p = rates.price_at(now) if rates else None
-        return None if p is None else to_main_units(p, self.settings.rates_unit)
+        return None if p is None else to_main_units(p, self._unit(rates))
 
     # ------------------------------------------------------------------ logging / notifications
     def _log(self, device_id: str, msg: str) -> None:
@@ -730,11 +750,15 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             await edge(f"digest_{today}", due, False, self._weekly_digest(now) if due and not self._event_state.get(f"digest_{today}") else "")
         if f"tariff_{today}" not in self._event_state:
             self._event_state[f"tariff_{today}"] = True
+            month = f"tariff_m{now:%Y%m}"
             try:
                 flag = self.tariff_comparison(30)["monthly"]["cheaper_than_current"]
             except ValueError:
                 flag = None
-            if flag:
+            if flag and not self._event_state.get(month):
+                for k in [k for k in self._event_state if k.startswith("tariff_m") and k != month]:
+                    del self._event_state[k]
+                self._event_state[month] = True      # said once this month
                 await self._notify(f"tariff_{flag['tariff']}", f"{flag['tariff']} would have been cheaper than {flag['current']} for the last {flag['months']} months running "
                                    f"(about {self.settings.currency}{flag['saved']:.2f} less in total), going by the usage HomePower recorded.", True)
         if soc is None:
@@ -867,7 +891,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 continue
             checks = {
                 f"offline:{did}": (bool(st.actual and not st.actual.online), f"{name} is offline: HomePower cannot read it.", OFFLINE_ALERT_AFTER_S),
-                f"error:{did}": (st.last_error is not None, f"A command to {name} failed: {st.last_error}", 0),
+                f"error:{did}": (st.last_error is not None, f"A command to {name} failed: {st.last_error}" if st.last_error
+                                 else f"A command to {name} failed earlier and is working again.", 0),
                 f"unconfirmed:{did}": (st.unconfirmed >= UNCONFIRMED_ALERT_AFTER, f"{name} is not following HomePower's commands (not confirmed after {UNCONFIRMED_ALERT_AFTER} tries).", 0),
                 f"grid:{did}": (bool(st.actual and st.actual.off_grid), f"{name} reports the grid is down and is running the house itself. HomePower is not sending it commands until the grid is back."
                                 + (self._cover_text() if st.actual and st.actual.off_grid else ""), 0),
@@ -875,7 +900,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             }
             act = st.actual
             watching = bool(act and act.online and did not in self.testing and not self.settings.dry_run
-                            and a.config.extra.get("control_enabled", True))
+                            and a.config.extra.get("control_enabled", True) and not self.paused and not st.awaiting_confirm
+                            and st.decision is not None and st.decision is not Decision.SKIP_PROTECTED)   # nothing was sent otherwise
             if watching:
                 tgt = st.desired.target_soc if st.desired else None
                 stuck = self.charge_watch.stuck(did, self._grid_charging(st), act.soc, act.power_w, tgt, now_s)
@@ -981,7 +1007,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 st.unconfirmed = 0
                 st.last_error = None   # nothing is being asked of it, so an old failure no longer applies
                 continue
-            if st.desired.mode is Mode.AUTO and st.actual.online and st.actual.mode in (Mode.AUTO, None):
+            if st.desired.mode is Mode.AUTO and st.actual.online and st.actual.mode in (Mode.AUTO, None) and did not in self.testing:
                 self._set_release(did, st, False)  # handed back and confirmed
             if self.paused or did in self.testing or not a.config.extra.get("control_enabled", True):
                 st.decision = None  # monitor-only / paused / being tested: read and report, never write
@@ -1091,7 +1117,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         # Battery energy that went out to the grid replaced no import: it earns the export price (if any) instead.
         out_w = sum(max(0.0, -(a.power_w or 0.0)) for a in on.values())
         exp_share = min(1.0, max(0.0, -grid) / out_w) if grid is not None and out_w > 0 else 0.0
-        unit, price = self.settings.rates_unit, self._price_now(rates, now)
+        unit, price = self._unit(rates), self._price_now(rates, now)
         exp_price = to_main_units(self.settings.export_price, unit) if self.settings.export_price else 0.0
         cheapest = self._cheapest_price(rates, now)
         first = None if cheapest is None else to_main_units(cheapest, unit)
@@ -1201,7 +1227,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         """The dearest import price in the next few hours (main units), for 'keep it for later'."""
         if rates is None:
             return None
-        ahead = [to_main_units(x.price, self.settings.rates_unit) for x in rates.slots_between(now, now + timedelta(hours=hours))]
+        ahead = [to_main_units(x.price, self._unit(rates)) for x in rates.slots_between(now, now + timedelta(hours=hours))]
         return max(ahead) if ahead else None
 
     async def _check_tariff_drift(self, wall: float) -> None:
@@ -1343,6 +1369,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if a is None:
             return {"ok": False, "steps": [{"name": "find battery", "ok": False, "detail": "unknown battery"}]}
         steps: list[dict] = []
+        if device_id in self.testing:
+            return {"ok": False, "steps": [{"name": "already testing", "ok": False, "detail": "a test of this battery is already running: wait for it to finish"}]}
+        if self.manager.safe:
+            return {"ok": False, "steps": [{"name": "safe mode", "ok": False, "detail": "safe mode is on, so HomePower sends nothing: leave safe mode first"}]}
 
         def step(name: str, ok: bool, detail: str = "") -> bool:
             steps.append({"name": name, "ok": ok, "detail": detail})
@@ -1470,8 +1500,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         lo = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
         found = rates.slots_between(lo, lo + timedelta(hours=hours))
         mean = sum(x.price for x in found) / len(found) if found else 0.0   # per-slot tariffs: 'cheap' = well below average
-        return [{"start": x.start.isoformat(), "end": x.end.isoformat(), "price": round(to_main_units(x.price, self.settings.rates_unit), 4),
-                 "cheap": rates.in_cheap_window(x.start.astimezone(now.tzinfo).time()) if rates.windows else (x.price < 0.9 * mean)}
+        return [{"start": x.start.isoformat(), "end": x.end.isoformat(), "price": round(to_main_units(x.price, self._unit(rates)), 4),
+                 "cheap": rates.in_cheap_window(x.start.astimezone(now.tzinfo).time()) if rates.windows else (x.price < mean - 0.1 * abs(mean))}
                 for x in found]
 
     _IPV4 = re.compile(r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w])")
@@ -1632,7 +1662,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         price it could avoid, at this battery's own measured round-trip efficiency (or an 85 % estimate until it has one)."""
         if rates is None:
             return None
-        ahead = [to_main_units(x.price, self.settings.rates_unit) for x in rates.slots_between(now, now + timedelta(hours=24))]
+        ahead = [to_main_units(x.price, self._unit(rates)) for x in rates.slots_between(now, now + timedelta(hours=24))]
         if len(ahead) < 2:
             return None
         eff = self.health.efficiency(did)
@@ -1680,6 +1710,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 try:
                     self.traces.cancel(a.config.device_id)
                     await a.apply(Desired(Mode.AUTO))
+                    self._set_release(a.config.device_id, st, False)     # handed back: not "held from before" at the next start
                     self._log(a.config.device_id, "released to the device's own control on shutdown")
                 except Exception as err:  # noqa: BLE001 - flag stays set, retried on next start
                     _LOGGER.warning("release failed for %s: %s", a.config.device_id, err)
