@@ -86,7 +86,12 @@ export default (U) => {
 
   _csvLink(file, rows) {
     const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
-    return `<a class="btn sm" download="${esc(file)}" href="${URL.createObjectURL(new Blob([csv], { type: "text/csv" }))}">Download CSV</a>`;
+    const urls = (this._csvUrls ||= new Map());          // one blob per distinct content: not a new one (never freed) on every refresh
+    if (!urls.has(csv)) {
+      if (urls.size >= 12) { const [k, u] = urls.entries().next().value; URL.revokeObjectURL(u); urls.delete(k); }
+      urls.set(csv, URL.createObjectURL(new Blob([csv], { type: "text/csv" })));
+    }
+    return `<a class="btn sm" download="${esc(file)}" href="${urls.get(csv)}">Download CSV</a>`;
   },
 
   _tariffCsv(t) {

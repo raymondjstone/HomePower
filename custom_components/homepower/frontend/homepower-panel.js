@@ -37,6 +37,15 @@ class HomePowerPanel extends HTMLElement {
   disconnectedCallback() {
     if (this._unsub) { this._unsub.then?.((u) => u()); this._unsub = null; }
     clearInterval(this._timer);
+    this._timer = null;
+  }
+
+  // Home Assistant may detach the panel (a hidden tab) and attach the same element again later: pick the live feed up again.
+  connectedCallback() {
+    if (!this._loaded || this._unsub || this._timer || !this._hass) return;
+    this._subscribe();
+    this._timer = setInterval(() => this._tick(false), 2000);
+    this._reload().then(() => this._render());
   }
 
   async _init() {
@@ -119,9 +128,10 @@ class HomePowerPanel extends HTMLElement {
   _tick(force) {
     if (this._modal || !this._loaded) return;
     const now = Date.now();
+    const busy = this.tab === "diagnostics" && !!this.shadowRoot.querySelector('[id^="reg-t-"]');   // a register list is open: a refresh would wipe its filter
     if (!force && now - this._lastRender < 1900) return;
     if (this.tab === "overview") this._render();
-    else if (["plan", "insights", "diagnostics"].includes(this.tab) && now - (this._lastTabLoad || 0) > 30000 && !(this._watch && this._watch.timer)) this._tabLoad();
+    else if (["plan", "insights", "diagnostics"].includes(this.tab) && now - (this._lastTabLoad || 0) > 30000 && !(this._watch && this._watch.timer) && !busy) this._tabLoad();
   }
 
   async _tabLoad() {
@@ -259,6 +269,7 @@ class HomePowerPanel extends HTMLElement {
         await this._call({ type: "homepower/schedule/delete", schedule_id: id });
         await this._reload(); return this._closeModal();
       case "add-battery": {
+        this._editingId = null;                    // a cancelled edit must not leak its id into a new battery's test
         const first = (this._cat.profiles[0] || {}).id || "custom";
         return this._batteryModal({ kind: first, name: "", capacity_wh: null, max_charge_w: null, max_discharge_w: null, min_soc: 10, priority: 0, entities: {}, mode_map: {}, connection: {}, control_enabled: false }, true);
       }
@@ -357,7 +368,7 @@ class HomePowerPanel extends HTMLElement {
         if (ok) {
           this._savedNote = true;   // survives the re-render that follows
           await this._reload();
-          setTimeout(() => { this._savedNote = false; if (this.tab === "settings" && !this._modal) this._render(); }, 3000);
+          setTimeout(() => { this._savedNote = false; if (this.tab === "settings" && !this._modal && !this.shadowRoot.activeElement) this._render(); }, 3000);   // not while the user is typing
         }
         return;
       }
@@ -474,6 +485,7 @@ class HomePowerPanel extends HTMLElement {
 
   _input(e) {
     if (e.target.id === "s-pw") this._syncSchedForm();
+    if (e.target.id === "ps-host") this._ports = { ...(this._ports || {}), host: e.target.value };   // kept across the tab's refresh
     const m = /^wi-(br|bc|ar|ac)$/.exec(e.target.id || "");
     if (m) this._whatif = { ...(this._whatif || {}), in: { br: 10, bc: 0, ar: 10, ac: 80, ...((this._whatif || {}).in || {}), [m[1]]: +e.target.value } };   // kept across the tab's periodic reload
   }

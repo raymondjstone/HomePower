@@ -14,10 +14,11 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     coord = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     if coord is None:
         return {"loaded": False}
-    return async_redact_data({
+    data = async_redact_data({
         "settings": {**entry.options},
         "devices": coord.diagnostics(),
         "view": {k: v for k, v in coord.view().items() if k != "events"},
         "events": [list(e) for e in list(coord._snap.events)[-50:]],
         "plan_notes": coord.last_result.notes,
     }, REDACT)
+    return coord.scrub(data, strict=True)        # keys redacted by name above; addresses and serials inside error text too

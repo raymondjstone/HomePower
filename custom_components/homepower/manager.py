@@ -163,7 +163,7 @@ class HomePowerManager:
     def _live_hub(self, cfg) -> EcoFlowLive | None:
         """One shared live-update connection per EcoFlow account."""
         c = cfg.extra.get("connection", {})
-        key = (c.get("access_key"), c.get("region"))
+        key = (c.get("access_key"), c.get("secret_key"), c.get("region"))      # a corrected secret must not reuse the hub built with the old one
         hub = self._hubs.get(key)
         if hub is None:
             try:
