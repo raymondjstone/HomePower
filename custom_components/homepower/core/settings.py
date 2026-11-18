@@ -90,7 +90,7 @@ def clean(raw: dict) -> dict:
             if k in INT_KEYS:
                 out[k] = max(0, int(float(v or 0)))
             elif k in FLOAT_KEYS:
-                out[k] = None if v in (None, "") else float(v)
+                out[k] = None if v in (None, "") else _finite(v)
             elif k in BOOL_KEYS:
                 out[k] = bool(v)
             elif k in STR_KEYS:
@@ -103,7 +103,7 @@ def clean(raw: dict) -> dict:
                         raise SettingsError(str(err)) from err
             elif k == "load_rules":
                 out[k] = clean_rules(v)
-        except (TypeError, ValueError) as err:
+        except (TypeError, ValueError, OverflowError, AttributeError) as err:
             raise SettingsError(f"{k} is not valid") from err
     for k in ("offpeak_start", "offpeak_end", "daily_summary_time"):
         if k in out:
@@ -144,8 +144,16 @@ def clean_rules(v) -> list[dict]:
         if block not in ("charge", "discharge", "both"):
             raise SettingsError("a load rule must block charge, discharge or both")
         above = r.get("above_w")
-        rules.append({"entity": ent, "block": block, "above_w": None if above in (None, "") else float(above)})
+        rules.append({"entity": ent, "block": block, "above_w": None if above in (None, "") else _finite(above)})
     return rules
+
+
+def _finite(v) -> float:
+    """float(v), but NaN and infinity are refused (they would flow into prices, savings and comparisons)."""
+    f = float(v)
+    if f != f or f in (float("inf"), float("-inf")):
+        raise ValueError("not a finite number")
+    return f
 
 
 @dataclass

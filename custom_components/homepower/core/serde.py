@@ -22,11 +22,20 @@ def _int(v: Any, name: str, lo: int, hi: int, default: int | None = None) -> int
         return default
     try:
         n = int(float(v))
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError, OverflowError) as e:
         raise ValidationError(f"{name} must be a number") from e
     if not lo <= n <= hi:
         raise ValidationError(f"{name} must be between {lo} and {hi}")
     return n
+
+
+def _ids(v: Any) -> frozenset:
+    """Device ids from a list of strings. A bare string or a list of other things is rejected (a string would be split into characters)."""
+    if v in (None, "", []):
+        return frozenset()
+    if not isinstance(v, (list, tuple, set, frozenset)) or not all(isinstance(x, str) for x in v):
+        raise ValidationError("device_ids must be a list of battery ids")
+    return frozenset(v)
 
 
 def _opt_int(v: Any, name: str, lo: int, hi: int) -> int | None:
@@ -210,7 +219,7 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
     if start == end and not all_day:
         raise ValidationError("start and end must differ")
     return ScheduleEntry(
-        id=sid, device_ids=frozenset(d.get("device_ids") or []),
+        id=sid, device_ids=_ids(d.get("device_ids")),
         start=start, end=end,
         desired=Desired(
             mode=mode,
@@ -263,7 +272,7 @@ def goal_from_dict(d: dict) -> Goal:
     if not days or not days <= ALL_DAYS:
         raise ValidationError("pick at least one weekday")
     return Goal(
-        id=gid, device_ids=frozenset(d.get("device_ids") or []),
+        id=gid, device_ids=_ids(d.get("device_ids")),
         target_soc=_int(d.get("target_soc"), "target SOC", 1, 100),
         by=_time(d.get("by"), "deadline"), days=days,
         use_forecast=bool(d.get("use_forecast", False)),

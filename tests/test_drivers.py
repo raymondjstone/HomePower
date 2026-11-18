@@ -756,3 +756,27 @@ def test_a_held_battery_resting_at_its_own_floor_reads_as_held_so_hold_is_not_re
         d.api._q = {"soc": 12, "backupReverseSoc": 10}
         assert (await d.read()).mode is Mode.AUTO                      # handed back: Auto again
     asyncio.run(go())
+
+
+def test_a_failed_ecoflow_hand_back_keeps_the_users_original_reserve_for_the_retry():
+    from hp.drivers.ecoflow import EcoFlowError
+
+    async def go():
+        d = eco({"cmsBattSoc": 0.0, "soc": 60, "powGetBpCms": 0.0, "backupReverseSoc": 30, "powGetSysGrid": 0})
+        await d.read()
+        await d.apply(Desired(Mode.HOLD))                       # remembers the user's own reserve (30)
+        assert d._orig == {"reserve": 30}
+        real = d.api.command
+
+        async def failing(sn, params, cmd_id=17):
+            raise EcoFlowError("EcoFlow error 1006: busy")
+        d.api.command = failing
+        with pytest.raises(ValueError):
+            await d.apply(Desired(Mode.AUTO))
+        assert d._orig == {"reserve": 30}                       # not forgotten by the failure
+        d.api.command = real
+        d.api.sent.clear()
+        d._state = {**d._state, "backupReverseSoc": 60}
+        await d.apply(Desired(Mode.AUTO))
+        assert {"cfgBackupReverseSoc": 30} in d.api.sent and d._orig is None
+    asyncio.run(go())

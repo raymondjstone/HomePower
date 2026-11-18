@@ -1,0 +1,54 @@
+"""Inputs found by the full audit: junk that used to crash instead of being refused, and addresses that must not be scanned."""
+import pytest
+
+from hp.core.modbus_map import MapError, parse_map
+from hp.core.serde import ValidationError, goal_from_dict, schedule_from_dict, _int
+from hp.core.settings import SettingsError, clean
+from hp.drivers.discovery import subnet_hosts
+
+
+def test_overflow_and_junk_numbers_are_validation_errors():
+    for bad in ("inf", "1e999", float("inf"), "nan"):
+        with pytest.raises(ValidationError):
+            _int(bad, "x", 0, 100)
+
+
+def test_device_ids_must_be_a_list_of_strings():
+    base = {"id": "s", "mode": "charge", "start": "01:00", "end": "05:00", "power_w": 1000}
+    assert schedule_from_dict({**base, "device_ids": ["a", "b"]}).device_ids == frozenset({"a", "b"})
+    assert schedule_from_dict({**base}).device_ids == frozenset()
+    for bad in ("bat1", [1, "a"], [{}], 5):
+        with pytest.raises(ValidationError):
+            schedule_from_dict({**base, "device_ids": bad})
+    with pytest.raises(ValidationError):
+        goal_from_dict({"id": "g", "target_soc": 80, "by": "07:00", "device_ids": "bat1"})
+
+
+def test_settings_refuse_nan_and_infinity_and_odd_rules():
+    for key in ("price_peak", "price_offpeak", "export_price"):
+        for bad in ("nan", "inf", "-inf"):
+            with pytest.raises(SettingsError):
+                clean({key: bad})
+    for bad in (["x"], [{"entity": "sensor.a", "above_w": "nan"}], [{"entity": "sensor.a", "above_w": "inf"}]):
+        with pytest.raises(SettingsError):
+            clean({"load_rules": bad})
+    with pytest.raises(SettingsError):
+        clean({"import_limit_w": "inf"})
+    assert clean({"price_peak": "0.3"})["price_peak"] == 0.3
+
+
+def test_register_map_with_a_junk_function_code_is_a_map_error():
+    base = {"soc": {"addr": 1}, "power": {"addr": 2, "fc": "x"}}
+    with pytest.raises(MapError):
+        parse_map(base)
+    with pytest.raises(MapError):
+        parse_map({"soc": {"addr": 1}, "power": {"addr": 2, "scale": "nan"}})
+
+
+def test_network_scan_never_covers_a_public_address():
+    assert subnet_hosts("8.8.8.8", 24) == []
+    assert subnet_hosts("203.0.113.5", 24) == []
+    assert subnet_hosts("::1", 64) == []                              # IPv6 is not scanned
+    hosts = subnet_hosts("192.168.1.10", 24)
+    assert hosts and "192.168.1.10" not in hosts and all(h.startswith("192.168.1.") for h in hosts)
+    assert subnet_hosts("10.1.2.3", 8)[0].startswith("10.1.2.")      # never wider than a /24

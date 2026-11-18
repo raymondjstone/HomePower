@@ -532,3 +532,19 @@ def test_charge_without_power_control_never_follows_solar_or_meter():
     assert r.wants["a"].mode is Mode.HOLD
     g = ScheduleEntry("g", frozenset(), time(21), time(23), Desired(Mode.CHARGE, 2000))
     assert compute(world([d], schedules=[g])).wants["a"].mode is Mode.CHARGE
+
+
+
+def test_solar_only_charging_does_not_count_another_batterys_own_panel_charging_as_surplus():
+    """Battery b charges from its own panels (never seen by the house meter) while the house imports 500 W: a solar-only
+    schedule on battery a has no surplus and must not import to charge."""
+    a = dev("a")
+    b = dev("b", soc=50, power=1500)
+    b = DevIn(b.config, Actual(online=True, soc=50, power_w=1500, mode=Mode.AUTO, pv_w=1500), controllable=True)
+    sc = sched(devs=("a",), power=3000, source="solar", start=time(0), end=time(23, 59))
+    r = compute(world([a, b], schedules=[sc], grid_w=500, grid_fresh=True, now=datetime(2026, 11, 10, 12, 0, tzinfo=UTC)))
+    assert r.wants["a"].mode is not Mode.CHARGE, r.wants["a"]
+    # the same charging seen at the meter (grid-fed, no panels) is deliberate and is not surplus either way, so a real surplus still works
+    b2 = DevIn(b.config, Actual(online=True, soc=50, power_w=1500, mode=Mode.AUTO, pv_w=0), controllable=True)
+    r2 = compute(world([a, b2], schedules=[sc], grid_w=-1000, grid_fresh=True, now=datetime(2026, 11, 10, 12, 0, tzinfo=UTC)))
+    assert r2.wants["a"].mode is Mode.CHARGE and r2.wants["a"].power_w >= 2000, r2.wants["a"]

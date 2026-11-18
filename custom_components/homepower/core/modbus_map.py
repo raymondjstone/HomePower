@@ -32,9 +32,14 @@ def _reg(name: str, raw: dict, positive: tuple[str, str] | None = None) -> dict:
         raise MapError(f"'{name}' type must be one of {sorted(TYPES)}")
     try:
         scale = float(raw.get("scale", 1))
-    except (TypeError, ValueError) as e:
+        if scale != scale or scale in (float("inf"), float("-inf")):
+            raise ValueError("not finite")
+    except (TypeError, ValueError, OverflowError) as e:
         raise MapError(f"'{name}' scale must be a number") from e
-    fc = int(raw.get("fc", 3))
+    try:
+        fc = int(raw.get("fc", 3))
+    except (TypeError, ValueError) as e:
+        raise MapError(f"'{name}' fc must be 3 (holding) or 4 (input)") from e
     if fc not in (3, 4):
         raise MapError(f"'{name}' fc must be 3 (holding) or 4 (input)")
     out = {"addrs": list(addrs), "type": typ, "scale": scale, "fc": fc}

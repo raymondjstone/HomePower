@@ -7,9 +7,14 @@ import ipaddress
 from .modbus import ModbusError, ModbusTcpClient, detect_word_order, to_i32, to_text
 
 
+_PRIVATE = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16")]
+
+
 def subnet_hosts(address: str, prefix: int, limit: int = 254) -> list[str]:
     """Hosts of the adapter's subnet (never wider than a /24 around the address)."""
     ip = ipaddress.ip_address(address)
+    if not (ip.version == 4 and any(ip in n for n in _PRIVATE)):
+        return []                                  # never scan a public network (a host with a public address on an adapter)
     net = ipaddress.ip_network(f"{address}/{max(prefix, 24)}", strict=False)
     return [str(h) for h in net.hosts() if h != ip][:limit]
 

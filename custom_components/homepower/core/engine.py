@@ -261,8 +261,10 @@ def compute(w: World) -> Result:
     trackers = [did for did, s in src.items() if did in res.wants and res.wants[did].mode is Mode.CHARGE and s in ("solar", "both")
                 and by_id[did].config.caps.power_control]
     if trackers:
-        fixed = sum(max(0.0, o.actual.power_w or 0.0) for o in w.devices
-                    if o.actual.online and o.config.device_id not in trackers)   # deliberate charging elsewhere: not surplus
+        # Charging elsewhere that comes through the house meter is not surplus. What a battery charges from its own panels never
+        # reaches the meter, so its panels' power is taken off (otherwise it would look like surplus that is not there).
+        fixed = sum(max(0.0, (o.actual.power_w or 0.0) - max(0.0, o.actual.pv_w or 0.0)) for o in w.devices
+                    if o.actual.online and o.config.device_id not in trackers)
         for did in trackers:
             source, d, old = src[did], by_id[did], res.wants[did]
             caps = d.config.caps

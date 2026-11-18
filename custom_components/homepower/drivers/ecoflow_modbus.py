@@ -158,13 +158,14 @@ class EcoFlowModbusDriver:
                 raise
         if desired.mode is Mode.AUTO:
             if point == POINT_BATTERY:                            # only ever undo our own control point
-                prev, self._prev = self._prev, None
+                prev = self._prev                                     # forgotten only after the writes succeed, so a retry still has it
                 if prev is not None and prev[0] not in (POINT_NONE, POINT_BATTERY):
                     await self._write(REG_BATTERY_TARGET + (prev[0] - 1), prev[1])    # put back the point someone else had set
                     await self._write(REG_CONTROL_POINT, prev[0])
                 else:
                     await self._write(REG_BATTERY_TARGET, 0)
                     await self._write(REG_CONTROL_POINT, POINT_NONE)   # back to the device's own energy management
+                self._prev = None
             return
         if desired.mode is Mode.HOLD:
             watts = 0

@@ -288,6 +288,8 @@ class HomePowerManager:
         old = self.devices.get(raw.get("device_id") or "", {}).get("connection", {})
         if not conn.get("secret_key") and old.get("secret_key"):
             conn["secret_key"] = old["secret_key"]
+        if not conn.get("access_key") and old.get("access_key"):
+            conn["access_key"] = old["access_key"]          # a backup file has both keys blanked: the stored ones come back
         return {**raw, "connection": conn}
 
     # ------------------------------------------------------------------ flags
@@ -566,19 +568,40 @@ class HomePowerManager:
                 "scenes": list(self.scenes.values()), "settings": settings}
 
     async def import_all(self, data: dict, entry) -> dict:
-        """Restore from export_all(). Every row is validated on its own; bad ones are reported, never half-applied."""
+        """Restore from export_all(). Every row is validated on its own; bad ones are reported, never half-applied: if anything
+        unexpected goes wrong the stored batteries, schedules, goals and scenes are put back as they were."""
         if not isinstance(data, dict) or data.get("homepower_export") != 1:
             raise ValidationError("this is not a HomePower export file")
+        before = (dict(self.devices), dict(self.schedules), dict(self.goals), dict(self.scenes))
+        try:
+            return await self._import_rows(data, entry)
+        except Exception as err:  # noqa: BLE001 - nothing may stay half restored
+            self.devices, self.schedules, self.goals, self.scenes = before
+            if isinstance(err, ValidationError):
+                raise
+            _LOGGER.warning("restore failed, nothing was changed", exc_info=True)
+            raise ValidationError(f"the file could not be restored ({type(err).__name__}); nothing was changed") from err
+
+    @staticmethod
+    def _row_name(raw, *keys: str) -> str:
+        return next((str(raw[k]) for k in keys if isinstance(raw, dict) and raw.get(k)), "?")
+
+    async def _import_rows(self, data: dict, entry) -> dict:
         added, skipped = {"devices": 0, "schedules": 0, "goals": 0, "scenes": 0}, []
         for raw in data.get("devices") or []:
             try:
+                if not isinstance(raw, dict):
+                    raise ValidationError("not a battery entry")
                 raw = self._with_saved_secret(dict(raw))
                 d = device_to_dict(device_from_dict(raw))
+                old = self.devices.get(d["device_id"])
+                if old and old.get("control_enabled", True) and not d["control_enabled"]:
+                    await self._hand_back(d["device_id"])        # control is being revoked by the restore: do not leave it forced
                 self.devices[d["device_id"]] = d
                 added["devices"] += 1
-            except (ValidationError, KeyError, TypeError) as err:
-                skipped.append(f"battery {raw.get('name') or raw.get('device_id')}: {err} (re-add it, keys are not in the file)"
-                               if "required" in str(err) else f"battery {raw.get('name') or raw.get('device_id')}: {err}")
+            except (ValidationError, KeyError, TypeError, ValueError, AttributeError, OverflowError) as err:
+                name = self._row_name(raw, "name", "device_id")
+                skipped.append(f"battery {name}: {err} (re-add it, keys are not in the file)" if "required" in str(err) else f"battery {name}: {err}")
         for kind, coll, parse, dump in (("schedules", self.schedules, schedule_from_dict, schedule_to_dict),
                                         ("goals", self.goals, goal_from_dict, goal_to_dict)):
             for raw in data.get(kind) or []:
@@ -586,15 +609,15 @@ class HomePowerManager:
                     row = dump(parse(raw))
                     coll[row["id"]] = row
                     added[kind] += 1
-                except (ValidationError, KeyError, TypeError) as err:
-                    skipped.append(f"{kind[:-1]} {raw.get('id')}: {err}")
+                except (ValidationError, KeyError, TypeError, ValueError, AttributeError, OverflowError) as err:
+                    skipped.append(f"{kind[:-1]} {self._row_name(raw, 'id')}: {err}")
         for raw in data.get("scenes") or []:
             try:
                 s = clean_scene(raw)
                 self.scenes[s["name"]] = s
                 added["scenes"] += 1
-            except SceneError as err:
-                skipped.append(f"scene {raw.get('name')}: {err}")
+            except (SceneError, KeyError, TypeError, ValueError, AttributeError, OverflowError) as err:
+                skipped.append(f"scene {self._row_name(raw, 'name')}: {err}")
         if isinstance(data.get("settings"), dict) and entry is not None:
             from .core.settings import SettingsError, clean
 

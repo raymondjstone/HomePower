@@ -346,11 +346,12 @@ class EcoFlowStreamDriver:
                 if q.get("backupSocOnOff") and self._decode(q, self.config.caps.min_soc).mode in (Mode.HOLD, Mode.CHARGE):
                     await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, cmd_id=38)  # restarted while held
                 return
-            o, self._orig = self._orig, None
+            o = self._orig                      # forgotten only once every command below has succeeded: a failed hand-back is retried with the same originals
             reserve = {"backupSocOnOff": True, "backupSoc": o["level"]} if o["on"] and o["level"] is not None else {"backupSocOnOff": False, "backupSoc": 0}
             await self.api.command(self.sn, {"bpBackupConfig": reserve}, cmd_id=38)
             if o["mode"] and o["mode"] != SELF_MODE:
                 await self.api.command(self.sn, {"workMode": o["mode"]}, cmd_id=38)
+            self._orig = None
             return
         if desired.mode not in (Mode.HOLD, Mode.CHARGE):
             raise ValueError(f"EcoFlow STREAM cannot {desired.mode.value} through the API")
@@ -400,12 +401,13 @@ class EcoFlowStreamDriver:
                 raise ValueError("cannot hold: the battery's charge level is not known yet")
             await self.api.command(self.sn, {"cfgBackupReverseSoc": int(max(3, min(HOLD_RESERVE, soc)))})
         elif desired.mode is Mode.AUTO:
-            o, self._orig = self._orig, None
+            o = self._orig                        # forgotten only after both commands succeed (a failed hand-back is retried with the same originals)
             if o is None and self._decode(self._state or self.last_quota, self.config.caps.min_soc).mode is Mode.AUTO:
                 return                            # nothing of ours to hand back: leave the user's own reserve alone
             saved = o.get("reserve") if o else None
             await self.api.command(self.sn, {"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}})
             await self.api.command(self.sn, {"cfgBackupReverseSoc": int(saved) if saved is not None else max(3, self.config.caps.min_soc)})
+            self._orig = None
         elif desired.mode is Mode.CHARGE:
             # A reserve above the charge level makes the battery top itself up from the grid, at its own rate (the power
             # cannot be set). It stops when it reaches the reserve, so the reserve is the target (95 % at most).
