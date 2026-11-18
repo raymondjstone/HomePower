@@ -43,7 +43,10 @@ def async_register(hass: HomeAssistant) -> None:
             power_w=call.data.get("power_w"),
             target_soc=call.data.get("target_soc"),
         )
-        m.coordinator.set_override(call.data.get("device_ids"), d, call.data["minutes"])
+        try:
+            m.coordinator.set_override(call.data.get("device_ids"), d, call.data["minutes"])
+        except ValueError as err:          # e.g. a mistyped battery id: say so instead of doing nothing
+            raise ServiceValidationError(str(err)) from err
         await m.coordinator.async_request_refresh()
 
     async def clear_override(call: ServiceCall) -> None:

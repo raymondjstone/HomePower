@@ -39,6 +39,10 @@ def test_schedule_validation():
         schedule_from_dict({**SCH, "days": []})
     with pytest.raises(ValidationError):
         schedule_from_dict({**SCH, "season_end": None})
+    for bad in ("13-01", "02-30", "00-10", "06-31"):                # not a day of the year: refused, not a season that never matches
+        with pytest.raises(ValidationError):
+            schedule_from_dict({**SCH, "season_end": bad})
+    assert schedule_from_dict({**SCH, "season_end": "02-29"}).season_end == (2, 29)
 
 
 def test_all_day_needs_condition():
@@ -92,3 +96,15 @@ def test_panel_devices_use_current_modes_not_the_saved_copy():
     out = current_abilities(old)
     assert "charge" in out["supported_modes"] and out["power_control"] is False and out["max_charge_w"] > 0
     assert current_abilities({"device_id": "x", "kind": "ecoflow_stream_ultra_x", "connection": {}}) == {}   # unreadable: left as saved
+
+
+def test_on_off_words_are_read_as_words():
+    from hp.core.serde import device_from_dict
+    e = schedule_from_dict({**SCH, "enabled": "false"})
+    assert e.enabled is False
+    assert schedule_from_dict({**SCH, "enabled": "on"}).enabled is True
+    with pytest.raises(ValidationError):
+        schedule_from_dict({**SCH, "enabled": "maybe"})
+    d = device_from_dict({"device_id": "x", "kind": "anker_solarbank_max_ac", "capacity_wh": 5000, "max_charge_w": 1000,
+                          "max_discharge_w": 1000, "connection": {"host": "1.2.3.4"}, "control_enabled": "false"})
+    assert d.extra["control_enabled"] is False                 # a monitor-only battery stays monitor-only

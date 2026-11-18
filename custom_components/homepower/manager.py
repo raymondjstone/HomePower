@@ -37,6 +37,9 @@ from .drivers.modbus_generic import GenericModbusDriver
 _LOGGER = logging.getLogger(__name__)
 
 
+BATTERY_SENSOR_SUFFIXES = ("soc", "power", "target", "efficiency", "cycles")   # sensor.py's per-battery unique ids
+
+
 class HomePowerManager:
     """Source of truth for user-defined batteries, schedules and goals (JSON dicts, validated)."""
 
@@ -422,8 +425,10 @@ class HomePowerManager:
         def run() -> list[dict]:
             from pathlib import Path
 
+            from . import backup_files
+
             d = Path(self._backup_dir())
-            return [{"name": p.name, "size": p.stat().st_size} for p in sorted(d.glob("homepower-*.json"), reverse=True)] if d.is_dir() else []
+            return [{"name": p.name, "size": p.stat().st_size} for p in sorted(backup_files(d), reverse=True)] if d.is_dir() else []
 
         return await self.hass.async_add_executor_job(run)
 
@@ -518,9 +523,10 @@ class HomePowerManager:
             return
         try:  # cosmetic clean-up: it must never stop a battery being deleted
             reg, eid = er.async_get(self.hass), c.config_entry.entry_id
-            prefixes = (f"{eid}_{device_id}_", f"{eid}_energy_bat_{device_id}_")
+            # its own sensors exactly (see sensor.py): a prefix would also catch another battery's ("garage" and "garage_2")
+            mine = {f"{eid}_{device_id}_{s}" for s in BATTERY_SENSOR_SUFFIXES} | {f"{eid}_energy_bat_{device_id}_{d}" for d in ("in", "out")}
             for ent in list(er.async_entries_for_config_entry(reg, eid)):
-                if ent.unique_id.startswith(prefixes):
+                if ent.unique_id in mine:
                     reg.async_remove(ent.entity_id)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("could not remove entities for %s", device_id, exc_info=True)
@@ -564,6 +570,10 @@ class HomePowerManager:
         s = self.scenes.get(name)
         if s is None:
             raise ValidationError(f"no scene called {name}")
+        try:
+            s = clean_scene(s)                               # a damaged or hand-edited saved scene: checked the same way as when saved
+        except SceneError as err:
+            raise ValidationError(f"scene {name} cannot be used: {err}. Edit and save it again") from err
         self.backup, self.away = bool(s["backup"]), bool(s["away"])
         self.paused = bool(s["paused"]) or self.safe          # safe mode means nothing is sent: a scene cannot quietly end it
         c = self.coordinator

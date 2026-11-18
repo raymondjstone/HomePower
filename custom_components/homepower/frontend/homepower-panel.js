@@ -35,6 +35,7 @@ class HomePowerPanel extends HTMLElement {
   set route(v) {}
 
   disconnectedCallback() {
+    if (this._watchStop) this._watchStop();         // a register watch must not keep reading the battery while the panel is not shown
     if (this._unsub) { this._unsub.then?.((u) => u()); this._unsub = null; }
     clearInterval(this._timer);
     this._timer = null;
@@ -236,8 +237,9 @@ class HomePowerPanel extends HTMLElement {
         const ids = [...r.querySelectorAll('input[name="o-dev"]:checked')].map((x) => x.value);
         if (!ids.length) return this._err("Pick at least one battery.");
         const charging = mode === "charge", moving = charging || mode === "discharge";
-        if (!(await this._call({ type: "homepower/override", device_ids: ids, mode, power_w: moving ? +r.getElementById("o-pw").value : null,
-              target_soc: charging ? +r.getElementById("o-soc").value : null, minutes: +r.getElementById("o-min").value }))) return;
+        const num = (id) => { const v = r.getElementById(id).value.trim(); return v === "" ? null : +v; };     // a cleared box means "not set", not 0
+        if (!(await this._call({ type: "homepower/override", device_ids: ids, mode, power_w: moving ? num("o-pw") : null,
+              target_soc: charging ? num("o-soc") : null, minutes: +r.getElementById("o-min").value }))) return;
         return this._closeModal();
       }
       case "safe": {
@@ -364,9 +366,9 @@ class HomePowerPanel extends HTMLElement {
       case "save-battery": {
         const d = this._collectBattery(t.dataset.id);
         if (!d.name) return this._err("Give the battery a name.");
-        this._editingId = null;
         if (!t.dataset.id && this.data.devices.some((x) => x.device_id === d.device_id)) return this._err("A battery with that name already exists.");
-        if (!(await this._call({ type: "homepower/device/save", device: d }))) return;
+        if (!(await this._call({ type: "homepower/device/save", device: d }))) return;     // the dialog stays open: Test still tests this battery
+        this._editingId = null;
         await this._reload(); return this._closeModal();
       }
       case "del-battery":
@@ -486,7 +488,7 @@ class HomePowerPanel extends HTMLElement {
       if (s) { await this._call({ type: "homepower/schedule/save", schedule: { ...s, enabled: t.checked } }, (m) => alert(m)); await this._reload(); }
       return;
     }
-    if (t.name === "s-mode" || t.id === "s-allday") this._syncSchedForm();
+    if (t.name === "s-mode" || t.id === "s-allday" || t.id === "s-source") this._syncSchedForm();     // the source changes the help and which batteries can do it
     if (t.id === "b-kind") this._renderProfile(t.value, {}, false);
     if (t.id === "b-devsel" && t.value) this._autofill(t.value);
     if (t.id === "b-control" && t.checked && !confirm("Allow HomePower to send charge/discharge commands to this battery?")) t.checked = false;

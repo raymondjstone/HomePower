@@ -32,11 +32,22 @@ export default (U) => {
     return out;
   },
 
+  // Date formatting options in Home Assistant's time zone (the home's clock), not the browser's; the browser's if the zone is unknown.
+  _tzOpt(o = {}) {
+    const tz = this._hass && this._hass.config && this._hass.config.time_zone;
+    if (!tz) return o;
+    if (this._tzOk === undefined || this._tzOk[0] !== tz) {
+      let ok = true; try { new Intl.DateTimeFormat("en-GB", { timeZone: tz }); } catch (e) { ok = false; }
+      this._tzOk = [tz, ok];
+    }
+    return this._tzOk[1] ? { ...o, timeZone: tz } : o;
+  },
+
   _fmtT(t, span) {
     const d = new Date(t);
-    if (span <= 36 * 3600e3) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    if (span <= 3 * 86400e3) return d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+    if (span <= 36 * 3600e3) return d.toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }));
+    if (span <= 3 * 86400e3) return d.toLocaleString([], this._tzOpt({ weekday: "short", hour: "2-digit", minute: "2-digit" }));
+    return d.toLocaleDateString([], this._tzOpt({ month: "short", day: "numeric" }));
   },
 
   // series: [{pts:[{t,v}], color, width}]; o: {lo, hi, ticks, tmin, tmax, fmtY, height, ariaLabel}

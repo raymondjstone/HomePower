@@ -201,9 +201,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 self.hass.async_create_task(self._notify(key, "", False))
             self.charge_watch.forget(gone), self.rate_learner.forget(gone), self.traces.forget(gone), self._forget_plan(gone)
             self.health.forget(gone)
-            for key in [k for k in self.meter.totals if k.startswith(f"bat:{gone}_")]:
-                del self.meter.totals[key]                      # its lifetime energy: a new battery with the same name starts from zero
+            for key in (f"bat:{gone}_in", f"bat:{gone}_out"):      # exactly its own: a prefix would also catch "garage_2" for "garage"
+                self.meter.totals.pop(key, None)                      # its lifetime energy: a new battery with the same name starts from zero
             self._event_state.pop(f"fw:{gone}", None)
+            for k in [k for k in self._event_state if k.startswith(f"x1lim:{gone}:")]:
+                del self._event_state[k]
             self.grid_events.forget(gone, dt_util.now())
             self.trend.days.pop(gone, None)
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
@@ -213,6 +215,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
 
     # ------------------------------------------------------------------ manual overrides
     def set_override(self, device_ids: list[str] | None, desired: Desired, minutes: int) -> None:
+        known = {a.config.device_id for a in self.adapters}
+        if device_ids and (unknown := sorted(set(device_ids) - known)):
+            # a mistyped id in an automation would otherwise do nothing at all, silently
+            raise ValueError(f"no battery called {', '.join(unknown)} (known: {', '.join(sorted(known)) or 'none'})")
         until = dt_util.now() + timedelta(minutes=minutes)
         for a in self.adapters:
             if not device_ids or a.config.device_id in device_ids:
@@ -1109,7 +1115,18 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 st = self._snap.devices.get(a.config.device_id)
                 if st is None or not (st.actual and st.actual.online) or (st.actual and st.actual.off_grid):
                     continue
-                changed = await drv.set_grid_limits(s.engine.import_limit_w, s.engine.export_limit_w)
+                did, pre = a.config.device_id, f"x1lim:{a.config.device_id}:"
+                mine = {}                                      # limits HomePower itself wrote, kept across restarts as "x1lim:<id>:<label>:<W>"
+                for k in [k for k in self._event_state if k.startswith(pre)]:
+                    label, _, w = k[len(pre):].partition(":")
+                    if w.isdigit():
+                        mine[label] = int(w)
+                    del self._event_state[k]
+                try:
+                    changed = await drv.set_grid_limits(s.engine.import_limit_w, s.engine.export_limit_w, mine)
+                finally:
+                    for label, w in mine.items():
+                        self._event_state[f"{pre}{label}:{w}"] = True
                 if changed:
                     self._log(a.config.device_id, "set the inverter's own " + " and ".join(changed))
 
@@ -1315,7 +1332,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             if act.online:
                 rec = self.traces.observe(did, wall, act.soc, act.power_w, act.mode.value if act.mode else None)
                 if rec:
-                    self._log(did, f"command result: {rec['mode']} {'worked' if rec['ok'] else 'had no effect'} "
+                    self._log(did, f"command result: {rec['mode']} {'worked' if rec['ok'] else 'had no effect (nearly full: not counted)' if rec.get('inconclusive') else 'had no effect'} "
                                    f"(peak {rec['peak_w']} W, {'reacted after ' + str(rec['reaction_s']) + ' s' if rec['ok'] else 'no reaction in 10 min'})")
 
     def _forget_plan(self, did: str) -> None:
@@ -1419,6 +1436,13 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if self.manager.safe:
             return {"ok": False, "steps": [{"name": "safe mode", "ok": False, "detail": "safe mode is on, so HomePower sends nothing: leave safe mode first"}]}
 
+        async def within(coro, limit: float = APPLY_TIMEOUT_S):
+            """A battery that stops answering mid-test must not hang the test (and keep the battery out of control) for ever."""
+            try:
+                return await asyncio.wait_for(coro, limit)
+            except asyncio.TimeoutError as err:
+                raise RuntimeError(f"the battery did not answer within {limit:g} s") from err
+
         def step(name: str, ok: bool, detail: str = "") -> bool:
             steps.append({"name": name, "ok": ok, "detail": detail})
             return ok
@@ -1429,7 +1453,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             return {"ok": False, "steps": steps}
         self.testing.add(device_id)
         try:
-            before = await a.read()
+            before = await within(a.read())
             if not step("battery readable", before.online, "" if before.online else "could not read the battery"):
                 return {"ok": False, "steps": steps}
             soc = before.soc if before.soc is not None else 50
@@ -1444,24 +1468,24 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             slow = not caps.power_control          # cloud batteries (EcoFlow) take a while to show a change
             if slow and want.mode is Mode.CHARGE and Mode.HOLD in caps.supported_modes:
                 # Guided check: first prove the simpler command (Hold) takes effect, then Charge.
-                await a.apply(Desired(Mode.HOLD))
+                await within(a.apply(Desired(Mode.HOLD)))
                 held, waited_h = None, 0
                 while held is None or (held.mode is not Mode.HOLD and waited_h < 45):
                     await asyncio.sleep(10)
                     waited_h += 10
                     if drv is not None and hasattr(drv, "_cache"):
                         drv._cache = None
-                    held = await a.read()
+                    held = await within(a.read())
                 step("sent hold", held.mode is Mode.HOLD,
                      f"after {waited_h} s the battery reports mode={held.mode.value if held.mode else '?'} (Hold raises its backup reserve to the current charge level)")
-            await a.apply(want)
+            await within(a.apply(want))
             after, waited = None, 0
             while after is None or (after.mode != want.mode and waited < (45 if slow else 0)):
                 await asyncio.sleep(10 if slow else 6)
                 waited += 10 if slow else 6
                 if drv is not None and hasattr(drv, "_cache"):
                     drv._cache = None                  # make the next read ask the battery, not repeat the last answer
-                after = await a.read()
+                after = await within(a.read())
             ok_mode = after.mode == want.mode
             ok_pw = want.power_w is None or after.set_power_w is None or abs(after.set_power_w - want.power_w) <= 10
             step(f"sent {want.mode.value}" + (f" {want.power_w} W" if want.power_w and caps.power_control else ""), ok_mode and ok_pw,
@@ -1469,7 +1493,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             if slow and want.mode is Mode.CHARGE:
                 if drv is not None and hasattr(drv, "_cache"):
                     drv._cache = None
-                later = await a.read()
+                later = await within(a.read())
                 moved = (later.power_w or 0) >= 50 or (later.soc or 0) > soc + 0.5
                 if moved:
                     self.traces.reset(device_id)       # proven by hand: Charge is offered again
@@ -1482,7 +1506,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 # The set point reads back from the same register that was written, so it cannot show a reversed sign: check the
                 # battery's own power reading moves the way the command says (only for the local EcoFlow driver, whose sign is unconfirmed; an info line).
                 await asyncio.sleep(6)
-                later = await a.read()
+                later = await within(a.read())
                 sign = 1 if want.mode is Mode.CHARGE else -1
                 p, p0 = later.power_w, before.power_w
                 moved = None if p is None or p0 is None else (p - p0) * sign       # how far the power moved the way the command asks
@@ -1499,11 +1523,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 else:
                     detail, good = f"asked to {want.mode.value} {want.power_w} W; the battery's power is {p:.0f} W (it had not clearly moved yet, so the direction could not be checked).", True
                 steps.append({"name": "power moves the right way", "ok": good, "info": True, "detail": detail})
-            await a.apply(Desired(Mode.AUTO))
+            await within(a.apply(Desired(Mode.AUTO)))
             await asyncio.sleep(3)
             if drv is not None and hasattr(drv, "_cache"):
                 drv._cache = None
-            final = await a.read()
+            final = await within(a.read())
             ok_back = final.mode in (Mode.AUTO, None)
             step("handed back", ok_back, f"battery reports mode={final.mode.value if final.mode else '?'}")
             if ok_back:
@@ -1511,7 +1535,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         except Exception as err:  # noqa: BLE001 - report, then still try to hand back
             step("error", False, str(err))
             try:
-                await a.apply(Desired(Mode.AUTO))
+                await within(a.apply(Desired(Mode.AUTO)), HANDBACK_TIMEOUT_S)
             except Exception:  # noqa: BLE001
                 pass
         finally:

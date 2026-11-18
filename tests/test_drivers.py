@@ -33,6 +33,7 @@ class FakeAnker:
         self.inp[addr], self.inp[addr + 1] = from_i32(value, self.order)
 
     async def handle(self, r, w):
+        self.conns = getattr(self, "conns", set()) | {w}
         try:
             while True:
                 tid, _p, ln, unit = struct.unpack(">HHHB", await r.readexactly(7))
@@ -79,7 +80,9 @@ async def fake_anker(order="big"):
         yield dev
     finally:
         srv.close()
-        await srv.wait_closed()
+        for w in getattr(dev, "conns", ()):      # a test that failed before closing its driver must not leave the server waiting for ever
+            w.close()
+        await asyncio.wait_for(srv.wait_closed(), 5)
 
 
 def cfg(port, **extra):
@@ -133,6 +136,28 @@ def test_register_scan_reads_without_writing_and_skips_unanswered_ranges():
                 assert out["input"]["10014"] == 62 and out["holding"]["10064"] == 3
                 assert "10049" not in out["holding"] and not any(k.startswith("590") for k in {**out["input"], **out["holding"]})
                 assert dev.writes == []                                      # never writes
+            finally:
+                await d.close()
+    asyncio.run(go())
+
+
+def test_x1_grid_limits_homepower_set_follow_the_setting_up_and_off_but_not_someone_elses():
+    async def go():
+        async with fake_anker() as dev:
+            for a in range(10060, 10085):
+                dev.hold.setdefault(a, 0)
+            d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            d._order = "big"
+            exp = lambda: (dev.hold[10074], dev.hold[10075] << 16 | dev.hold[10076])
+            try:
+                mine: dict = {}
+                assert await d.set_grid_limits(None, 3000, mine) == ["export limit 3000 W"] and mine == {"export": 3000}
+                assert await d.set_grid_limits(None, 5000, mine) == ["export limit 5000 W"] and exp() == (2, 5000)   # ours: raised
+                assert await d.set_grid_limits(None, None, mine) == ["export limit off"] and exp()[0] == 0 and mine == {}
+                assert await d.set_grid_limits(None, 3000, mine) == ["export limit 3000 W"]
+                dev.hold[10076] = 2500                               # changed in the Anker app since: no longer ours
+                assert await d.set_grid_limits(None, 5000, mine) == [] and exp() == (2, 2500) and mine == {}
+                assert await d.set_grid_limits(None, None, mine) == [] and exp() == (2, 2500)                         # and never switched off
             finally:
                 await d.close()
     asyncio.run(go())
@@ -253,6 +278,18 @@ def test_auto_when_not_ours_writes_nothing():
 def test_offline_device_is_reported_not_raised():
     c = cfg(1)
     assert asyncio.run(AnkerModbusDriver(c).read()).online is False
+
+
+def test_scan_reads_an_x1s_model_and_serial_the_x1_way():
+    async def go():
+        async with fake_anker() as dev:
+            for i, w in enumerate((12632, 18477, 19254, 21293, 0, 0, 0, 0, 0, 0)):   # "X1-H6K-S", characters low byte first
+                dev.inp[10090 + i] = w
+            for i, w in enumerate(struct.unpack("<6H", b"APC123456789")):          # its serial, stored the same way
+                dev.inp[10100 + i] = w
+            found = await discovery.scan(["127.0.0.1"], port=dev.port)
+            assert found[0]["model"] == "X1-H6K-S" and found[0]["serial"] == "APC123456789", found[0]   # not "PA1C..."
+    asyncio.run(go())
 
 
 def test_scan_finds_the_battery_and_ignores_others():
@@ -815,6 +852,42 @@ def test_live_connection_finishing_after_stop_is_closed_not_kept():
     assert live._client is None and "disconnect" in made[1].calls and "loop_stop" in made[1].calls
 
 
+def test_stopping_live_updates_never_blocks_the_event_loop():
+    import threading
+    import types
+    from hp.drivers.ecoflow_live import EcoFlowLive
+
+    release = threading.Event()
+
+    class SlowClient:                                         # loop_stop() waits for the network thread, which may be stuck
+        def __init__(self, *a, **k):
+            self.calls = []
+
+        def loop_stop(self):
+            release.wait(5)
+            self.calls.append("loop_stop")
+
+        def __getattr__(self, name):
+            return lambda *a, **k: self.calls.append(name)
+
+    async def go():
+        made = []
+        mqtt = types.SimpleNamespace(Client=lambda *a, **k: made.append(SlowClient()) or made[-1],
+                                     CallbackAPIVersion=types.SimpleNamespace(VERSION2=2))
+        live = EcoFlowLive(None, asyncio.get_running_loop())
+        live._connect(mqtt, {"certificateAccount": "a", "certificatePassword": "p", "url": "x", "port": 8883}, live._gen)
+        live.stop()                                           # returns at once, with the slow part handed off
+        assert live._client is None and "loop_stop" not in made[0].calls
+        release.set()
+        for _ in range(100):
+            if "loop_stop" in made[0].calls:
+                break
+            await asyncio.sleep(0.02)
+        c = made[0].calls
+        assert c.index("disconnect") < c.index("loop_stop")      # disconnect while the loop can still send it
+    asyncio.run(go())
+
+
 def test_ecoflow_retry_never_overwrites_the_users_own_reserve():
     async def go():
         d = eco({"cmsBattSoc": 0.0, "soc": 31, "powGetBpCms": 0.0, "backupReverseSoc": 30, "powGetSysGrid": 0})
@@ -877,3 +950,21 @@ def test_a_register_scale_of_zero_is_refused():
     from hp.core.modbus_map import MapError, parse_map
     with pytest.raises(MapError):
         parse_map({**ANKER_AS_MAP, "soc": {**ANKER_AS_MAP["soc"], "scale": 0}})
+
+
+def test_ecoflow_before_its_first_reading_never_guesses_the_model():
+    async def go():
+        c = eco({})
+        # a STREAM 5000's originals, remembered across a restart: handed back the 5000 way although nothing has been read yet
+        d = EcoFlowStreamDriver(c.config, session=None, orig={"on": True, "level": 30, "mode": "WORKMODE_TIMER"})
+        d.api = FakeApi({})
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == [{"bpBackupConfig": {"backupSocOnOff": True, "backupSoc": 30}}, {"workMode": "WORKMODE_TIMER"}]
+        # nothing remembered and nothing read: no command at all, and Hold is refused rather than sent in a guessed format
+        d2 = EcoFlowStreamDriver(c.config, session=None)
+        d2.api = FakeApi({})
+        await d2.apply(Desired(Mode.AUTO))
+        with pytest.raises(ValueError):
+            await d2.apply(Desired(Mode.HOLD))
+        assert d2.api.sent == []
+    asyncio.run(go())

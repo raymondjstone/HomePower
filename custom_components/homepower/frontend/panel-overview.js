@@ -51,7 +51,7 @@ export default (U) => {
     const st = x.settings || {}, num = (k, l) => `<div class="f"><label>${l}</label><input type="number" id="sc-${k}" min="0" step="100" value="${st[k] ?? ""}" placeholder="unchanged"></div>`;
     this._openModal(`<div class="overlay" data-close-bg><div class="modal" role="dialog" aria-label="Scene">
       <h2>${isNew ? "New scene" : "Edit scene"}</h2>
-      <div class="f"><label>Name</label><input type="text" id="sc-name" value="${esc(x.name || "")}" placeholder="e.g. EV charging night"></div>
+      <div class="f"><label>Name</label><input type="text" id="sc-name" maxlength="40" value="${esc(x.name || "")}" placeholder="e.g. EV charging night"></div>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="sc-backup" ${x.backup ? "checked" : ""}>Backup mode on</label>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="sc-away" ${x.away ? "checked" : ""}>Away mode on</label>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="sc-paused" ${x.paused ? "checked" : ""}>Pause control (only read, send no commands)</label>
@@ -138,7 +138,7 @@ export default (U) => {
     if (lv.temp_c != null) chips.push(`<span class="chip" title="Inverter internal temperature">${lv.temp_c.toFixed(0)}°C</span>`);
     for (const al of lv.alarms || []) chips.push(`<span class="chip warn" title="The device itself reports this">${esc(al)}</span>`);
     if (lv.reason) chips.push(`<span class="chip" title="Why HomePower is doing this">${esc(lv.reason)}</span>`);
-    if (lv.override) chips.push(`<span class="chip m" style="background:#7c3aed">Manual: ${(MODES[lv.override.mode] || {}).label} until ${new Date(lv.override.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>`);
+    if (lv.override) chips.push(`<span class="chip m" style="background:#7c3aed">Manual: ${(MODES[lv.override.mode] || {}).label} until ${new Date(lv.override.until).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}</span>`);
     if (d.control_enabled === false) chips.push(`<span class="chip warn" title="HomePower reads this battery but never sends it commands">Monitor only</span>`);
     if (lv.guard_held) chips.push(`<span class="chip" title="Held by the SOC limit">SOC limit reached</span>`);
     if (lv.last_error) chips.push(`<span class="chip bad" title="${esc(lv.last_error)}">Last write failed</span>`);

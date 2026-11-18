@@ -43,8 +43,10 @@ def schedule_warnings(s: dict, devices: list[dict]) -> list[str]:
         elif mode == "charge" and d.get("power_control") is False and s.get("power_w"):
             out.append(f"{_name(d)} picks its own charge rate, so the power you set is ignored: it charges at its own speed and stops at the target.")
         tgt, floor = s.get("target_soc"), d.get("min_soc")
-        if mode in ("charge", "discharge") and tgt is not None and floor is not None and tgt <= floor:
+        if mode == "charge" and tgt is not None and floor is not None and tgt <= floor:
             out.append(f"The target ({tgt}%) is not above {_name(d)}'s minimum charge ({floor}%), so it would not charge past it.")
+        elif mode == "discharge" and tgt is not None and floor is not None and tgt < floor:     # discharging down to the minimum is normal
+            out.append(f"The target ({tgt}%) is below {_name(d)}'s minimum charge ({floor}%), so it stops at {floor}% instead.")
     return out
 
 

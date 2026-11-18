@@ -185,26 +185,37 @@ class AnkerModbusDriver:
             pass
         return info
 
-    async def set_grid_limits(self, import_w: int | None, export_w: int | None) -> list[str]:
+    async def set_grid_limits(self, import_w: int | None, export_w: int | None, mine: dict[str, int] | None = None) -> list[str]:
         """X1 only: mirror HomePower's house import / export limit into the inverter's own limit registers
         (10074 export mode, 10075-76 value, 10077 import mode, 10078-79 value; mode 0 off, 2 fixed watts), so the
-        limit also holds if Home Assistant is down. Cautious by design: it only ever sets a limit that is lower than
-        one already active (an installer's grid-code limit is never raised or switched off) and writes nothing that
-        is already right. Returns what it changed."""
+        limit also holds if Home Assistant is down. Cautious by design: a limit HomePower did not write (an installer's
+        grid-code limit) is only ever tightened, never raised or switched off; nothing that is already right is written.
+        `mine` holds the limits HomePower itself wrote ({"export": W, "import": W}, kept across restarts by the caller and
+        updated here): one of those still in place follows HomePower's setting up as well as down, and is switched off
+        again when HomePower's limit is cleared. Returns what it changed."""
         if self._order is None:
             return []             # the 32-bit word order is not known yet: never write a number that could be misread
+        mine = mine if mine is not None else {}
         hold = await self.client.read_holding(10074, 6)
         order, changed = self._order, []
         for label, base, want in (("export", 0, export_w), ("import", 3, import_w)):
-            if not want or want <= 0:
-                continue
             mode, cur = hold[base], to_u32(hold[base + 1], hold[base + 2], order)
+            ours = mode == 2 and mine.get(label) == cur          # still the value HomePower wrote: nobody has changed it since
+            if mode == 2 and mine.get(label) is not None and not ours:
+                mine.pop(label, None)                            # changed in the app or by an installer since: no longer ours
+            if not want or want <= 0:
+                if ours:                                         # HomePower's limit was cleared: take ours off again
+                    await self.client.write_register(10074 + base, 0)
+                    mine.pop(label, None)
+                    changed.append(f"{label} limit off")
+                continue
             if mode == 2 and cur == want:
                 continue
-            if mode != 0 and cur and cur < want:
-                continue          # the inverter already has a stricter limit: leave it alone
+            if mode != 0 and cur and cur < want and not ours:
+                continue          # the inverter already has a stricter limit someone else set: leave it alone
             await self.client.write_multiple(10074 + base + 1, from_i32(int(want), order))
             await self.client.write_register(10074 + base, 2)
+            mine[label] = int(want)
             changed.append(f"{label} limit {want} W")
         return changed
 

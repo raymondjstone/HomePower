@@ -29,6 +29,22 @@ def _int(v: Any, name: str, lo: int, hi: int, default: int | None = None) -> int
     return n
 
 
+def _flag(v: Any, name: str, default: bool) -> bool:
+    """An on/off field. Words are read as words: "false" or "off" (e.g. in a hand-edited backup file) is off, not on."""
+    if v is None or v == "":
+        return default
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    t = str(v).strip().lower()
+    if t in ("true", "on", "yes", "1"):
+        return True
+    if t in ("false", "off", "no", "0"):
+        return False
+    raise ValidationError(f"{name} must be true or false")
+
+
 def _ids(v: Any) -> frozenset:
     """Device ids from a list of strings. A bare string or a list of other things is rejected (a string would be split into characters)."""
     if v in (None, "", []):
@@ -70,7 +86,7 @@ def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
             raise ValidationError("the battery's IP address is required")
         out = {"host": host, "port": _int(raw.get("port"), "port", 1, 65535, 502),
                "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, 1)}
-        if driver == "ecoflow_modbus" and raw.get("reverse_sign"):
+        if driver == "ecoflow_modbus" and _flag(raw.get("reverse_sign"), "reverse sign", False):
             out["reverse_sign"] = True
         return out
     if driver == "ecoflow_stream":
@@ -139,11 +155,11 @@ def device_from_dict(d: dict) -> DeviceConfig:
             if not m["optional"] and m["k"] not in mode_map:
                 raise ValidationError(f"select option for '{m['label']}' is required")
         extra.update(strategy="generic", entities=ents, mode_map=mode_map,
-                     invert_power=bool(d.get("invert_power", False)), control_enabled=bool(d.get("control_enabled", True)))
+                     invert_power=_flag(d.get("invert_power"), "invert power", False), control_enabled=_flag(d.get("control_enabled"), "control enabled", True))
     else:
         extra.update(connection=connection,
                      restore_mode=int(profile.get("restore_mode", 0)), watchdog=bool(profile.get("watchdog", False)),
-                     control_enabled=bool(d.get("control_enabled", False)))  # monitor-only until the user opts in
+                     control_enabled=_flag(d.get("control_enabled"), "control enabled", False))  # monitor-only until the user opts in
     grid_meter = str(d.get("grid_meter") or "auto")
     if grid_meter not in ("auto", "yes", "no"):
         raise ValidationError("grid meter must be auto, yes or no")
@@ -171,9 +187,9 @@ def device_to_dict(c: DeviceConfig) -> dict:
         "max_discharge_w": c.caps.max_discharge_w, "min_soc": c.caps.min_soc,
         "supported_modes": sorted(m.value for m in c.caps.supported_modes), "power_control": c.caps.power_control,
         "driver": e.get("driver", "entities"), "connection": e.get("connection", {}),
-        "control_enabled": bool(e.get("control_enabled", True)),
+        "control_enabled": _flag(e.get("control_enabled"), "control enabled", True),
         "entities": e.get("entities", {}), "mode_map": e.get("mode_map", {}),
-        "invert_power": bool(e.get("invert_power", False)), "role": e.get("role", "normal"), "solar": e.get("solar", "auto"), "grid_meter": e.get("grid_meter", "auto"),
+        "invert_power": _flag(e.get("invert_power"), "invert power", False), "role": e.get("role", "normal"), "solar": e.get("solar", "auto"), "grid_meter": e.get("grid_meter", "auto"),
     }
 
 
@@ -195,8 +211,9 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
     def md(v):
         if not v:
             return None
-        m, dd = str(v).split("-")[-2:]
-        return int(m), int(dd)
+        m, dd = (int(x) for x in str(v).split("-")[-2:])
+        date(2000, m, dd)               # a real day of the year (2000 is a leap year, so 02-29 is allowed)
+        return m, dd
 
     try:
         season = (md(d.get("season_start")), md(d.get("season_end")))
@@ -205,7 +222,7 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
         raise ValidationError("invalid date") from e
     if (season[0] is None) != (season[1] is None):
         raise ValidationError("season needs both start and end")
-    all_day = bool(d.get("all_day", False))
+    all_day = _flag(d.get("all_day"), "all day", False)
     presence = str(d.get("presence") or "any")
     if presence not in ("any", "home", "away"):
         raise ValidationError("presence must be any, home or away")
@@ -229,7 +246,7 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
         ),
         days=days, priority=_int(d.get("priority"), "priority", -100, 100, 0),
         season_start=season[0], season_end=season[1], on_date=on_date,
-        enabled=bool(d.get("enabled", True)), all_day=all_day, condition_entity=cond,
+        enabled=_flag(d.get("enabled"), "enabled", True), all_day=all_day, condition_entity=cond,
         total_power_w=_opt_int(d.get("total_power_w"), "total power", 0, 200000),
         presence=presence, source=source if mode is Mode.CHARGE else "grid",
     )
@@ -275,9 +292,9 @@ def goal_from_dict(d: dict) -> Goal:
         id=gid, device_ids=_ids(d.get("device_ids")),
         target_soc=_int(d.get("target_soc"), "target SOC", 1, 100),
         by=_time(d.get("by"), "deadline"), days=days,
-        use_forecast=bool(d.get("use_forecast", False)),
+        use_forecast=_flag(d.get("use_forecast"), "use forecast", False),
         max_power_w=_opt_int(d.get("max_power_w"), "max power", 0, 200000),
-        enabled=bool(d.get("enabled", True)), auto_target=bool(d.get("auto_target", False)), source=_goal_source(d.get("source")),
+        enabled=_flag(d.get("enabled"), "enabled", True), auto_target=_flag(d.get("auto_target"), "auto target", False), source=_goal_source(d.get("source")),
     )
 
 

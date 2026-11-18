@@ -42,6 +42,15 @@ def parse_topic(topic: str) -> tuple[str, str] | None:
     return None
 
 
+def _close(client) -> None:
+    """Disconnect first, while the network loop can still send it, then stop the loop. Blocking: call off the event loop."""
+    try:
+        client.disconnect()
+        client.loop_stop()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class EcoFlowLive:
     """One MQTT connection per EcoFlow account, shared by that account's batteries."""
 
@@ -126,11 +135,7 @@ class EcoFlowLive:
             if gen == self._gen:
                 self._client = client
                 return
-        try:                            # stopped (unload, live updates switched off, last battery gone) while connecting: do not leave it running
-            client.loop_stop()
-            client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
+        _close(client)                  # stopped (unload, live updates switched off, last battery gone) while connecting: do not leave it running
 
     def _dispatch(self, topic: str, payload: bytes) -> None:
         try:
@@ -152,8 +157,8 @@ class EcoFlowLive:
         if self._task is not None and not self._task.done():
             self._task.cancel()
         if client is not None:
-            try:
-                client.loop_stop()
-                client.disconnect()
-            except Exception:  # noqa: BLE001
-                pass
+            # loop_stop() waits for paho's network thread (it can be mid TLS handshake or reconnect wait): never on the event loop
+            if self.loop is None or self.loop.is_closed():
+                _close(client)            # no loop left to hand it to (shutdown): close it here
+            else:
+                self.loop.run_in_executor(None, _close, client)

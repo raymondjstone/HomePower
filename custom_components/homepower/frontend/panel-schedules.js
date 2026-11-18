@@ -6,7 +6,7 @@ export default (U) => {
     const ev = (this.live.events || []).slice().reverse().slice(0, 30);
     if (!ev.length) return `<div class="sub" style="color:var(--secondary-text-color)">Nothing yet. Commands HomePower sends to your batteries will be listed here.</div>`;
     const name = (id) => (this.data.devices.find((d) => d.device_id === id) || {}).name || id;
-    return `<div class="log">${ev.map(([t, id, m]) => `<div><span class="t">${esc(new Date(t).toLocaleTimeString())}</span> <b>${esc(name(id))}</b> ${esc(m)}</div>`).join("")}</div>`;
+    return `<div class="log">${ev.map(([t, id, m]) => `<div><span class="t">${esc(new Date(t).toLocaleTimeString([], this._tzOpt()))}</span> <b>${esc(name(id))}</b> ${esc(m)}</div>`).join("")}</div>`;
   },
 
   // ---- schedules tab -----------------------------------------------------

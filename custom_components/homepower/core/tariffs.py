@@ -6,6 +6,7 @@ Tariffs are typed one per line in Settings, in main currency units per kWh:
 from __future__ import annotations
 
 from datetime import time
+from math import isfinite
 
 MAX_TARIFFS = 8
 
@@ -48,6 +49,8 @@ def parse_tariffs(text: str) -> list[dict]:
             export, standing = float(kv.get("export", 0)), float(kv.get("standing", 0))
         except (ValueError, TypeError) as err:
             raise ValueError(f"'{name}': a number or a time (HH:MM-HH:MM) is not valid") from err
+        if not all(isfinite(x) for x in (peak, export, standing) + ((cheap,) if cheap is not None else ())):
+            raise ValueError(f"'{name}': a price must be a number")       # 'nan' or 'inf' parse as floats
         if (cheap is None) != (not windows):
             raise ValueError(f"'{name}': give both cheap=... and window=..., or neither")
         out.append({"name": name, "peak": peak, "cheap": cheap, "windows": windows, "export": export, "standing": standing})

@@ -33,12 +33,17 @@ def _is_on(s: str | None) -> bool:
     return s == "on"
 
 
+def _domain(entity_id: str, own: str, helper: str) -> str:
+    """The service domain for an entity: a helper (input_number / input_select) takes its own domain's service."""
+    return helper if str(entity_id).startswith(helper + ".") else own
+
+
 def _number(ent: dict, key: str, value: int) -> list[Command]:
-    return [("number", "set_value", {"entity_id": ent[key], "value": value})] if ent.get(key) else []
+    return [(_domain(ent[key], "number", "input_number"), "set_value", {"entity_id": ent[key], "value": value})] if ent.get(key) else []
 
 
 def _select(ent: dict, key: str, option: str | None) -> list[Command]:
-    return [("select", "select_option", {"entity_id": ent[key], "option": option})] if ent.get(key) and option else []
+    return [(_domain(ent[key], "select", "input_select"), "select_option", {"entity_id": ent[key], "option": option})] if ent.get(key) and option else []
 
 
 def _switch(ent: dict, key: str, on: bool) -> list[Command]:

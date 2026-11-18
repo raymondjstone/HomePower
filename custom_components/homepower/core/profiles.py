@@ -95,10 +95,10 @@ DRIVERS: dict[str, dict] = {
         "entities": [
             _f("soc", "State of charge (%)", ["sensor"], True, r"soc|state.?of.?charge|battery.?level"),
             _f("power", "Battery power (W, + charging)", ["sensor"], True, r"battery.*power|power"),
-            _f("mode", "Operating mode (select)", ["select"], True, r"mode|work|strateg"),
-            _f("set_power", "Charge/discharge power setpoint", ["number"], True, r"power|watt"),
-            _f("target_soc", "Target SOC (optional)", ["number"], False, r"target|upper|max.*soc"),
-            _f("reserve_soc", "Reserve SOC (optional)", ["number"], False, r"reserve|backup|lower|min.*soc"),
+            _f("mode", "Operating mode (select)", ["select", "input_select"], True, r"mode|work|strateg"),
+            _f("set_power", "Charge/discharge power setpoint", ["number", "input_number"], True, r"power|watt"),
+            _f("target_soc", "Target SOC (optional)", ["number", "input_number"], False, r"target|upper|max.*soc"),
+            _f("reserve_soc", "Reserve SOC (optional)", ["number", "input_number"], False, r"reserve|backup|lower|min.*soc"),
             _f("protected", "Protection flag (optional)", ["binary_sensor"], False, r"protect|calibrat"),
         ],
         "mode_map": [

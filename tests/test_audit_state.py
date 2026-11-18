@@ -28,7 +28,8 @@ def test_saved_nulls_and_nans_load_as_zero_not_as_a_crash():
     assert EnergyMeter(saved).totals == {"grid_in": 0.0, "x_out": 0.0, "y_in": 2.5}
     lg = Ledger({"2026-11-01": {"saved": None, "bought": 1.5}, "bad": "x"}, {"a": [None, 0.3], "b": "junk", "c": [1.0, 2.0]})
     assert lg.days == {"2026-11-01": {"saved": 0.0, "bought": 1.5}} and lg.stores == {"a": [0.0, 0.3], "c": [1.0, 2.0]}
-    assert DailyStats({"2026-11-01": {"pv": None, "export": 1.0}, "x": 5}).days == {"2026-11-01": {"pv": 0.0, "export": 1.0}}
+    assert DailyStats({"2026-11-01": {"pv": None, "export": 1.0}, "x": 5}).days == {
+        "2026-11-01": {"pv": 0.0, "export": 1.0, "import": 0.0, "import_cheap": 0.0, "import_known": 0.0}}     # missing figures filled in as 0
     u = UsageHistory({"d1": {"imp": [None] * 48, "exp": [0.0] * 48}, "d2": {"imp": [0.0] * 48, "exp": [0.0] * 48}, "d3": "junk", "d4": {"imp": "x", "exp": 5}})
     assert list(u.days) == ["d2"]
 

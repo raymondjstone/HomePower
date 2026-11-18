@@ -105,7 +105,7 @@ class Ledger:
         return None if st is None else st[1]
 
     def _sum(self, prefix: str, key: str) -> float:
-        return sum(v[key] for k, v in self.days.items() if k.startswith(prefix))
+        return sum(v.get(key, 0.0) for k, v in self.days.items() if k.startswith(prefix))     # a damaged saved day may lack a figure
 
     def saved(self, prefix: str) -> float:
         """Savings for a day ("2026-11-10") or a month ("2026-11")."""

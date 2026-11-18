@@ -271,8 +271,11 @@ async def ws_override(hass, msg):
     from .core.models import Desired, Mode
 
     coord = _coord(hass)
-    coord.set_override(msg["device_ids"] or None,
-                       Desired(Mode(msg["mode"]), msg.get("power_w"), msg.get("target_soc")), msg["minutes"])
+    try:
+        coord.set_override(msg["device_ids"] or None,
+                           Desired(Mode(msg["mode"]), msg.get("power_w"), msg.get("target_soc")), msg["minutes"])
+    except ValueError as err:
+        raise ValidationError(str(err)) from err
     await coord.async_request_refresh()
     return {}
 

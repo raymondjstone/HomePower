@@ -9,7 +9,7 @@ export default (U) => {
     if (ps.error) out = `<div class="err">${esc(ps.error)}</div>`;
     else if (ps.busy) out = `<div class="sub">${ps.wide ? "Wide scan running: ports 1 to 10,000, up to a minute. Please wait…" : "Scanning… this takes a few seconds."}</div>`;
     else if (rows.length || ps.wide) {
-      const wide = !!ps.wide, prev = ps.prev && !!ps.prev.wide === wide ? ps.prev : null, at = prev ? new Date(prev.at).toLocaleTimeString() : "";
+      const wide = !!ps.wide, prev = ps.prev && !!ps.prev.wide === wide ? ps.prev : null, at = prev ? new Date(prev.at).toLocaleTimeString([], this._tzOpt()) : "";
       const open = rows.filter((r) => r.state === "open");
       const sum = open.length ? `<b class="ok">${open.length} open: ${open.map((r) => r.port + (r.service ? " (" + esc(r.service) + ")" : "")).join(", ")}</b>`
         : (wide ? "<b>No open port found.</b>" : "<b>Nothing is listening on these ports.</b>");
@@ -21,7 +21,7 @@ export default (U) => {
           : `<div class="sub" style="margin-top:4px">No change since the scan at ${at}.</div>`;
       }
       const c = ps.counts || {};
-      const tally = wide ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:4px">Checked ports 1 to ${(ps.total || 0).toLocaleString()}: ${c.open || 0} open, ${(c.closed || 0).toLocaleString()} closed, ${(c["no answer"] || 0).toLocaleString()} no answer${ps.complete === false ? `. <b class="bad">Incomplete: the device answered too slowly, so ${(c.skipped || 0).toLocaleString()} ports were not checked.</b>` : "."}</div>` : "";
+      const tally = wide ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:4px">Checked ports 1 to ${(ps.total || 0).toLocaleString([], this._tzOpt())}: ${c.open || 0} open, ${(c.closed || 0).toLocaleString([], this._tzOpt())} closed, ${(c["no answer"] || 0).toLocaleString([], this._tzOpt())} no answer${ps.complete === false ? `. <b class="bad">Incomplete: the device answered too slowly, so ${(c.skipped || 0).toLocaleString([], this._tzOpt())} ports were not checked.</b>` : "."}</div>` : "";
       const table = rows.length ? `<table class="tbl"><tr><th>Port</th><th>Service</th><th>State</th><th>It says</th></tr>${rows.map((r) => `<tr><td>${r.port}</td><td>${esc(r.service)}</td><td class="${r.state === "open" ? "ok" : ""}">${r.state === "open" ? "OPEN" : esc(r.state)}</td><td>${esc(r.banner)}</td></tr>`).join("")}</table>` : "";
       out = `<p style="margin:8px 0 4px">${sum} <span class="sub" style="font-size:12px;color:var(--secondary-text-color)">(${esc(ps.address || ps.host)}${wide ? ", wide scan" : ""})</span></p>${diff}${tally}${table}`;
     }
@@ -49,22 +49,22 @@ export default (U) => {
     if (!dg) return `<div class="bar-actions"><h2>Diagnostics</h2></div><div class="card">Loading…</div>`;
     const rows = Object.entries(dg.devices).map(([id, x]) => `<div class="card" style="margin-bottom:12px"><h2>${esc(x.name)} <span class="chip ${x.online ? "" : "bad"}">${x.online ? "Online" : "Offline"}</span> <span class="chip">${esc(x.driver || "")}</span> ${x.control_enabled ? "" : '<span class="chip warn">Monitor only</span>'}</h2>
       <table class="tbl"><tr><th>Connection</th><td>${esc(Object.entries(x.connection || {}).filter(([k]) => k !== "map").map(([k, v]) => `${k}=${v}`).join("  "))}</td></tr>
-      <tr><th>Last good read</th><td>${x.last_read_ok ? new Date(x.last_read_ok).toLocaleString() : "never"}</td></tr>
+      <tr><th>Last good read</th><td>${x.last_read_ok ? new Date(x.last_read_ok).toLocaleString([], this._tzOpt()) : "never"}</td></tr>
       <tr><th>Battery reports</th><td>${esc(x.actual_mode || "?")}${x.word_order ? ` · 32-bit word order: ${esc(x.word_order)}` : ""}${(this.live.devices || {})[id] && this.live.devices[id].firmware ? ` · software ${esc(this.live.devices[id].firmware)}` : ""}</td></tr>
       <tr><th>HomePower wants</th><td>${x.desired ? esc(x.desired.mode) + (x.desired.power_w ? " " + fmtW(x.desired.power_w) : "") : "nothing (battery runs itself)"} ${x.reason ? "· " + esc(x.reason) : ""}</td></tr>
-      <tr><th>Last command</th><td>${x.last_command ? `${esc(x.last_command.mode)} ${x.last_command.power_w ? fmtW(x.last_command.power_w) : ""} at ${new Date(x.last_command.at).toLocaleTimeString()} - ${esc(x.last_command.result)}${x.last_command.why ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color)">Because: ${esc(x.last_command.why)}${x.last_command.soc != null ? ` · charge ${Math.round(x.last_command.soc)}%` : ""}${x.last_command.target_soc != null ? ` → ${x.last_command.target_soc}%` : ""}${x.last_command.price != null ? ` · price ${(+x.last_command.price).toFixed(3)}` : ""}${x.last_command.grid_w != null ? ` · grid ${Math.round(x.last_command.grid_w)} W` : ""}</div>` : ""}` : "none yet"}</td></tr>
+      <tr><th>Last command</th><td>${x.last_command ? `${esc(x.last_command.mode)} ${x.last_command.power_w ? fmtW(x.last_command.power_w) : ""} at ${new Date(x.last_command.at).toLocaleTimeString([], this._tzOpt())} - ${esc(x.last_command.result)}${x.last_command.why ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color)">Because: ${esc(x.last_command.why)}${x.last_command.soc != null ? ` · charge ${Math.round(x.last_command.soc)}%` : ""}${x.last_command.target_soc != null ? ` → ${x.last_command.target_soc}%` : ""}${x.last_command.price != null ? ` · price ${(+x.last_command.price).toFixed(3)}` : ""}${x.last_command.grid_w != null ? ` · grid ${Math.round(x.last_command.grid_w)} W` : ""}</div>` : ""}` : "none yet"}</td></tr>
       <tr><th>Problems</th><td>${x.last_error ? `<span class="bad">${esc(x.last_error)}</span>` : "none"}${x.unconfirmed ? ` · ${x.unconfirmed} unconfirmed` : ""}${x.release_pending ? " · holding control" : ""}</td></tr></table>
       <div style="margin-top:10px"><button class="btn sm" data-act="test-control" data-id="${esc(id)}"><ha-icon icon="mdi:flask-outline" style="--mdc-icon-size:16px"></ha-icon>Test control</button>
         ${x.driver === "anker_modbus" ? `<button class="btn sm" data-act="scan-save" data-id="${esc(id)}" title="Read every register (read-only) and remember it as the starting point">Registers: save baseline</button> <button class="btn sm" data-act="scan-compare" data-id="${esc(id)}" title="Read the registers again and list what changed since the baseline">Registers: compare</button> <button class="btn sm" data-act="scan-show" data-id="${esc(id)}" title="Read every register (read-only) and list them all with their names and values">Registers: show all</button> <button class="btn sm" data-act="scan-watch" data-id="${esc(id)}" title="Watch chosen registers live (read-only): change one setting in the vendor app and see which register moves">Registers: watch</button> <a class="sub" style="font-size:12px" href="https://salesforce-knowledge-download.s3.us-west-2.amazonaws.com/000029136/en_US/000029136.pdf" target="_blank" rel="noopener">Anker's X1 register list (PDF)</a>` : ""}</div>
       <div class="steps" id="scan-${esc(id)}" style="margin-top:8px">${this._scans && this._scans[id] ? this._scans[id].html || "" : ""}</div>
       <div class="steps" id="test-${esc(id)}" style="margin-top:8px">${this._tests && this._tests[id] ? this._tests[id] : ""}</div></div>`).join("");
-    const ev = (dg.events || []).slice().reverse().slice(0, 40).map(([t, id, m]) => `<div><span class="t">${esc(new Date(t).toLocaleTimeString())}</span> <b>${esc(id)}</b> ${esc(m)}</div>`).join("");
+    const ev = (dg.events || []).slice().reverse().slice(0, 40).map(([t, id, m]) => `<div><span class="t">${esc(new Date(t).toLocaleTimeString([], this._tzOpt()))}</span> <b>${esc(id)}</b> ${esc(m)}</div>`).join("");
     const dec = (dg.decisions || []).map((e) => {
       const i = e.inputs || {};
       const bits = [i.charge_pct != null ? `charge ${Math.round(i.charge_pct)}%` : "", i.grid_w != null ? `grid ${fmtW(i.grid_w)}` : "", i.price_now != null ? `price ${i.price_now}` : "",
         i.cheap_rate ? "cheap rate" : "", i.backup_mode ? "backup mode" : "", i.away ? "away" : "", i.paused ? "paused" : "", i.forecast_kwh != null ? `solar forecast ${i.forecast_kwh} kWh` : "",
         i.reserve_floor_pct ? `reserve floor ${i.reserve_floor_pct}%` : "", i.solar_ceiling_pct != null ? `room-for-solar limit ${i.solar_ceiling_pct}%` : ""].filter(Boolean);
-      return `<details><summary><span class="t">${esc(new Date(e.t).toLocaleTimeString())}</span> <b>${esc(e.name)}</b> → ${esc(e.mode)}${e.power_w ? " " + fmtW(e.power_w) : ""}: ${esc(e.reason)}</summary><div class="sub" style="margin:4px 0 8px 12px">${esc(bits.join(" · ") || "no readings")}${(i.notes || []).length ? "<br>" + esc(i.notes.join("; ")) : ""}</div></details>`;
+      return `<details><summary><span class="t">${esc(new Date(e.t).toLocaleTimeString([], this._tzOpt()))}</span> <b>${esc(e.name)}</b> → ${esc(e.mode)}${e.power_w ? " " + fmtW(e.power_w) : ""}: ${esc(e.reason)}</summary><div class="sub" style="margin:4px 0 8px 12px">${esc(bits.join(" · ") || "no readings")}${(i.notes || []).length ? "<br>" + esc(i.notes.join("; ")) : ""}</div></details>`;
     }).join("");
     return `<div class="bar-actions"><h2>Diagnostics</h2><span><button class="btn" data-act="download-debug" title="One file with the readings, command results, plan against actual and recent events (no keys or serial numbers): attach it to a bug report"><ha-icon icon="mdi:download" style="--mdc-icon-size:16px"></ha-icon>Download debug file</button> <button class="btn" data-act="copy-debug"><ha-icon icon="mdi:content-copy" style="--mdc-icon-size:16px"></ha-icon>Copy debug info</button></span></div>
       ${this.live.startup ? `<p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin:0 0 8px">${esc(this.live.startup)}</p>` : ""}
@@ -132,7 +132,9 @@ export default (U) => {
     const rows = addrs.map((a) => { const [nm, acc, kind] = names[a] || ["", "", ""]; return { a, nm, acc, kind, h: r.holding[a], i: r.input[a], t: text(a), d: dec(a), lb: notes[a] || "" }; });
     const cell = (v) => (v === undefined ? "–" : v);
     const csv = ["register,name,access,type,holding,input,text,32-bit value,my label", ...rows.map((x) => [x.a, x.nm, x.acc, x.kind, x.h ?? "", x.i ?? "", x.t, x.d, x.lb].map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))].join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const urls = (this._regUrls ||= {});
+    if (urls[id]) URL.revokeObjectURL(urls[id]);            // the previous listing's download: freed, not kept for the life of the page
+    const url = (urls[id] = URL.createObjectURL(new Blob([csv], { type: "text/csv" })));
     const dev = (this.data.devices.find((d) => d.device_id === id) || {}).name || id;
     this._regRows = this._regRows || {}; this._regRows[id] = rows;
     const body = (only, q) => rows.filter((x) => (!only || x.nm) && (!q || `${x.a} ${x.nm} ${x.t} ${x.lb}`.toLowerCase().includes(q))).map((x) =>
@@ -189,7 +191,7 @@ export default (U) => {
       try {
         const r = await this._hass.callWS({ type: "homepower/device/registers", device_id: id, addresses: addrs, names: !w.names });
         if (r.names) w.names = r.names;
-        const now = r.values, t = new Date().toLocaleTimeString(), moved = new Set();
+        const now = r.values, t = new Date().toLocaleTimeString([], this._tzOpt()), moved = new Set();
         if (!w.first) w.first = { ...now };
         for (const a of addrs) {
           const x = w.last ? w.last[a] : undefined, y = now[a];

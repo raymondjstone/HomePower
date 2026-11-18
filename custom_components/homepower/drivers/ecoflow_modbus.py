@@ -10,7 +10,9 @@ limit, so Charge and Discharge can be set in watts.
   * Control point 0x1610: 0 = the device's own energy management, 1 = we set the battery's power (0x1611, signed, watts).
 
 Not verified on hardware: which sign 0x1611 uses. EcoFlow reports battery power as + charging, so the same is assumed here;
-the connection option "reverse_sign" flips both if the Test control result shows the opposite.
+the connection option "reverse_sign" flips the set point only, if the Test control result shows the battery moving the
+opposite way. The battery's power reading keeps its own sign: it is what Test control judges the direction by, and what
+zero-import and the savings use, so flipping it too would turn every reading round and make the test flip-flop.
 """
 from __future__ import annotations
 
@@ -53,21 +55,23 @@ class EcoFlowModbusDriver:
         self.config = config
         c = config.extra["connection"]
         self.client = client or ModbusTcpClient(c["host"], int(c.get("port", 502)), int(c.get("unit_id", 1)))
-        self.sign = -1 if c.get("reverse_sign") else 1
+        self.sign = -1 if c.get("reverse_sign") else 1     # the set point's sign only (see above)
         self.last_quota: dict = {}
         self.last_error: str | None = None
         self._beat = 0.0
         self._on_orig = on_orig                       # called when the remembered point changes, so it survives a restart or an edit
         p = orig.get("prev") if isinstance(orig, dict) else None
-        self._prev_val: tuple[int, int] | None = (int(p[0]), int(p[1])) if isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(x, int) for x in p) else None
+        self._prev_val: tuple[int, int | None] | None = (
+            (int(p[0]), None if p[1] is None else int(p[1]))
+            if isinstance(p, (list, tuple)) and len(p) == 2 and isinstance(p[0], int) and (p[1] is None or isinstance(p[1], int)) else None)
 
     @property
-    def _prev(self) -> tuple[int, int] | None:
+    def _prev(self) -> tuple[int, int | None] | None:
         """A control point someone else had set (point, its target), put back on Auto."""
         return self._prev_val
 
     @_prev.setter
-    def _prev(self, value: tuple[int, int] | None) -> None:
+    def _prev(self, value: tuple[int, int | None] | None) -> None:
         self._prev_val = value
         if self._on_orig is not None:
             try:
@@ -123,7 +127,7 @@ class EcoFlowModbusDriver:
                 return Actual(online=False)
             # the device refused this block (an exception reply): the control registers are optional for reading
         self.last_quota = {"consumption_w": load, "grid_w": grid, "pv_w": pv, "battery_w": batt, "soc": soc}
-        return Actual(online=True, soc=soc, power_w=None if batt is None else batt * self.sign, mode=mode, set_power_w=set_w,
+        return Actual(online=True, soc=soc, power_w=batt, mode=mode, set_power_w=set_w,
                       grid_w=grid, pv_w=pv, load_w=load)
 
     async def probe(self) -> dict:
@@ -133,7 +137,7 @@ class EcoFlowModbusDriver:
             raise ModbusError(f"{err}. Is Modbus TCP switched on in the EcoFlow app (STREAM system > Energy management > "
                               "Third-party control)? It is off by default.") from err
         load, grid, pv, batt = (_clean(_float(flow[i], flow[i + 1])) for i in (0, 2, 4, 6))
-        info: dict = {"soc": float(flow[8]) if flow[8] <= 100 else None, "power_w": None if batt is None else batt * self.sign,
+        info: dict = {"soc": float(flow[8]) if flow[8] <= 100 else None, "power_w": batt,
                       "grid_w": grid, "pv_w": pv, "load_w": load, "mode": None, "model": None, "serial": None, "firmware": None,
                       "capacity_wh": None, "max_charge_w": None, "max_discharge_w": None, "min_soc": None, "control": True}
         for key, offset, count, fn in (
@@ -162,7 +166,7 @@ class EcoFlowModbusDriver:
         except ModbusError as err:
             if err.code is None:
                 raise
-            block = await self._read(REG_CONTROL_POINT, 2) + [0, 0, 0]
+            block = await self._read(REG_CONTROL_POINT, 2) + [None, None, None]     # the other targets: read one by one if needed
         point = block[0]
         if desired.mode is not Mode.AUTO or point == POINT_BATTERY:
             try:
@@ -176,7 +180,8 @@ class EcoFlowModbusDriver:
             if point == POINT_BATTERY:                            # only ever undo our own control point
                 prev = self._prev                                     # forgotten only after the writes succeed, so a retry still has it
                 if prev is not None and prev[0] not in (POINT_NONE, POINT_BATTERY):
-                    await self._write(REG_BATTERY_TARGET + (prev[0] - 1), prev[1])    # put back the point someone else had set
+                    if prev[1] is not None:                           # its target, if it could be read (otherwise left as it is)
+                        await self._write(REG_BATTERY_TARGET + (prev[0] - 1), prev[1])    # put back the point someone else had set
                     await self._write(REG_CONTROL_POINT, prev[0])
                 else:
                     await self._write(REG_BATTERY_TARGET, 0)
@@ -194,5 +199,13 @@ class EcoFlowModbusDriver:
         await self._write(REG_BATTERY_TARGET, signed & 0xFFFF)         # target first, so taking control never uses a stale one
         if point != POINT_BATTERY:
             if point != POINT_NONE and self._prev is None:
-                self._prev = (point, block[point] if 0 < point < 5 else 0)                           # another tool had a different point set: hand it back on Auto
+                target = block[point] if 0 < point < 5 else None
+                if target is None and 0 < point < 5:
+                    try:
+                        target = (await self._read(REG_CONTROL_POINT + point, 1))[0]
+                    except ModbusError as err:
+                        if err.code is None:
+                            raise
+                        target = None                     # unreadable: hand the point back without rewriting its target (never with 0)
+                self._prev = (point, target)              # another tool had a different point set: hand it back on Auto
             await self._write(REG_CONTROL_POINT, POINT_BATTERY)

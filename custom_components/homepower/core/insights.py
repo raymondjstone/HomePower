@@ -111,7 +111,10 @@ class DailyStats:
 
     def __init__(self, data: dict | None = None) -> None:
         from .energy import finite
-        self.days: dict[str, dict[str, float]] = {k: {kk: finite(vv) for kk, vv in v.items()} for k, v in (data or {}).items() if isinstance(v, dict)}
+        blank = {"pv": 0.0, "export": 0.0, "import": 0.0, "import_cheap": 0.0, "import_known": 0.0}
+        # every figure present (a damaged saved day missing one must not break today's percentages or the next update)
+        self.days: dict[str, dict[str, float]] = {k: {**blank, **{kk: finite(vv) for kk, vv in v.items()}}
+                                                  for k, v in (data.items() if isinstance(data, dict) else ()) if isinstance(v, dict)}
 
     def add(self, day: str, pv_kwh: float = 0.0, export_kwh: float = 0.0, import_kwh: float = 0.0, cheap: bool | None = None) -> None:
         if pv_kwh <= 0 and export_kwh <= 0 and import_kwh <= 0:
@@ -197,10 +200,18 @@ class Health:
     KEEP_WEEKS = 26
 
     def __init__(self, data: dict | None = None) -> None:
-        d = data or {}
-        self.weeks: dict[str, dict[str, dict[str, float]]] = {w: {k: dict(v) for k, v in x.items()} for w, x in d.get("weeks", {}).items()}
-        self.base: dict[str, dict[str, float]] = {k: dict(v) for k, v in d.get("base", {}).items()}
-        self.base_week: str = d.get("base_week", "")
+        from .energy import finite
+        d = data if isinstance(data, dict) else {}
+
+        def pair(v) -> dict[str, float] | None:          # {"in": kWh, "out": kWh}, or None when damaged (then dropped)
+            return {"in": finite(v.get("in")), "out": finite(v.get("out"))} if isinstance(v, dict) else None
+
+        weeks = d.get("weeks") if isinstance(d.get("weeks"), dict) else {}
+        self.weeks: dict[str, dict[str, dict[str, float]]] = {
+            w: {k: p for k, v in x.items() if (p := pair(v))} for w, x in weeks.items() if isinstance(x, dict)}
+        base = d.get("base") if isinstance(d.get("base"), dict) else {}
+        self.base: dict[str, dict[str, float]] = {k: p for k, v in base.items() if (p := pair(v))}
+        self.base_week: str = d.get("base_week") if isinstance(d.get("base_week"), str) else ""
 
     def update(self, week: str, lifetime: dict[str, tuple[float, float]]) -> None:
         """`lifetime` = {device_id: (charged_kwh_total, discharged_kwh_total)} as of now."""
@@ -312,9 +323,10 @@ class HealthTrend:
 
     def __init__(self, data: dict | None = None) -> None:
         self.days: dict[str, dict[str, dict]] = {}
-        for did, rows in (data or {}).items():
+        for did, rows in (data.items() if isinstance(data, dict) else ()):
             if isinstance(rows, dict):
-                self.days[did] = {d: {"tmax": v.get("tmax"), "spread": v.get("spread")} for d, v in rows.items() if isinstance(v, dict)}
+                num = lambda x: float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and x == x and abs(x) != float("inf") else None  # noqa: E731
+                self.days[did] = {d: {"tmax": num(v.get("tmax")), "spread": num(v.get("spread"))} for d, v in rows.items() if isinstance(v, dict)}
 
     def update(self, day: str, did: str, temp_c: float | None, pack_v: tuple) -> None:
         rec = self.days.setdefault(did, {}).setdefault(day, {"tmax": None, "spread": None})
@@ -403,19 +415,25 @@ class SceneError(ValueError):
 
 
 def clean_scene(raw: dict) -> dict:
+    from .settings import _bool                      # "false" from a restored or hand-edited file is off, not on
     name = str(raw.get("name") or "").strip()
     if not name:
         raise SceneError("give the scene a name")
-    out = {"name": name[:40]}
+    if len(name) > 40:
+        raise SceneError("keep the scene's name to 40 characters")    # cut short, it could replace another scene
+    out = {"name": name}
     for k in SCENE_FLAGS:
-        out[k] = bool(raw.get(k, False))
+        try:
+            out[k] = _bool(raw.get(k, False))
+        except ValueError as err:
+            raise SceneError(f"{k}: {err}") from err
     st = raw.get("settings") if isinstance(raw.get("settings"), dict) else {}
     out["settings"] = {}
     for k in SCENE_SETTINGS:
         if k in st and st[k] not in (None, ""):
             try:
-                out["settings"][k] = bool(st[k]) if k == "peak_shaving" else max(0, int(float(st[k])))
-            except (TypeError, ValueError) as err:
+                out["settings"][k] = _bool(st[k]) if k == "peak_shaving" else max(0, int(float(st[k])))
+            except (TypeError, ValueError, OverflowError) as err:
                 raise SceneError(f"{k} is not a number") from err
     return out
 

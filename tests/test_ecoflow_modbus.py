@@ -131,12 +131,14 @@ def test_auto_when_not_controlling_writes_nothing_but_the_keepalive():
     assert [w for w in f.writes if w[0] != 0x25F] == []
 
 
-def test_reverse_sign_flips_target_and_reading():
+def test_reverse_sign_flips_the_set_point_but_not_the_reading():
     d, f = driver(reverse_sign=True)
     run(d.apply(Desired(Mode.CHARGE, 1000)))
     assert f.regs[0x1611] == (-1000) & 0xFFFF
     a = run(d.read())
-    assert a.mode is Mode.CHARGE and a.power_w == -1500       # the battery's own reading is flipped the same way
+    assert a.mode is Mode.CHARGE and a.set_power_w == 1000     # what we set reads back as what we asked for
+    assert a.power_w == 1500                                    # the battery's own reading (+ charging) is left alone: flipping it
+                                                                # would make Test control report the opposite again
 
 
 def test_probe_reports_the_unit():
@@ -234,3 +236,27 @@ def test_link_dropping_between_the_two_reads_is_offline_not_auto():
     d._beat = time.monotonic()                              # keep-alive just sent: none in this cycle
     a = run(d.read())
     assert a.online is False
+
+
+def test_another_tools_target_is_read_alone_when_the_block_read_is_refused():
+    d, f = driver()
+    f.regs[0x1610], f.regs[0x1612] = 2, 50
+    del f.regs[0x1614]                                       # the 5-register block read is refused
+    run(d.apply(Desired(Mode.CHARGE, 1500)))
+    assert d._prev == (2, 50)                               # not 0: that would be written back on Auto
+    f.regs[0x1612] = 0
+    run(d.apply(Desired(Mode.AUTO)))
+    assert f.regs[0x1610] == 2 and f.regs[0x1612] == 50
+
+
+def test_an_unreadable_target_is_handed_back_without_rewriting_it():
+    d, f = driver()
+    f.regs[0x1610], f.regs[0x1612] = 2, 50
+    del f.regs[0x1614]
+    f.regs.pop(0x1612)                                       # neither the block nor that one register answers
+    run(d.apply(Desired(Mode.CHARGE, 1500)))
+    assert d._prev == (2, None)
+    run(d.apply(Desired(Mode.AUTO)))
+    assert f.regs[0x1610] == 2 and 0x1612 not in [w[0] for w in f.writes]
+    d2 = EcoFlowModbusDriver(d.config, client=f, orig={"prev": [2, None]})        # remembered across a restart
+    assert d2._prev == (2, None)

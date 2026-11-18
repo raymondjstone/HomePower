@@ -127,8 +127,15 @@ def _write_backup(folder: str, data: dict) -> None:
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=1), encoding="utf8")
     os.replace(tmp, target)
-    for old in sorted(d.glob("homepower-*.json"))[:-BACKUPS_KEPT]:
+    for old in sorted(backup_files(d))[:-BACKUPS_KEPT]:      # only HomePower's own dated copies: a file put there by hand is never deleted
         old.unlink(missing_ok=True)
+
+
+def backup_files(folder: Path) -> list[Path]:
+    """HomePower's own daily copies (homepower-YYYY-MM-DD.json) in the backup folder: the ones it lists, keeps and restores."""
+    import re
+
+    return [p for p in folder.glob("homepower-*.json") if re.fullmatch(r"homepower-\d{4}-\d\d-\d\d\.json", p.name)]
 
 
 def _notify(hass: HomeAssistant, key: str, message: str) -> None:

@@ -391,8 +391,15 @@ class EcoFlowStreamDriver:
 
     async def _apply(self, desired: Desired) -> None:
         self._cache, self._pushed = None, 0.0   # next read must come from the cloud and show the effect of this command
-        if self._is5000:
+        o = self._orig
+        if self._is5000 or (not self.last_quota and isinstance(o, dict) and "on" in o):
+            # (not read yet since a restart, but the remembered originals are a STREAM 5000's: hand back the 5000 way)
             return await self._apply_5000(desired)
+        if not self.last_quota and not (isinstance(o, dict) and "reserve" in o):
+            # Not read yet, so the model (and its command set) is unknown: never guess. Nothing of ours to hand back either.
+            if desired.mode is Mode.AUTO:
+                return
+            raise ValueError("the battery has not been read yet: its model is not known, so no command was sent")
         if self.last_quota and "backupReverseSoc" not in self.last_quota:
             # A model that reports different settings (e.g. AC 5000): its command format is not known, so never guess.
             if desired.mode is Mode.AUTO:

@@ -146,3 +146,61 @@ must("an incomplete wide scan says so and shows a port that closed", w3.includes
 p._hass.callWS = async (m) => ({ host: "10.0.0.213", address: "10.0.0.213", wide: false, results: [row(502, "Modbus TCP", "closed")] });
 await p._scanPorts(false);
 must("a normal scan after wide ones does not compare against a wide scan", !p._portScanCard().includes("Changed since") && !p._portScanCard().includes("No change since"));
+
+// ---- alert banners: every kind the coordinator raises reads as a sentence
+p.live.alerts = ["offline:a", "alarm:a:Meter 1 communication failure", "stuck:b", "tariffdrift", "gridsign:b"];
+const ab = p._alertsBanner();
+must("alert banners name the battery and say what is wrong", ab.includes("A: offline") && ab.includes("A: reports: Meter 1 communication failure")
+  && ab.includes("B: was told to charge") && ab.includes("cheap-rate hours no longer match") && ab.includes("B: its grid reading") && !ab.includes(": tariffdrift") && !ab.includes("undefined"));
+p.live.alerts = [];
+
+// ---- a battery edit whose save fails keeps testing that battery (its saved secret and open connection), not a new one
+{
+  const btn = (act, ds = {}) => ({ target: { closest: (sel) => (sel === "[data-close-bg]" ? null : { dataset: { act, ...ds } }) } });
+  const saved = p._collectBattery; p._collectBattery = (id) => ({ device_id: id || "new", name: "A", kind: "custom", connection: {} });
+  const calls = []; p._hass.callWS = async (m) => { calls.push(m); if (m.type === "homepower/device/save") throw new Error("capacity is required"); return {}; };
+  p._batteryModal = () => {}; await p._click(btn("edit-battery", { id: "a" }));
+  await p._click(btn("save-battery", { id: "a" }));
+  const tb = p._testBattery; let tested = null; p._testBattery = (id) => { tested = id; };
+  await p._click(btn("test-battery"));
+  must("a failed battery save keeps the battery being edited", tested === "a");
+  p._testBattery = tb; p._collectBattery = saved;
+}
+
+// ---- the month-by-month tariff chart keeps every grid line inside the chart
+{
+  const svg = p._monthChart({ months: ["2026-08", "2026-09", "2026-10"], totals: { A: [47, 40, 12], B: [30, 44, 9] }, cheaper_than_current: null }, "£");
+  const ys = [...svg.matchAll(/<line [^>]*y1="([-\d.]+)"/g)].map((m) => +m[1]);
+  must("month chart grid lines all sit inside the plot", ys.length >= 3 && ys.every((v) => v >= 8 - 0.01 && v <= 210 - 26 + 0.01) && svg.includes("£60"));
+}
+
+// ---- override: a cleared box is "not set" (full power / to full), not 0
+{
+  const btn = (act, ds = {}) => ({ target: { closest: (sel) => (sel === "[data-close-bg]" ? null : { dataset: { act, ...ds } }) } });
+  const root = p.shadowRoot, qs = root.querySelector, qsa = root.querySelectorAll;
+  root.querySelector = (sel) => (sel.includes("o-mode") ? { value: "charge" } : qs(sel));
+  root.querySelectorAll = (sel) => (sel.includes("o-dev") ? [{ value: "a" }] : qsa(sel));
+  els["o-pw"] = { value: "" }; els["o-soc"] = { value: " " }; els["o-min"] = { value: "60" };
+  const calls = []; p._hass.callWS = async (m) => { calls.push(m); return {}; };
+  await p._click(btn("save-override"));
+  must("a cleared override box is sent as not set", calls[0] && calls[0].power_w === null && calls[0].target_soc === null);
+  root.querySelector = qs; root.querySelectorAll = qsa;
+}
+
+// ---- times on the plan are shown on the home's clock, not the browser's
+{
+  p._hass.config = { time_zone: "Pacific/Auckland" };
+  const at = Date.UTC(2026, 0, 15, 0, 0);                         // 13:00 in Auckland (summer, UTC+13)
+  must("plan times use Home Assistant's time zone", p._fmtT(at, 3600e3).replace(/\D/g, "").startsWith("13"));
+  p._hass.config = { time_zone: "Not/AZone" };
+  must("an unknown zone falls back to the browser's clock", typeof p._fmtT(at, 3600e3) === "string");
+  p._hass.config = {};
+}
+
+// ---- a register watch stops when the panel is hidden
+{
+  let stopped = 0; const ws = p._watchStop; p._watchStop = () => { stopped++; };
+  p.disconnectedCallback();
+  must("hiding the panel stops a register watch", stopped === 1);
+  p._watchStop = ws;
+}
