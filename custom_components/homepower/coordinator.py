@@ -189,6 +189,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             for key in dismissed:                      # a notification about a battery that no longer exists must not stay on screen
                 self.hass.async_create_task(self._notify(key, "", False))
             self.charge_watch.forget(gone), self.rate_learner.forget(gone), self.traces.forget(gone), self._forget_plan(gone)
+            self.health.forget(gone)
+            for key in [k for k in self.meter.totals if k.startswith(f"bat:{gone}_")]:
+                del self.meter.totals[key]                      # its lifetime energy: a new battery with the same name starts from zero
+            self._event_state.pop(f"fw:{gone}", None)
             self.grid_events.forget(gone, dt_util.now())
             self.trend.days.pop(gone, None)
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
@@ -744,8 +748,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 await self._notify(f"event_{key}", msg, False)
 
         today = f"{now:%Y%m%d}"
-        for k in [k for k in self._event_state if k.startswith(("cheap_", "summary_", "tariff_", "digest_")) and today not in k]:
-            del self._event_state[k]            # yesterday's once-a-day markers
+        for k in [k for k in self._event_state if k.startswith(("cheap_", "summary_", "tariff_", "digest_")) and today not in k and not k.startswith("tariff_m")]:
+            del self._event_state[k]            # yesterday's once-a-day markers (the once-a-month tariff marker is cleaned up where it is set)
         if s.weekly_digest and now.weekday() == 0:
             at = s.daily_summary_time or time(8, 0)
             due = now.time() >= at
@@ -945,10 +949,17 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         if st is not None and a.config.device_id in self.testing and st.actual is not None:
             return st.actual
         try:
-            return await asyncio.wait_for(a.read(), READ_TIMEOUT_S)
+            return self._finite(await asyncio.wait_for(a.read(), READ_TIMEOUT_S))
         except Exception:  # noqa: BLE001 - one device must not stop the others
             _LOGGER.debug("read failed for %s", a.config.device_id, exc_info=True)
             return Actual(online=False)
+
+    @staticmethod
+    def _finite(act: Actual) -> Actual:
+        """NaN and infinity from a device or its cloud are no reading: they would stop the decision engine and poison the saved totals."""
+        bad = {f: None for f in ("soc", "power_w", "grid_w", "pv_w", "load_w", "temp_c")
+               if isinstance(getattr(act, f), float) and (getattr(act, f) != getattr(act, f) or abs(getattr(act, f)) == float("inf"))}
+        return _replace(act, **bad) if bad else act
 
     async def _async_update_data(self) -> Snapshot:
         now, mono, wall = dt_util.now(), _time.monotonic(), _time.time()

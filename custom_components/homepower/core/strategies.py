@@ -18,9 +18,10 @@ def num(s: str | None) -> float | None:
     if s in BAD:
         return None
     try:
-        return float(s)  # type: ignore[arg-type]
+        v = float(s)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+    return v if v == v and abs(v) != float("inf") else None          # "nan" / "inf" are no reading
 
 
 def _int(s: str | None) -> int | None:

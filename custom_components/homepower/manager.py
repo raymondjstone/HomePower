@@ -80,9 +80,13 @@ class HomePowerManager:
     # ------------------------------------------------------------------ persistence
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
-        self.devices = {d["device_id"]: d for d in data.get("devices", [])}
-        self.schedules = {s["id"]: s for s in data.get("schedules", [])}
-        self.goals = {g["id"]: g for g in data.get("goals", [])}
+        def plain(key: str) -> dict:
+            v = data.get(key)
+            return v if isinstance(v, dict) else {}
+
+        def rows(key: str, id_key: str) -> dict:     # a damaged row must never stop HomePower starting
+            return {r[id_key]: r for r in (data.get(key) if isinstance(data.get(key), list) else []) if isinstance(r, dict) and isinstance(r.get(id_key), str)}
+        self.devices, self.schedules, self.goals = rows("devices", "device_id"), rows("schedules", "id"), rows("goals", "id")
         self.paused = bool(data.get("paused", False))
         self.backup = bool(data.get("backup", False))
         self.away = bool(data.get("away", False))
@@ -96,7 +100,7 @@ class HomePowerManager:
         self.health_data = dict(data.get("health", {}))
         self.grid_events, self.trend_data = list(data.get("grid_events", [])), dict(data.get("trend", {}))
         self.register_notes = {k: dict(v) for k, v in data.get("register_notes", {}).items() if isinstance(v, dict)}
-        self.event_state, self.tests = dict(data.get("event_state", {})), dict(data.get("tests", {}))
+        self.event_state, self.tests = dict(plain("event_state")), dict(plain("tests"))
         self.divert_on = str(data.get("divert_on") or "")
         self.pv_seen = set(data.get("pv_seen", []))
         self.forecast_days = dict(data.get("forecast_days", {}))
@@ -110,7 +114,7 @@ class HomePowerManager:
         self.charge_rates = {k: int(v) for k, v in plain("charge_rates").items() if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")}
         self.ecoflow_orig = {k: dict(v) for k, v in plain("ecoflow_orig").items() if isinstance(v, dict)}
         scenes = data.get("scenes")
-        self.scenes = {s["name"]: s for s in (scenes if scenes is not None else DEFAULT_SCENES)}
+        self.scenes = {s["name"]: s for s in (scenes if isinstance(scenes, list) else DEFAULT_SCENES) if isinstance(s, dict) and isinstance(s.get("name"), str)}
 
     async def _save(self) -> None:
         c = self.coordinator

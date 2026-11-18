@@ -85,6 +85,10 @@ def monthly(usage: dict[str, dict[str, list[float]]], tariffs: list[dict]) -> di
     for k in sorted(usage):
         months.setdefault(k[:7], []).append(k)
     names = sorted(months)
+    try:
+        lowest = 0 if not names or int(months[names[0]][0][8:10]) <= 3 else 1       # recording began part way through the first month
+    except ValueError:
+        lowest = 0
     totals: dict[str, list[float]] = {}
     for t in tariffs:
         row = []
@@ -102,7 +106,8 @@ def monthly(usage: dict[str, dict[str, list[float]]], tariffs: list[dict]) -> di
         cur = tariffs[0]["name"]
         for t in tariffs[1:]:
             run, saved = 0, 0.0
-            for i in range(len(names) - 2, -1, -1):     # the newest month is still in progress: leave it out
+            # the newest month is still in progress: leave it out; so is the first one when recording began part way through it
+            for i in range(len(names) - 2, lowest - 1, -1):
                 gain = totals[cur][i] - totals[t["name"]][i]
                 if gain <= 0:
                     break

@@ -467,7 +467,7 @@ def test_tariff_months_flag_a_tariff_cheaper_for_three_complete_months():
     for m in ("2026-07", "2026-08", "2026-09", "2026-10", "2026-11"):
         imp = [0.0] * 48
         imp[2] = 2.0
-        usage[m + "-10"] = {"imp": imp, "exp": [0.0] * 48}
+        usage[m + "-01"] = {"imp": imp, "exp": [0.0] * 48}
     mo = compare(usage, ts)["monthly"]
     assert mo["months"][0] == "2026-07" and mo["totals"]["Now"][0] == 0.6 and mo["totals"]["Go"][0] == 0.14
     f = mo["cheaper_than_current"]
@@ -475,6 +475,9 @@ def test_tariff_months_flag_a_tariff_cheaper_for_three_complete_months():
     short = {k: v for k, v in usage.items() if k >= "2026-09"}
     assert compare(short, ts)["monthly"]["cheaper_than_current"] is None      # only two complete months: not enough
     assert compare(usage, parse_tariffs("Only; peak=0.3"))["monthly"]["cheaper_than_current"] is None
+    # recording began on 30 August: August is a partial month and must not count as a complete one
+    late = {("2026-08-30" if k == "2026-08-01" else k): v for k, v in usage.items() if k >= "2026-08"}
+    assert compare(late, ts)["monthly"]["cheaper_than_current"] is None        # Sep and Oct only (Nov is in progress)
 
 
 def test_forecast_reserve_settings_are_validated():

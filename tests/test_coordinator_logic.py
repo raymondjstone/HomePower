@@ -290,3 +290,8 @@ def test_auto_price_unit_is_decided_by_the_whole_table():
     pounds = [Slot(t0, t0 + timedelta(minutes=30), 0.035), Slot(t0 + timedelta(minutes=30), t0 + timedelta(minutes=60), 0.30)]
     assert coordinator.HomePowerCoordinator._unit(types.SimpleNamespace(settings=types.SimpleNamespace(rates_unit="auto", export_price=0.04)), RateTable(pounds)) == "main"
     assert coordinator.HomePowerCoordinator._unit(types.SimpleNamespace(settings=types.SimpleNamespace(rates_unit="pence", export_price=None)), None) == "pence"
+
+
+def test_a_device_reading_with_nan_is_cleaned_before_the_engine_sees_it():
+    a = coordinator.HomePowerCoordinator._finite(Actual(online=True, soc=50.0, power_w=float("inf"), grid_w=float("nan"), pv_w=100.0))
+    assert a.soc == 50.0 and a.power_w is None and a.grid_w is None and a.pv_w == 100.0

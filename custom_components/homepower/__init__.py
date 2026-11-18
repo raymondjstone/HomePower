@@ -93,12 +93,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("could not write the HomePower backup copy", exc_info=True)
 
     entry.async_on_unload(async_track_time_interval(hass, _backup, timedelta(days=1)))
+    # A restart more often than daily would otherwise mean no copy is ever written: make today's now if it is missing.
+    hass.async_create_task(_backup_if_missing(hass, manager, entry))
 
     await _async_register_panel(hass)
     return True
 
 
 BACKUPS_KEPT = 7
+
+
+async def _backup_if_missing(hass, manager, entry) -> None:
+    from datetime import date
+
+    folder = Path(hass.config.path("homepower_backups"))
+    try:
+        if (folder / f"homepower-{date.today().isoformat()}.json").exists():
+            return
+        await hass.async_add_executor_job(_write_backup, str(folder), manager.export_all(dict(entry.options)))
+    except Exception:  # noqa: BLE001 - a failed safety copy must never affect control
+        _LOGGER.warning("could not write the HomePower backup copy", exc_info=True)
 
 
 def _write_backup(folder: str, data: dict) -> None:
