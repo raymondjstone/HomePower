@@ -27,7 +27,7 @@ from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Hea
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
 from .core.report import charge_efficiency, ecoflow_report, startup_summary, window_drift
 from .core.traces import CommandTrace
-from .core.weather import (BASE_C, ColdModel, TempLog, cold_extra_wh, degree_days, parse_open_meteo, pick_tomorrow,
+from .core.weather import (BASE_C, ColdModel, TempLog, cold_extra_wh, parse_open_meteo, pick_tomorrow,
                            recent_degree_days, to_celsius)
 from .core.sanity import ChargeWatch, CommandBudget, RateLearner, cycling_margin, explain_idle, grid_sign_mismatch, next_unconfirmed
 from .core.reconcile import Decision, decide, materially_different

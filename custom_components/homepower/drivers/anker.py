@@ -18,7 +18,6 @@ import logging
 
 from ..core.models import Actual, Desired, DeviceConfig, Mode
 import time
-from dataclasses import replace
 
 from ..core.anker_x1_map import alarm_texts
 from .modbus import ModbusError, ModbusTcpClient, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
