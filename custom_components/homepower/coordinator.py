@@ -1328,6 +1328,12 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             self._log(did, f"apply failed: {err}")
 
     # ------------------------------------------------------------------ control test
+    @staticmethod
+    def _test_watts(a) -> int:
+        """Test power: 100 W, but 300 W for the local EcoFlow driver, whose power sign is unconfirmed (the direction check needs a step
+        clearly above the house's own ups and downs; 300 W for a few seconds either way is harmless)."""
+        return 300 if a.config.extra.get("driver") == "ecoflow_modbus" else 100
+
     async def test_control(self, device_id: str) -> dict:
         """Send a tiny safe command, check the battery follows it, then hand it back. Pauses normal control of it."""
         a = next((x for x in self.adapters if x.config.device_id == device_id), None)
@@ -1350,9 +1356,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 return {"ok": False, "steps": steps}
             soc = before.soc if before.soc is not None else 50
             if Mode.CHARGE in caps.supported_modes and soc < 95:
-                want = Desired(Mode.CHARGE, min(100, caps.max_charge_w or 100))
+                want = Desired(Mode.CHARGE, min(self._test_watts(a), caps.max_charge_w or 100))
             elif Mode.DISCHARGE in caps.supported_modes and soc > max(caps.min_soc, 15) + 5:
-                want = Desired(Mode.DISCHARGE, min(100, caps.max_discharge_w or 100))
+                want = Desired(Mode.DISCHARGE, min(self._test_watts(a), caps.max_discharge_w or 100))
             else:
                 want = Desired(Mode.HOLD)
             self._set_release(device_id, self._snap.devices[device_id], True)
@@ -1394,6 +1400,27 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                     + ("Raising the reserve does start charging on this battery." if moved else
                        "The reserve was raised but it did not start charging yet: it may ignore the reserve in its current operating mode, "
                        "or it was already full. Check its app, and try again with the charge level lower."))})
+            if a.config.extra.get("driver") == "ecoflow_modbus" and want.mode in (Mode.CHARGE, Mode.DISCHARGE) and ok_mode:
+                # The set point reads back from the same register that was written, so it cannot show a reversed sign: check the
+                # battery's own power reading moves the way the command says (only for the local EcoFlow driver, whose sign is unconfirmed; an info line).
+                await asyncio.sleep(6)
+                later = await a.read()
+                sign = 1 if want.mode is Mode.CHARGE else -1
+                p, p0 = later.power_w, before.power_w
+                moved = None if p is None or p0 is None else (p - p0) * sign       # how far the power moved the way the command asks
+                half = (want.power_w or 100) * 0.4
+                if moved is None:
+                    detail, good = "the battery did not report its power", True
+                elif moved < -half:
+                    detail = (f"asked to {want.mode.value} {want.power_w} W but the battery's power went from {p0:.0f} W to {p:.0f} W, the opposite way."
+                              + (" Its charge/discharge sign looks reversed: tick 'Reverse the charge/discharge sign' in this battery's connection settings and test again."
+                                 if a.config.extra.get("driver") == "ecoflow_modbus" else " Check its app for a mode or schedule overriding HomePower."))
+                    good = False
+                elif moved > half:
+                    detail, good = f"asked to {want.mode.value} {want.power_w} W; the battery's power went from {p0:.0f} W to {p:.0f} W.", True
+                else:
+                    detail, good = f"asked to {want.mode.value} {want.power_w} W; the battery's power is {p:.0f} W (it had not clearly moved yet, so the direction could not be checked).", True
+                steps.append({"name": "power moves the right way", "ok": good, "info": True, "detail": detail})
             await a.apply(Desired(Mode.AUTO))
             await asyncio.sleep(3)
             if drv is not None and hasattr(drv, "_cache"):
