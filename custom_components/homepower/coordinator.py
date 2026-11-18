@@ -954,6 +954,13 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             _LOGGER.debug("read failed for %s", a.config.device_id, exc_info=True)
             return Actual(online=False)
 
+    def _commanded(self, did: str) -> Mode | None:
+        """What HomePower last told this battery to do, if it was sent (a paused, monitor-only or tested battery was told nothing)."""
+        st = self._snap.devices.get(did)
+        if st is None or st.desired is None or st.decision is None:
+            return None
+        return st.desired.mode
+
     @staticmethod
     def _finite(act: Actual) -> Actual:
         """NaN and infinity from a device or its cloud are no reading: they would stop the decision engine and poison the saved totals."""
@@ -987,7 +994,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             devices=[DevIn(self._effective_config(a.config), actuals[a.config.device_id],
                            self._snap.devices[a.config.device_id].release_pending,
                            self._snap.devices[a.config.device_id].guard_held,
-                           bool(a.config.extra.get("control_enabled", True)), self._has_solar(a.config)) for a in adapters],
+                           bool(a.config.extra.get("control_enabled", True)), self._has_solar(a.config),
+                           self._commanded(a.config.device_id)) for a in adapters],
             export_better=self._export_better(rates, now),
             solar_ceiling=self._solar_ceilings(now, actuals, rates),
             efficiency={a.config.device_id: charge_efficiency((self.health.efficiency(a.config.device_id) or [(None, None)])[-1][1]) for a in adapters},

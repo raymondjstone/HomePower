@@ -89,3 +89,41 @@ def test_an_idle_battery_just_under_a_goal_target_is_not_topped_up_again_and_aga
     assert want(89.6, Mode.AUTO) is None                                        # within 1.5 points and idle: left alone
     assert want(87.0, Mode.AUTO).mode is Mode.CHARGE                            # a real shortfall is still charged
     assert want(89.6, Mode.CHARGE).mode is Mode.CHARGE                          # once charging it carries on to the target
+
+
+def test_a_solar_goal_listed_first_does_not_hide_a_grid_goals_cheap_slot():
+    from datetime import time as dtime
+    from core.goals import Goal
+    from core.rates import RateTable
+    now = datetime(2026, 11, 10, 1, 0, tzinfo=UTC)                              # in the cheap window, grid goal due at 07:00
+    rates = RateTable(peak=0.30, offpeak=0.075, offpeak_start=dtime(0, 30), offpeak_end=dtime(4, 30))
+    solar = Goal("sol", frozenset(), 100, dtime(18, 0), source="solar", max_power_w=3000)
+    grid = Goal("grid", frozenset(), 90, dtime(7, 0), max_power_w=800)
+    for goals in ([solar, grid], [grid, solar]):                                 # the order the goals were saved in must not matter
+        r = compute(World(now=now, devices=[_dev("a", 30.0, 0.0)], settings=Settings(import_limit_w=None), goals=goals, rates=rates,
+                          grid_w=400.0, grid_fresh=True))
+        assert r.wants["a"].mode is Mode.CHARGE and r.wants["a"].power_w == 800 and r.reasons["a"] == "goal 'grid'", (goals[0].id, r.wants.get("a"))
+
+
+def test_a_battery_told_to_charge_carries_on_to_the_goal_target_even_without_reporting_its_mode():
+    from dataclasses import replace as _r
+    from datetime import time as dtime
+    from core.goals import Goal
+    from core.rates import RateTable
+    now = datetime(2026, 11, 10, 2, 0, tzinfo=UTC)                              # in the cheap window, deadline 07:00
+    rates = RateTable(peak=0.30, offpeak=0.075, offpeak_start=dtime(0, 30), offpeak_end=dtime(4, 30))
+    goal = Goal("g", frozenset(), 90, dtime(7, 0))
+
+    def want(commanded):
+        d = _r(_dev("a", 89.0, 500.0, mode=None), commanded=commanded)          # a battery that does not report its mode
+        return compute(World(now=now, devices=[d], settings=Settings(import_limit_w=None), goals=[goal], rates=rates, grid_w=400.0, grid_fresh=True)).wants.get("a")
+    assert want(Mode.CHARGE).mode is Mode.CHARGE                                # we told it to charge: it finishes the job
+    assert want(None) is None                                                   # idle and within 1.5 points: left alone
+
+
+def test_the_import_limit_is_not_stretched_by_a_battery_charging_from_its_own_panels():
+    a = _dev("a", 50, 2000.0, pv=2000.0)                                         # its charging never reaches the house meter
+    b = _dev("b", 50, 0.0)
+    w = World(now=datetime(2026, 11, 10, 12, 0, tzinfo=UTC), devices=[a, b], settings=Settings(import_limit_w=6000),
+              overrides={"b": Desired(Mode.CHARGE, 3000)}, grid_w=5000.0, grid_fresh=True)
+    assert compute(w).wants["b"].power_w == 1000                                 # 6000 W limit, the house already takes 5000 W

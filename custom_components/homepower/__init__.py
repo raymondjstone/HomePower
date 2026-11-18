@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -121,7 +122,11 @@ def _write_backup(folder: str, data: dict) -> None:
 
     d = Path(folder)
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"homepower-{date.today().isoformat()}.json").write_text(json.dumps(data, indent=1), encoding="utf8")
+    # written to a temporary file and then swapped in, so a crash mid-write never leaves today's copy cut short
+    target = d / f"homepower-{date.today().isoformat()}.json"
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=1), encoding="utf8")
+    os.replace(tmp, target)
     for old in sorted(d.glob("homepower-*.json"))[:-BACKUPS_KEPT]:
         old.unlink(missing_ok=True)
 

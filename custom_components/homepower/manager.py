@@ -590,10 +590,13 @@ class HomePowerManager:
         if not isinstance(data, dict) or data.get("homepower_export") != 1:
             raise ValidationError("this is not a HomePower export file")
         before = (dict(self.devices), dict(self.schedules), dict(self.goals), dict(self.scenes))
+        options_before = dict(entry.options) if entry is not None else None
         try:
             return await self._import_rows(data, entry)
         except Exception as err:  # noqa: BLE001 - nothing may stay half restored
             self.devices, self.schedules, self.goals, self.scenes = before
+            if entry is not None and dict(entry.options) != options_before:
+                self.hass.config_entries.async_update_entry(entry, options=options_before)   # the settings too
             if isinstance(err, ValidationError):
                 raise
             _LOGGER.warning("restore failed, nothing was changed", exc_info=True)

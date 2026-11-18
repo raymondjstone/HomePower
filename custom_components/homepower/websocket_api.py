@@ -19,6 +19,13 @@ def _mgr(hass: HomeAssistant):
     return mgr
 
 
+def _coord(hass: HomeAssistant):
+    c = _mgr(hass).coordinator
+    if c is None:
+        raise ValidationError("HomePower is still starting; try again in a moment")
+    return c
+
+
 def _entry(hass: HomeAssistant):
     entries = hass.config_entries.async_entries(DOMAIN)
     return entries[0] if entries else None
@@ -152,7 +159,7 @@ _SCENARIO = {vol.Required("reserve"): _PCT, vol.Required("cheap"): _PCT}
 @websocket_api.async_response
 @_guard
 async def ws_whatif(hass, msg):
-    c = _mgr(hass).coordinator
+    c = _coord(hass)
     try:
         return c.whatif(msg["days"], {"reserve_pct": msg["base"]["reserve"], "cheap_pct": msg["base"]["cheap"]},
                         {"reserve_pct": msg["alt"]["reserve"], "cheap_pct": msg["alt"]["cheap"]})
@@ -263,7 +270,7 @@ async def ws_pause(hass, msg):
 async def ws_override(hass, msg):
     from .core.models import Desired, Mode
 
-    coord = _mgr(hass).coordinator
+    coord = _coord(hass)
     coord.set_override(msg["device_ids"] or None,
                        Desired(Mode(msg["mode"]), msg.get("power_w"), msg.get("target_soc")), msg["minutes"])
     await coord.async_request_refresh()
@@ -275,7 +282,7 @@ async def ws_override(hass, msg):
 @websocket_api.async_response
 @_guard
 async def ws_clear_override(hass, msg):
-    coord = _mgr(hass).coordinator
+    coord = _coord(hass)
     coord.clear_override(msg["device_ids"] or None)
     await coord.async_request_refresh()
     return {}
@@ -358,9 +365,7 @@ async def ws_safe(hass, msg):
 @_guard
 async def ws_debug(hass, msg):
     """Everything useful for a bug report in one file: readings, command results, plan against actual, recent events."""
-    c = _mgr(hass).coordinator
-    if c is None:
-        raise ValidationError("HomePower is still starting")
+    c = _coord(hass)
     return c.debug_bundle()
 
 
@@ -410,7 +415,7 @@ async def ws_flag(hass, msg):
 @websocket_api.async_response
 @_guard
 async def ws_preview(hass, msg):
-    return _mgr(hass).coordinator.preview_view(msg["hours"])
+    return _coord(hass).preview_view(msg["hours"])
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/diagnostics"})
@@ -418,7 +423,7 @@ async def ws_preview(hass, msg):
 @websocket_api.async_response
 @_guard
 async def ws_diagnostics(hass, msg):
-    c = _mgr(hass).coordinator
+    c = _coord(hass)
     return c.scrub({"devices": c.diagnostics(), "events": [list(e) for e in list(c._snap.events)[-100:]],
                     "alerts": sorted(c.alerts.active()), "notes": c.last_result.notes,
                     "decisions": list(reversed(c.why))[:40]})
@@ -429,7 +434,7 @@ async def ws_diagnostics(hass, msg):
 @websocket_api.async_response
 @_guard
 async def ws_compare_tariffs(hass, msg):
-    return _mgr(hass).coordinator.tariff_comparison(msg["days"])
+    return _coord(hass).tariff_comparison(msg["days"])
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/device/test", vol.Required("device_id"): str})
@@ -437,7 +442,7 @@ async def ws_compare_tariffs(hass, msg):
 @websocket_api.async_response
 @_guard
 async def ws_test(hass, msg):
-    return await _mgr(hass).coordinator.test_control(msg["device_id"])
+    return await _coord(hass).test_control(msg["device_id"])
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/scene/save", vol.Required("scene"): dict})
