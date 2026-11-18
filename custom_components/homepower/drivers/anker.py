@@ -94,7 +94,7 @@ class AnkerModbusDriver:
         # X1: plant status 1 = on-grid, 2 = off-grid. While the grid is lost the inverter runs the house
         # itself, so HomePower must not fight it (protected makes the engine leave it alone).
         x1 = bool(self.config.extra.get("house_meter"))
-        alarms = tuple(alarm_texts(inp[42])) if x1 else ()
+        alarms = tuple(alarm_texts(inp[42:50])) if x1 else ()      # System Alarm 1-8 (10042-10049), all inside the block read
         plant = inp[0] if x1 else None
         off_grid = (plant == 2) if plant in (1, 2) else None
         return Actual(

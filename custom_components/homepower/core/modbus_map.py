@@ -32,10 +32,10 @@ def _reg(name: str, raw: dict, positive: tuple[str, str] | None = None) -> dict:
         raise MapError(f"'{name}' type must be one of {sorted(TYPES)}")
     try:
         scale = float(raw.get("scale", 1))
-        if scale != scale or scale in (float("inf"), float("-inf")):
-            raise ValueError("not finite")
+        if scale != scale or scale in (float("inf"), float("-inf")) or scale == 0:
+            raise ValueError("not finite")              # 0 would read every value as 0 and divide by zero on writing
     except (TypeError, ValueError, OverflowError) as e:
-        raise MapError(f"'{name}' scale must be a number") from e
+        raise MapError(f"'{name}' scale must be a number other than 0") from e
     try:
         fc = int(raw.get("fc", 3))
     except (TypeError, ValueError) as e:

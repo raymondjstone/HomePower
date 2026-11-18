@@ -169,12 +169,14 @@ def test_x1_extras_from_anker_register_document():
             for i, w in enumerate((12632, 18477, 19254, 21293, 0, 0, 0, 0, 0, 0)):   # its model name, "X1-H6K-S"
                 dev.inp[10090 + i] = w
             dev.inp[10156] = 312                                            # internal temperature, tenths of a degree
-            dev.inp[10042] = (1 << 5) | (1 << 6)                           # BMS and meter 1 communication failure
+            dev.inp[10042] = (1 << 4) | (1 << 5)                           # BMS and meter 1 communication failure (app: A5, A6)
+            dev.inp[10043] = 1 << 5                                        # System Alarm 2: wrong meter address
             d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
             try:
                 a = await d.read()
                 assert a.firmware == "1.0.19.16" and a.temp_c == 31.2
-                assert a.alarms == ("battery (BMS) communication failure", "meter 1 communication failure")
+                assert a.alarms == ("battery (BMS) communication failure", "meter 1 communication failure",
+                                    "incorrect meter communication address")
                 info = await d.probe()
                 assert info["model"] == "X1-H6K-S" and info["firmware"] == "1.0.19.16"
                 dev.inp[10156] = 0xFFF6                                      # -1.0 degrees: signed
@@ -184,6 +186,9 @@ def test_x1_extras_from_anker_register_document():
                 await d.close()
     asyncio.run(go())
     assert alarm_texts(0) == [] and alarm_texts(1) == ["EEPROM read/write error"]
+    assert alarm_texts(1 << 5) == ["meter 1 communication failure"]                 # the app's "A6" (it counts bits from 1)
+    assert alarm_texts(1 << 3) == ["inverter (DC/AC) communication failure"] and alarm_texts(1 << 7) == []
+    assert alarm_texts([0, 0, 0, 0, 1 << 1, 0, 1 << 4, 0]) == ["grid L2 CT connection fault", "Modbus communication timeout"]
     x1, sb = describe_all(True), describe_all(False)
     assert x1["10064"][2] == "setting" and x1["10156"][2] == "live" and x1["10075"][0].startswith("Export")
     assert sb["60000"][0].startswith("Charge limit") and "60000" not in x1
@@ -854,3 +859,21 @@ def test_anker_and_local_ecoflow_remember_the_original_across_a_rebuild():
     assert e._prev == (2, 50)
     e._prev = (3, 10)
     assert saved[-1] == {"prev": [3, 10]}
+
+
+def test_generic_mode_register_with_a_scale_reads_back_the_value_it_wrote():
+    async def go():
+        async with fake_anker() as dev:
+            m = {**ANKER_AS_MAP, "mode": {**ANKER_AS_MAP["mode"], "scale": 0.1}}     # control_value / auto_value are raw numbers
+            d = GenericModbusDriver(gcfg(dev.port, m))
+            await d.apply(Desired(Mode.CHARGE, 2000))
+            assert dev.hold[10064] == 3
+            assert (await d.read()).mode is Mode.CHARGE                                # not mistaken for Auto (and re-sent forever)
+            await d.close()
+    asyncio.run(go())
+
+
+def test_a_register_scale_of_zero_is_refused():
+    from hp.core.modbus_map import MapError, parse_map
+    with pytest.raises(MapError):
+        parse_map({**ANKER_AS_MAP, "soc": {**ANKER_AS_MAP["soc"], "scale": 0}})

@@ -161,15 +161,26 @@ SOLARBANK_REGISTERS: tuple[tuple[int, int, str, str, str], ...] = (
     (60003, 1, "Backup reserve enabled (0 off, 1 on)", "RO", "setting"),
 )
 
-# Alarm bits worth telling the user about (System Alarm 1 = register 10042, bit numbers as in the document).
-X1_ALARMS: dict[int, str] = {
-    0: "EEPROM read/write error",
-    1: "flash read/write error",
-    4: "inverter (DC/AC) communication failure",
-    5: "battery (BMS) communication failure",
-    6: "meter 1 communication failure",
-    7: "meter 2 communication failure",
+# Alarm bits worth telling the user about: (register, bit) -> text, from the document's "ALARM INFO" table (System Alarm
+# 1-8 = registers 10042-10049, bits counted from 0). The app shows them counted from 1, so its "A6" is bit 5 of 10042.
+# (Read the table in the PDF's own text order: a layout view of it slips the labels one row, which once put every
+# communication alarm here one bit too high, so a meter fault was reported as a BMS fault.)
+X1_ALARMS: dict[tuple[int, int], str] = {
+    (10042, 0): "EEPROM read/write error",
+    (10042, 1): "flash read/write error",
+    (10042, 3): "inverter (DC/AC) communication failure",
+    (10042, 4): "battery (BMS) communication failure",
+    (10042, 5): "meter 1 communication failure",
+    (10042, 6): "meter 2 communication failure",
+    (10043, 5): "incorrect meter communication address",
+    (10045, 11): "grid CT failure",
+    (10045, 12): "self-check failure",
+    (10046, 0): "grid L1 CT connection fault",
+    (10046, 1): "grid L2 CT connection fault",
+    (10046, 2): "grid L3 CT connection fault",
+    (10048, 4): "Modbus communication timeout",
 }
+X1_ALARM_FIRST = 10042
 
 
 def describe_all(x1: bool = True) -> dict[str, list[str]]:
@@ -181,5 +192,8 @@ def describe_all(x1: bool = True) -> dict[str, list[str]]:
     return out
 
 
-def alarm_texts(register_value: int) -> list[str]:
-    return [text for bit, text in X1_ALARMS.items() if register_value & (1 << bit)]
+def alarm_texts(registers: list[int] | int) -> list[str]:
+    """The alarms set in System Alarm 1-8 (registers 10042 onwards, in order; a single number is System Alarm 1 alone)."""
+    regs = [registers] if isinstance(registers, int) else list(registers)
+    return [text for (reg, bit), text in X1_ALARMS.items()
+            if 0 <= reg - X1_ALARM_FIRST < len(regs) and regs[reg - X1_ALARM_FIRST] & (1 << bit)]
