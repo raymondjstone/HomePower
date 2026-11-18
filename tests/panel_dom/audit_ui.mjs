@@ -39,4 +39,9 @@ if (id) {
   await wait(80);
   must("a refused delete keeps the dialog open and shows why", !!el._modal && /handed back/.test(el.shadowRoot.getElementById("modal").textContent), el.shadowRoot.getElementById("modal").textContent.slice(-120));
 } else must("a battery exists to test delete", false);
+// the timeline's "now" is Home Assistant's time, not the browser's
+const probe = (tz) => { el._hass = { ...el._hass, config: { time_zone: tz } }; const n = el._haNow(); return n.getHours(); };
+const hourIn = (tz) => +new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", hourCycle: "h23" }).format(new Date());
+must("the clock follows Home Assistant's time zone", probe("Pacific/Auckland") === hourIn("Pacific/Auckland") && probe("America/Los_Angeles") === hourIn("America/Los_Angeles"));
+must("an unknown time zone falls back instead of failing", typeof probe("Not/AZone") === "number");
 process.exit(failures ? 1 : 0);
