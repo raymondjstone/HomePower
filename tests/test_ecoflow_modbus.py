@@ -217,3 +217,20 @@ def test_limits_are_required_when_the_battery_did_not_report_them():
         device_from_dict(base)
     with pytest.raises(ValidationError):
         device_from_dict({**base, "max_charge_w": 3000})
+
+
+def test_link_dropping_between_the_two_reads_is_offline_not_auto():
+    d, f = driver()
+    real = f.read_holding
+    calls = []
+
+    async def flaky(addr, count):
+        calls.append(addr)
+        if len(calls) == 2:                                 # the second read of the cycle (the control block) loses the link
+            raise ModbusError("unreachable")
+        return await real(addr, count)
+    f.read_holding = flaky
+    import time
+    d._beat = time.monotonic()                              # keep-alive just sent: none in this cycle
+    a = run(d.read())
+    assert a.online is False

@@ -101,8 +101,11 @@ class EcoFlowModbusDriver:
                 t = _signed16(target) * self.sign
                 mode = Mode.HOLD if t == 0 else Mode.CHARGE if t > 0 else Mode.DISCHARGE
                 set_w = abs(t)
-        except ModbusError:
-            pass                                             # the control block is optional for reading
+        except ModbusError as err:
+            if err.code is None:                             # the link dropped mid-cycle: do not guess a mode, report offline
+                self.last_error = str(err)
+                return Actual(online=False)
+            # the device refused this block (an exception reply): the control registers are optional for reading
         self.last_quota = {"consumption_w": load, "grid_w": grid, "pv_w": pv, "battery_w": batt, "soc": soc}
         return Actual(online=True, soc=soc, power_w=None if batt is None else batt * self.sign, mode=mode, set_power_w=set_w,
                       grid_w=grid, pv_w=pv, load_w=load)
