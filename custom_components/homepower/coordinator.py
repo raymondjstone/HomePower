@@ -972,7 +972,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             st.desired = res.wants.get(did)
             st.reason = res.reasons.get(did, "")
             st.guard_held = res.guard_held.get(did, False)
-            self._note_decision(did, a.config.name, st, actuals[did], world, res, grid, now)
+            try:
+                self._note_decision(did, a.config.name, st, actuals[did], world, res, grid, now)
+            except Exception:  # noqa: BLE001 - the decision log is for people: a bug there must not stop control of this or the next battery
+                _LOGGER.exception("could not record the decision for %s", did)
             if st.desired is None:  # nothing manages it: device runs its own logic
                 st.decision = None
                 st.unconfirmed = 0
