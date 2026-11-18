@@ -79,7 +79,9 @@ class Ledger:
         new_kwh = stored_kwh if stored_kwh is not None else max(0.0, kwh + charged_kwh - discharged_kwh)
         if new_kwh > 0.05:
             # bounded: a blend of the old average and today's price, raised at most by charging/discharging losses
-            st[1] = min(max(0.0, pool) / new_kwh, max(avg, price * share) / 0.75)
+            ceiling = max(avg, price * share)
+            # (a negative cost is real: charging while paid to take the energy lowers the average, and is not clamped away)
+            st[1] = min(pool / new_kwh, ceiling / 0.75 if ceiling > 0 else ceiling)
         elif charged_kwh > 0 and new_kwh <= 0.05:
             st[1] = price * share              # empty battery: the next energy in sets the cost
         st[0] = new_kwh

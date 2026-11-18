@@ -100,7 +100,8 @@ def _zero_import(w: World, dev: DevIn) -> Desired:
     act, caps = dev.actual, dev.config.caps
     if w.grid_w is None or not act.online:
         return desired_for(None, caps, act.soc)  # fail safe: HOLD
-    other_charge = sum(max(0.0, o.actual.power_w or 0.0) for o in w.devices if o is not dev and o.actual.online)
+    # another battery charging from its own panels never passes the house meter, so only the rest of its charging is "other charge"
+    other_charge = sum(max(0.0, (o.actual.power_w or 0.0) - max(0.0, o.actual.pv_w or 0.0)) for o in w.devices if o is not dev and o.actual.online)
     cur = act.set_power_w or 0
     signed_cur = cur if act.mode is Mode.DISCHARGE else -cur if act.mode is Mode.CHARGE else 0
     sp = setpoint(

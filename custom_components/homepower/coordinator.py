@@ -1130,8 +1130,12 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         # charging is shared among them; with no reading their charging is counted as solar.
         forced = {did for did, st in self._snap.devices.items() if did in on and self._grid_charging(st)}
         forced_w = sum(max(0.0, on[d].power_w or 0.0) for d in forced)
-        free_w = sum(max(0.0, a.power_w or 0.0) for d, a in on.items() if d not in forced)
-        free_share = min(1.0, max(0.0, grid - forced_w) / free_w) if grid is not None and free_w > 0 else 0.0
+        # Charging a battery does from its own panels never passes the house meter and is free: only what it charges beyond
+        # its panels can have come from the grid, so only that part takes a share of the import.
+        free = {d: (max(0.0, a.power_w or 0.0), max(0.0, (a.power_w or 0.0) - max(0.0, a.pv_w or 0.0))) for d, a in on.items() if d not in forced}
+        free_np = sum(np_ for _, np_ in free.values())
+        np_share = min(1.0, max(0.0, grid - forced_w) / free_np) if grid is not None and free_np > 0 else 0.0
+        shares = {d: (np_share * np_ / p if p > 0 else 0.0) for d, (p, np_) in free.items()}
         # Battery energy that went out to the grid replaced no import: it earns the export price (if any) instead.
         out_w = sum(max(0.0, -(a.power_w or 0.0)) for a in on.values())
         exp_share = min(1.0, max(0.0, -grid) / out_w) if grid is not None and out_w > 0 else 0.0
@@ -1144,7 +1148,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         for did, act in actuals.items():
             d_in, d_out = steps.get(did, (0.0, 0.0))
             stored = act.soc / 100 * caps.get(did, 0) / 1000 if act.online and act.soc is not None and did in caps else None
-            self.ledger.add(day, did, d_in, 1.0 if did in forced else free_share, d_out, exp_share, price, exp_price, stored, first)
+            self.ledger.add(day, did, d_in, 1.0 if did in forced else shares.get(did, 0.0), d_out, exp_share, price, exp_price, stored, first)
         self.ledger.forget(set(caps))
 
     # ------------------------------------------------------------------ weather (cold-day target)

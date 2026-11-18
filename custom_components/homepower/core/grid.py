@@ -82,8 +82,16 @@ def apply_load_rules(d: Desired, blocks: set[str]) -> Desired:
     return d
 
 
+BACKUP_MARGIN = 2   # points above the reserve where the battery is held, so it settles there instead of dipping under and being topped up again
+
+
 def backup_desired(soc: float | None, pct: int, caps: Capabilities) -> Desired | None:
-    """Backup mode: top the battery up to the reserve (charging allowed only if the model can)."""
-    if soc is None or soc >= pct or Mode.CHARGE not in caps.supported_modes:
+    """Backup mode: top the battery up to the reserve (charging allowed only if the model can), then keep it from falling
+    below it: just above the reserve it is held, so the reserve stays instead of being used and bought back again."""
+    if soc is None:
         return None
-    return Desired(Mode.CHARGE, caps.max_charge_w, target_soc=pct)
+    if soc < pct:
+        return Desired(Mode.CHARGE, caps.max_charge_w, target_soc=pct) if Mode.CHARGE in caps.supported_modes else None
+    if soc < pct + BACKUP_MARGIN and Mode.HOLD in caps.supported_modes:
+        return Desired(Mode.HOLD, reserve_soc=pct)
+    return None
