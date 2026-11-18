@@ -92,7 +92,7 @@ def clean(raw: dict) -> dict:
             elif k in FLOAT_KEYS:
                 out[k] = None if v in (None, "") else _finite(v)
             elif k in BOOL_KEYS:
-                out[k] = bool(v)
+                out[k] = _bool(v)
             elif k in STR_KEYS:
                 out[k] = str(v or "").strip()
                 if k == "currency":
@@ -148,6 +148,18 @@ def clean_rules(v) -> list[dict]:
         above = r.get("above_w")
         rules.append({"entity": ent, "block": block, "above_w": None if above in (None, "") else _finite(above)})
     return rules
+
+
+def _bool(v) -> bool:
+    """A switch setting. bool("false") is True, so text from a restored or hand-edited file is read as words."""
+    if isinstance(v, str):
+        t = v.strip().lower()
+        if t in ("", "0", "false", "no", "off"):
+            return False
+        if t in ("1", "true", "yes", "on"):
+            return True
+        raise ValueError(f"'{v}' is not on or off")
+    return bool(v)
 
 
 def _finite(v) -> float:
@@ -206,6 +218,11 @@ class AppSettings:
     cheap_soon_below_pct: int = 60
 
 
+def _int_or(v, default: int) -> int:
+    """The saved number, with 0 kept as 0 (only a missing value falls back to the default)."""
+    return default if v in (None, "") else int(v)
+
+
 def build(cfg: dict) -> AppSettings:
     c = {**DEFAULTS, **{k: v for k, v in cfg.items() if k in DEFAULTS}}
     eng = EngineSettings(
@@ -222,6 +239,6 @@ def build(cfg: dict) -> AppSettings:
         away_entity=c["away_entity"], notify_service=c["notify_service"], load_rules=list(c["load_rules"] or []),
         ecoflow_live=bool(c["ecoflow_live"]), dry_run=bool(c["dry_run"]), divert_cheap=bool(c["divert_cheap"]), x1_grid_limits=bool(c["x1_grid_limits"]), compare_tariffs=c["compare_tariffs"], weekly_digest=bool(c["weekly_digest"]), forecast_reserve_kwh=int(c["forecast_reserve_kwh"] or 0), forecast_reserve_pct=int(c["forecast_reserve_pct"] or 0), solar_room=bool(c["solar_room"]), base_load_w=int(c["base_load_w"] or 0), offpeak_extra=parse_windows(c["offpeak_extra"]),
         daily_summary_time=_t(c["daily_summary_time"]), divert_entity=c["divert_entity"],
-        divert_export_w=int(c["divert_export_w"] or 500), divert_min_soc=int(c["divert_min_soc"] or 95), notify_full=bool(c["notify_full"]), notify_low_pct=int(c["notify_low_pct"] or 0),
-        notify_cheap_soon=bool(c["notify_cheap_soon"]), cheap_soon_below_pct=int(c["cheap_soon_below_pct"] or 60),
+        divert_export_w=_int_or(c["divert_export_w"], 500), divert_min_soc=_int_or(c["divert_min_soc"], 95), notify_full=bool(c["notify_full"]), notify_low_pct=int(c["notify_low_pct"] or 0),
+        notify_cheap_soon=bool(c["notify_cheap_soon"]), cheap_soon_below_pct=_int_or(c["cheap_soon_below_pct"], 60),
     )

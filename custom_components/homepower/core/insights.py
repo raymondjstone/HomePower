@@ -22,12 +22,19 @@ class LoadProfile:
     MIN_SAMPLES_PER_VISIT = 6   # ignore a half-hour that was barely observed (e.g. Home Assistant restarted in it)
 
     def __init__(self, data: dict | None = None) -> None:
-        d = data or {}
-        self.avg: dict[str, list[float]] = {k: list(d.get("avg", {}).get(k, [0.0] * 48)) for k in ("wd", "we")}
-        self.n: dict[str, list[int]] = {k: list(d.get("n", {}).get(k, [0] * 48)) for k in ("wd", "we")}
+        from .energy import finite
+
+        d = data if isinstance(data, dict) else {}
+        self.avg: dict[str, list[float]] = {"wd": [0.0] * 48, "we": [0.0] * 48}
+        self.n: dict[str, list[int]] = {"wd": [0] * 48, "we": [0] * 48}
         for k in ("wd", "we"):
-            if len(self.avg[k]) != 48 or len(self.n[k]) != 48:
-                self.avg[k], self.n[k] = [0.0] * 48, [0] * 48
+            # A damaged save (nulls, text, NaN, wrong length) starts that half of the week afresh: a bad number here would stop
+            # every goal with an automatic target, and junk would stop HomePower starting at all.
+            avg, n = (d.get("avg") or {}), (d.get("n") or {})
+            a_k, n_k = (avg.get(k) if isinstance(avg, dict) else None), (n.get(k) if isinstance(n, dict) else None)
+            if isinstance(a_k, list) and isinstance(n_k, list) and len(a_k) == 48 and len(n_k) == 48:
+                self.avg[k] = [max(0.0, finite(x)) for x in a_k]
+                self.n[k] = [max(0, int(finite(x))) for x in n_k]
         self._cur: list | None = None    # [(kind, slot, date), sum, count]
 
     @staticmethod
@@ -50,7 +57,7 @@ class LoadProfile:
         self._blend(self.avg, self.n, cur)
 
     def record(self, t: datetime, load_w: float | None) -> None:
-        if load_w is None or load_w < 0 or load_w > 50000:
+        if load_w is None or not 0 <= load_w <= 50000:          # also refuses NaN, which would stick in the average for good
             return
         kind, i = self._slot(t)
         key = (kind, i, t.date())

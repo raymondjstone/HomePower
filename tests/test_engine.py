@@ -136,7 +136,9 @@ def test_load_rules_and_backup():
     assert apply_load_rules(Desired(Mode.CHARGE, 1000), {"discharge"}).mode is Mode.CHARGE
     caps = Capabilities(5000, 3000, 3000, 10)
     assert backup_desired(30, 50, caps).mode is Mode.CHARGE and backup_desired(60, 50, caps) is None
-    assert backup_desired(30, 50, Capabilities(5000, 0, 0, 10, frozenset({Mode.AUTO, Mode.HOLD}))) is None
+    hold_only = Capabilities(5000, 0, 0, 10, frozenset({Mode.AUTO, Mode.HOLD}))
+    assert backup_desired(30, 50, hold_only).mode is Mode.HOLD                     # below the reserve and cannot charge: kept from going lower
+    assert backup_desired(30, 50, Capabilities(5000, 0, 0, 10, frozenset({Mode.AUTO}))) is None
 
 
 # ------------------------------------------------------------------ engine

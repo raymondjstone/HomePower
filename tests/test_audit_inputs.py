@@ -58,3 +58,34 @@ def test_currency_symbol_is_short_and_markup_free():
     assert clean({"currency": "£"})["currency"] == "£"
     got = clean({"currency": '<img src=x onerror="a">'})["currency"]
     assert len(got) <= 8 and not any(c in got for c in "<>&\"'`")
+
+
+def test_a_nan_price_in_a_rates_entity_is_no_price():
+    from core.rates import parse_rates
+    slots = parse_rates({"rates": [{"start": "2026-11-10T00:00:00Z", "end": "2026-11-10T00:30:00Z", "value_inc_vat": "nan"},
+                                   {"start": "2026-11-10T00:30:00Z", "end": "2026-11-10T01:00:00Z", "value_inc_vat": float("inf")},
+                                   {"start": "2026-11-10T01:00:00Z", "end": "2026-11-10T01:30:00Z", "value_inc_vat": 12.5}]})
+    assert [s.price for s in slots] == [12.5]
+
+
+def test_a_nan_or_infinite_forecast_leaves_a_goal_target_alone():
+    from core.planner import adjust_target_for_forecast
+    assert adjust_target_for_forecast(90, float("nan"), 10.0) == 90
+    assert adjust_target_for_forecast(90, float("inf"), 10.0) == 90
+
+
+def test_switch_settings_written_as_text_are_read_as_words():
+    import pytest
+    from core.settings import SettingsError, clean
+    assert clean({"dry_run": "false", "peak_shaving": "on", "solar_room": "0", "weekly_digest": True}) == \
+        {"dry_run": False, "peak_shaving": True, "solar_room": False, "weekly_digest": True}
+    with pytest.raises(SettingsError):
+        clean({"dry_run": "maybe"})
+
+
+def test_a_setting_of_zero_stays_zero():
+    from core.settings import build
+    s = build({"divert_min_soc": 0, "divert_export_w": 0, "cheap_soon_below_pct": 0})
+    assert (s.divert_min_soc, s.divert_export_w, s.cheap_soon_below_pct) == (0, 0, 0)
+    d = build({})
+    assert (d.divert_min_soc, d.divert_export_w, d.cheap_soon_below_pct) == (95, 500, 60)

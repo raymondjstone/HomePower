@@ -1,6 +1,7 @@
 """Persistent batteries, schedules and goals; runtime flags; and the bridge to the coordinator."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from homeassistant.core import HomeAssistant
@@ -84,6 +85,10 @@ class HomePowerManager:
             v = data.get(key)
             return v if isinstance(v, dict) else {}
 
+        def seq(key: str) -> list:
+            v = data.get(key)
+            return v if isinstance(v, list) else []
+
         def rows(key: str, id_key: str) -> dict:     # a damaged row must never stop HomePower starting
             return {r[id_key]: r for r in (data.get(key) if isinstance(data.get(key), list) else []) if isinstance(r, dict) and isinstance(r.get(id_key), str)}
         self.devices, self.schedules, self.goals = rows("devices", "device_id"), rows("schedules", "id"), rows("goals", "id")
@@ -91,19 +96,19 @@ class HomePowerManager:
         self.backup = bool(data.get("backup", False))
         self.away = bool(data.get("away", False))
         self.safe = bool(data.get("safe", False)) and self.paused
-        self.forced = set(data.get("forced", []))
-        self.energy = dict(data.get("energy", {}))
-        self.ledger_days = dict(data.get("ledger", {}))
-        self.ledger_stores = dict(data["ledger_stores"]) if "ledger_stores" in data else (None if self.ledger_days else {})
-        self.profile_data, self.daily_data = dict(data.get("profile", {})), dict(data.get("daily", {}))
-        self.usage_data = dict(data.get("usage", {}))
-        self.health_data = dict(data.get("health", {}))
-        self.grid_events, self.trend_data = list(data.get("grid_events", [])), dict(data.get("trend", {}))
-        self.register_notes = {k: dict(v) for k, v in data.get("register_notes", {}).items() if isinstance(v, dict)}
+        self.forced = {x for x in seq("forced") if isinstance(x, str)}
+        self.energy = dict(plain("energy"))
+        self.ledger_days = dict(plain("ledger"))
+        self.ledger_stores = dict(plain("ledger_stores")) if "ledger_stores" in data else (None if self.ledger_days else {})
+        self.profile_data, self.daily_data = dict(plain("profile")), dict(plain("daily"))
+        self.usage_data = dict(plain("usage"))
+        self.health_data = dict(plain("health"))
+        self.grid_events, self.trend_data = list(seq("grid_events")), dict(plain("trend"))
+        self.register_notes = {k: dict(v) for k, v in plain("register_notes").items() if isinstance(v, dict)}
         self.event_state, self.tests = dict(plain("event_state")), dict(plain("tests"))
         self.divert_on = str(data.get("divert_on") or "")
-        self.pv_seen = set(data.get("pv_seen", []))
-        self.forecast_days = dict(data.get("forecast_days", {}))
+        self.pv_seen = {x for x in seq("pv_seen") if isinstance(x, str)}
+        self.forecast_days = {k: v for k, v in plain("forecast_days").items() if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")}
         def plain(key: str) -> dict:     # a damaged value in a newer field must never stop HomePower starting
             v = data.get(key)
             return v if isinstance(v, dict) else {}
@@ -446,7 +451,7 @@ class HomePowerManager:
         if cached is None or device_id not in self.forced:
             return True
         try:
-            await cached[1].apply(Desired(Mode.AUTO))
+            await asyncio.wait_for(cached[1].apply(Desired(Mode.AUTO)), 60)   # a hung battery must not hang the panel request
         except Exception:  # noqa: BLE001
             _LOGGER.warning("could not hand %s back before stopping control", device_id, exc_info=True)
             return False

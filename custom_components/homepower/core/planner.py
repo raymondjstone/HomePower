@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from math import isfinite
 
 from .grid import split_power
 from .rates import Slot
@@ -37,7 +38,7 @@ def adjust_target_for_forecast(target: int, forecast_kwh: float | None, capacity
 
     `share` is the fraction of the forecast generation expected to end up in the battery.
     """
-    if forecast_kwh is None or forecast_kwh <= 0 or capacity_kwh <= 0:
+    if forecast_kwh is None or not isfinite(forecast_kwh) or forecast_kwh <= 0 or capacity_kwh <= 0:   # nan / inf: no forecast
         return target
     reduction = forecast_kwh * share / capacity_kwh * 100
     return int(max(min(floor, target), round(target - reduction)))

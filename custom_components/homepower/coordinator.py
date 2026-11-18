@@ -37,6 +37,8 @@ from .core.solar_room import SolarDay, charge_ceiling_pct, split_by_capacity
 
 _LOGGER = logging.getLogger(__name__)
 READ_TIMEOUT_S = 20
+HANDBACK_TIMEOUT_S = 20   # per battery at shutdown: Home Assistant is waiting
+APPLY_TIMEOUT_S = 60   # a command that hangs (e.g. another integration's service call) must not stall control of every battery
 PERSIST_EVERY_S = 300
 TARIFF_REFRESH_S = 6 * 3600
 TARIFF_HISTORY_DAYS = 14
@@ -81,6 +83,15 @@ class Snapshot:
 
 
 _PRIVATE_KEY = re.compile(r"ssid|wifi|pass|mac|^sn$|serial|lat|lon|addr|ip$|token", re.I)
+
+
+def _real(v) -> float:
+    """A sensor's number, or ValueError. "nan" and "inf" parse as floats but are no reading: let one through and a forecast,
+    price or temperature turns the plan into NaN, which stops the decision engine every cycle."""
+    f = float(v)
+    if f != f or f in (float("inf"), float("-inf")):
+        raise ValueError("not a finite number")
+    return f
 
 
 class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
@@ -266,7 +277,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 try:
                     now = dt_util.now()
                     lo = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
-                    slots = [Slot(lo, lo + SLOT, float(st.state))]
+                    slots = [Slot(lo, lo + SLOT, _real(st.state))]
                 except (TypeError, ValueError):
                     pass
         peak, off, a, b = s.price_peak, s.price_offpeak, s.offpeak_start, s.offpeak_end
@@ -311,7 +322,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             samples = []
             for st in await get_instance(self.hass).async_add_executor_job(load):
                 try:
-                    samples.append((st.last_changed, float(st.state)))
+                    samples.append((st.last_changed, _real(st.state)))
                 except (TypeError, ValueError):
                     continue
             found = infer_offpeak(samples, end, dt_util.DEFAULT_TIME_ZONE)
@@ -348,7 +359,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
     def _kwh(self, entity_id: str) -> float | None:
         st = self.hass.states.get(entity_id)
         try:
-            v = float(st.state)  # type: ignore[union-attr]
+            v = _real(st.state)  # type: ignore[union-attr]
         except (AttributeError, TypeError, ValueError):
             return None
         return v / 1000 if str(st.attributes.get("unit_of_measurement", "")).lower() == "wh" else v
@@ -551,7 +562,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
     def _forecast_kwh(self) -> float | None:
         st = self.hass.states.get(self.settings.forecast_entity) if self.settings.forecast_entity else None
         try:
-            v = float(st.state)  # type: ignore[union-attr]
+            v = _real(st.state)  # type: ignore[union-attr]
         except (AttributeError, TypeError, ValueError):
             return None
         return v / 1000 if str(st.attributes.get("unit_of_measurement", "")).lower() == "wh" else v
@@ -1168,8 +1179,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         attrs = getattr(st, "attributes", {}) or {}
         try:
             if str(entity).startswith("weather."):
-                return to_celsius(float(attrs["temperature"]), attrs.get("temperature_unit"))
-            return to_celsius(float(st.state), attrs.get("unit_of_measurement"))
+                return to_celsius(_real(attrs["temperature"]), attrs.get("temperature_unit"))
+            return to_celsius(_real(st.state), attrs.get("unit_of_measurement"))
         except (KeyError, TypeError, ValueError):
             return None
 
@@ -1362,8 +1373,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                            "why": st.reason, "soc": st.actual.soc if st.actual else None, "target_soc": want.target_soc,
                            "price": self._price_now(self._rates(), dt_util.now()), "grid_w": self.last_grid}
         try:
-            await a.apply(want)
-            st.actual = await a.read()
+            try:
+                await asyncio.wait_for(a.apply(want), APPLY_TIMEOUT_S)
+            except asyncio.TimeoutError as err:
+                raise RuntimeError(f"the battery did not answer the command within {APPLY_TIMEOUT_S} s") from err
+            st.actual = await self._read(a)
             st.last_error = None
             if not a.config.caps.power_control and want.mode in (Mode.CHARGE, Mode.HOLD):
                 room = want.mode is Mode.HOLD or st.actual.soc is None or st.actual.soc < (want.target_soc or 95) - 3
@@ -1372,7 +1386,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 else:
                     self.traces.cancel(did)
             # Vendor state can lag; a remaining mismatch is retried after the cooldown.
-            _, remaining = decide(want, st.actual, now=st.last_apply, last_apply=None)
+            # No reading after the command is not a confirmation (an offline battery shows no differences at all).
+            remaining = decide(want, st.actual, now=st.last_apply, last_apply=None)[1] if st.actual.online else ["no reading after the command"]
             st.unconfirmed, st.waited = next_unconfirmed(st.unconfirmed, st.waited, bool(remaining), not a.config.caps.power_control,
                                                          self.traces.grace(did, self.settings.cooldown_s))
             st.last_command["result"] = "confirmed" if not remaining else ("waiting for the cloud to show it" if st.waited and not st.unconfirmed else "not yet confirmed")
@@ -1739,7 +1754,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             if st and st.release_pending:
                 try:
                     self.traces.cancel(a.config.device_id)
-                    await a.apply(Desired(Mode.AUTO))
+                    await asyncio.wait_for(a.apply(Desired(Mode.AUTO)), HANDBACK_TIMEOUT_S)   # one hung battery must not hold up the rest
                     self._set_release(a.config.device_id, st, False)     # handed back: not "held from before" at the next start
                     self._log(a.config.device_id, "released to the device's own control on shutdown")
                 except Exception as err:  # noqa: BLE001 - flag stays set; the control loop keeps retrying, and so does the next start

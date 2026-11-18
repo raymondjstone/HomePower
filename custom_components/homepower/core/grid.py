@@ -90,8 +90,9 @@ def backup_desired(soc: float | None, pct: int, caps: Capabilities) -> Desired |
     below it: just above the reserve it is held, so the reserve stays instead of being used and bought back again."""
     if soc is None:
         return None
-    if soc < pct:
-        return Desired(Mode.CHARGE, caps.max_charge_w, target_soc=pct) if Mode.CHARGE in caps.supported_modes else None
+    if soc < pct and Mode.CHARGE in caps.supported_modes:
+        return Desired(Mode.CHARGE, caps.max_charge_w, target_soc=pct)
     if soc < pct + BACKUP_MARGIN and Mode.HOLD in caps.supported_modes:
+        # also below the reserve when it cannot be told to charge: left alone it would run itself down further
         return Desired(Mode.HOLD, reserve_soc=pct)
     return None

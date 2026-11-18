@@ -66,6 +66,8 @@ def parse_rates(attrs: dict | None, tz=None) -> list[Slot]:
                 price = float(p)
             except (TypeError, ValueError):
                 continue
+            if price != price or abs(price) == float("inf"):
+                continue                                  # "nan" / "inf": no price (it would wreck the cheapest-slot ordering)
             e = e if e is not None and e > s else s + SLOT
             out.append(Slot(s.astimezone(timezone.utc), e.astimezone(timezone.utc), price))
     out.sort(key=lambda x: x.start)

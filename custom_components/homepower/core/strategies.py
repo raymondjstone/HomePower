@@ -54,7 +54,10 @@ def _power(extra: dict, st: dict, key: str = "power") -> float | None:
 def _interpret_generic(extra, caps, st) -> Actual:
     if st.get("mode") in BAD:
         return Actual(online=False)
-    rev = {v: Mode(k) for k, v in extra["mode_map"].items()}
+    # One select option may stand for two of our modes (e.g. "Self-consumption" for both Auto and Hold). Read back, it says
+    # nothing certain: report the mode as unknown, else the battery would look wrong forever and be re-commanded every cycle.
+    opts = list(extra["mode_map"].values())
+    rev = {v: Mode(k) for k, v in extra["mode_map"].items() if opts.count(v) == 1}
     return Actual(
         online=True, soc=num(st.get("soc")), power_w=_power(extra, st), mode=rev.get(st["mode"]),
         set_power_w=_int(st.get("set_power")), target_soc=_int(st.get("target_soc")),

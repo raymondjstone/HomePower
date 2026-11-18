@@ -58,3 +58,17 @@ def test_a_removed_battery_leaves_no_efficiency_history():
     assert h.efficiency("a")
     h.forget("a")
     assert h.efficiency("a") == [] and "a" not in h.base and h.efficiency("b")
+
+
+def test_a_damaged_saved_load_profile_starts_afresh_instead_of_stopping_goals():
+    from datetime import datetime, timezone
+    from core.insights import LoadProfile
+    start = datetime(2026, 11, 10, 1, tzinfo=timezone.utc)
+    for data in ({"avg": {"wd": [None] * 48, "we": [0.0] * 48}, "n": {"wd": [5] * 48, "we": [5] * 48}},
+                 {"avg": {"wd": ["x"] * 48}, "n": {"wd": ["3"] * 48}}, {"avg": "junk"}, "junk", None,
+                 {"avg": {"wd": [float("nan")] * 48, "we": [1.0] * 48}, "n": {"wd": [5] * 48, "we": [5] * 48}}):
+        v = LoadProfile(data).expected_wh(start, 2)
+        assert v is None or v == v, (data, v)                      # never an exception, never NaN
+    p = LoadProfile()
+    p.record(start, float("nan"))
+    assert p._cur is None                                        # a NaN load is not learned

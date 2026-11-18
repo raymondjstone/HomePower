@@ -266,7 +266,7 @@ class HomePowerPanel extends HTMLElement {
       case "save-schedule": {
         const s = this._collectSchedule(), orig = t.dataset.orig;
         if (!s.id) return this._err("Give the schedule a name.");
-        if (!orig && this.data.schedules.some((x) => x.id === s.id)) return this._err("A schedule with that name already exists.");
+        if (orig !== s.id && this.data.schedules.some((x) => x.id === s.id)) return this._err("A schedule with that name already exists.");
         if (orig) s.enabled = (this.data.schedules.find((x) => x.id === orig) || {}).enabled !== false;
         const saved = await this._call({ type: "homepower/schedule/save", schedule: s }, undefined, true);
         if (!saved) return;
@@ -395,7 +395,7 @@ class HomePowerPanel extends HTMLElement {
       case "save-goal": {
         const g = this._collectGoal(), orig = t.dataset.orig;
         if (!g.id) return this._err("Give the goal a name.");
-        if (!orig && (this.data.goals || []).some((x) => x.id === g.id)) return this._err("A goal with that name already exists.");
+        if (orig !== g.id && (this.data.goals || []).some((x) => x.id === g.id)) return this._err("A goal with that name already exists.");
         if (orig) g.enabled = ((this.data.goals || []).find((x) => x.id === orig) || {}).enabled !== false;
         const saved = await this._call({ type: "homepower/goal/save", goal: g }, undefined, true);
         if (!saved) return;
@@ -426,7 +426,7 @@ class HomePowerPanel extends HTMLElement {
       case "save-scene": {
         const sc = this._collectScene(), orig = t.dataset.orig;
         if (!sc.name) return this._err("Give the scene a name.");
-        if (!orig && (this.data.scenes || []).some((x) => x.name === sc.name)) return this._err("A scene with that name already exists.");
+        if (orig !== sc.name && (this.data.scenes || []).some((x) => x.name === sc.name)) return this._err("A scene with that name already exists.");
         if (!(await this._call({ type: "homepower/scene/save", scene: sc }, (m) => this._err(m)))) return;
         if (orig && orig !== sc.name) await this._call({ type: "homepower/scene/delete", name: orig });
         await this._reload(); return this._closeModal();
