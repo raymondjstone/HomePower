@@ -755,14 +755,17 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         soc = fig["soc"]
 
         async def edge(key: str, active: bool, clear: bool, msg: str) -> None:
+            # A dated heads-up (daily summary, weekly digest, cheap rate soon) replaces the last one of its kind: with the
+            # date in the notification's id, a new one would be added every day and they would pile up.
+            nid = "event_" + (key.split("_")[0] if key.startswith(("summary_", "digest_", "cheap_")) else key)
             was = self._event_state.get(key, False)
             if active and not was:
                 self._event_state[key] = True
                 self._log("events", msg)
-                await self._notify(f"event_{key}", msg, True)
+                await self._notify(nid, msg, True)
             elif was and clear:
                 self._event_state[key] = False
-                await self._notify(f"event_{key}", msg, False)
+                await self._notify(nid, msg, False)
 
         today = f"{now:%Y%m%d}"
         for k in [k for k in self._event_state if k.startswith(("cheap_", "summary_", "tariff_", "digest_")) and today not in k and not k.startswith("tariff_m")]:
