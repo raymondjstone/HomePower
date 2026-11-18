@@ -22,7 +22,8 @@ class FakeStream:
         self.writes = []
         self.dead = False
         self.put(0x206, f32(500.0) + f32(300.0) + f32(0.0) + f32(1500.0) + [62])      # load, grid, pv, battery (+ charging), SOC
-        self.regs[0x1610], self.regs[0x1611] = 0, 0
+        self.regs[0x1610], self.regs[0x1611], self.regs[0x1612], self.regs[0x1613], self.regs[0x1614] = 0, 0, 0, 0, 0
+        self.refuse = set()                                 # offsets the device answers with a Modbus exception
         self.put(0x3, list(struct.unpack(">8H", b"ES21ZABC12345678"[:16])))
         self.put(0x227, [0, 5000]); self.put(0x221, [0, 2300]); self.put(0x223, [0, 3000]); self.regs[0x2200] = 10
         self.put(0xB, [0x0101, 0x071C])
@@ -42,6 +43,8 @@ class FakeStream:
     async def write_register(self, addr, value):
         if self.dead:
             raise ModbusError("unreachable")
+        if addr - OFF in self.refuse:
+            raise ModbusError("device returned exception 3", code=3)
         self.writes.append((addr - OFF, value & 0xFFFF))
         self.regs[addr - OFF] = value & 0xFFFF
 
@@ -174,3 +177,34 @@ def test_profile_builds_a_controllable_device():
     assert cfg.extra["driver"] == "ecoflow_modbus" and cfg.caps.power_control is True
     assert cfg.extra["connection"] == {"host": "10.0.0.213", "port": 502, "unit_id": 1, "reverse_sign": True}
     assert Mode.DISCHARGE in cfg.caps.supported_modes
+
+
+def test_refused_keepalive_does_not_make_a_readable_battery_offline():
+    d, f = driver()
+    f.refuse.add(0x25F)                                    # e.g. read-only access in the EcoFlow app
+    a = run(d.read())
+    assert a.online and a.soc == 62
+
+
+def test_refused_keepalive_stops_a_command_with_a_clear_reason():
+    d, f = driver()
+    f.refuse.add(0x25F)
+    with pytest.raises(ModbusError, match="read/write"):
+        run(d.apply(Desired(Mode.CHARGE, 1000)))
+    assert [w for w in f.writes if w[0] in (0x1610, 0x1611)] == []
+
+
+def test_another_tools_control_point_is_handed_back_on_auto():
+    d, f = driver()
+    f.regs[0x1610], f.regs[0x1612] = 2, 50                 # someone had the meter point set to 50 W
+    run(d.apply(Desired(Mode.CHARGE, 1500)))
+    assert f.regs[0x1610] == 1
+    run(d.apply(Desired(Mode.AUTO)))
+    assert f.regs[0x1610] == 2 and f.regs[0x1612] == 50
+
+
+def test_auto_never_touches_a_point_it_did_not_set():
+    d, f = driver()
+    f.regs[0x1610] = 3
+    run(d.apply(Desired(Mode.AUTO)))
+    assert f.regs[0x1610] == 3 and f.writes == []           # not ours: never touched, not even a keep-alive

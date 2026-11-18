@@ -57,6 +57,7 @@ class EcoFlowModbusDriver:
         self.last_quota: dict = {}
         self.last_error: str | None = None
         self._beat = 0.0
+        self._prev: tuple[int, int] | None = None     # a control point someone else had set (point, its target), restored on Auto
 
     async def close(self) -> None:
         await self.client.close()
@@ -68,10 +69,17 @@ class EcoFlowModbusDriver:
     async def _write(self, offset: int, value: int) -> None:
         await self.client.write_register(offset + ADDRESS_OFFSET, value)
 
-    async def _heartbeat(self, force: bool = False) -> None:
+    async def _heartbeat(self, force: bool = False, strict: bool = False) -> None:
+        """Keep-alive. When reading, a refused write (e.g. the app gave HomePower read-only access) must not make a readable
+        battery look offline; when about to control, it must stop the command."""
         now = time.monotonic()
         if force or now - self._beat >= HEARTBEAT_EVERY_S:
-            await self._write(REG_HEARTBEAT, 1)
+            try:
+                await self._write(REG_HEARTBEAT, 1)
+            except ModbusError as err:
+                if strict or err.code is None:
+                    raise
+                _LOGGER.debug("%s: keep-alive refused: %s", self.config.device_id, err)
             self._beat = now
 
     # ------------------------------------------------------------------ read
@@ -130,12 +138,30 @@ class EcoFlowModbusDriver:
 
     async def apply(self, desired: Desired) -> None:
         caps = self.config.caps
-        await self._heartbeat(force=True)
-        point, _ = await self._read(REG_CONTROL_POINT, 2)
+        try:
+            block = await self._read(REG_CONTROL_POINT, 5)          # control point, then the four target powers
+        except ModbusError as err:
+            if err.code is None:
+                raise
+            block = await self._read(REG_CONTROL_POINT, 2) + [0, 0, 0]
+        point = block[0]
+        if desired.mode is not Mode.AUTO or point == POINT_BATTERY:
+            try:
+                await self._heartbeat(force=True, strict=True)
+            except ModbusError as err:
+                if err.code is not None:
+                    raise ModbusError(f"{err}. The battery refused control: in the EcoFlow app, Third-party control must allow "
+                                      "read/write access (not read-only).", code=err.code) from err
+                raise
         if desired.mode is Mode.AUTO:
-            if point != POINT_NONE:
-                await self._write(REG_BATTERY_TARGET, 0)
-                await self._write(REG_CONTROL_POINT, POINT_NONE)       # back to the device's own energy management
+            if point == POINT_BATTERY:                            # only ever undo our own control point
+                prev, self._prev = self._prev, None
+                if prev is not None and prev[0] not in (POINT_NONE, POINT_BATTERY):
+                    await self._write(REG_BATTERY_TARGET + (prev[0] - 1), prev[1])    # put back the point someone else had set
+                    await self._write(REG_CONTROL_POINT, prev[0])
+                else:
+                    await self._write(REG_BATTERY_TARGET, 0)
+                    await self._write(REG_CONTROL_POINT, POINT_NONE)   # back to the device's own energy management
             return
         if desired.mode is Mode.HOLD:
             watts = 0
@@ -147,4 +173,6 @@ class EcoFlowModbusDriver:
         signed = (watts if desired.mode is Mode.CHARGE else -watts) * self.sign
         await self._write(REG_BATTERY_TARGET, signed & 0xFFFF)         # target first, so taking control never uses a stale one
         if point != POINT_BATTERY:
+            if point != POINT_NONE and self._prev is None:
+                self._prev = (point, block[point] if 0 < point < 5 else 0)                           # another tool had a different point set: hand it back on Auto
             await self._write(REG_CONTROL_POINT, POINT_BATTERY)
