@@ -91,6 +91,9 @@ class Result:
     notes: list[str] = field(default_factory=list)
 
 
+GOAL_TOLERANCE_PTS = 1.5   # an idle battery this close to a goal's target is left alone (see the goal planning below)
+
+
 def _floor(caps: Capabilities, w: World) -> int:
     floor = max(caps.min_soc, w.reserve_floor_pct)
     return max(floor, w.settings.backup_pct) if w.backup_active else floor
@@ -172,7 +175,13 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
                 res.notes.append(f"goal '{g.id}': {d.config.name} charges to {tgt(d)}% from the grid, leaving room for the solar forecast")
         allocs: list[Alloc] = []
         if g.source != "solar" and w.rates is not None:
-            needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d),
+            def soc_for_plan(d: DevIn) -> float:
+                # A battery that is idle and within GOAL_TOLERANCE_PTS of its target counts as there: otherwise, while the house draws a
+                # little from it, it would be topped up again and again (one command each time), usually at the dearest rate.
+                short = tgt(d) - d.actual.soc
+                return float(tgt(d)) if d.actual.mode is not Mode.CHARGE and 0 < short < GOAL_TOLERANCE_PTS else d.actual.soc
+
+            needs = [Need(d.config.device_id, soc_for_plan(d), d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d),
                           not d.config.caps.power_control, w.efficiency.get(d.config.device_id)) for d in devs]
             slots = w.rates.slots_between(w.now, deadline)
             if not slots:

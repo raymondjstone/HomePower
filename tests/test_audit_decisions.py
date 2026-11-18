@@ -73,3 +73,19 @@ def test_charging_while_paid_to_take_the_energy_counts_as_savings():
     lg.add("2026-11-10", "a", 10.0, 1.0, 0.0, 0.0, -0.05, 0.0, 10.0, -0.05)       # 10 kWh in at -5p: the battery is paid 50p
     lg.add("2026-11-10", "a", 0.0, 0.0, 9.0, 0.0, 0.25, 0.0, 1.0, -0.05)          # 9 kWh used when the import would cost 25p
     assert lg.saved("2026-11-10") >= 2.85, lg.saved("2026-11-10")            # the 9 kWh value plus the money earned storing it
+
+
+def test_an_idle_battery_just_under_a_goal_target_is_not_topped_up_again_and_again():
+    from datetime import time as dtime
+    from core.goals import Goal
+    from core.rates import RateTable
+    now = datetime(2026, 11, 10, 5, 0, tzinfo=UTC)                              # after the cheap window, deadline 07:00
+    rates = RateTable(peak=0.30, offpeak=0.075, offpeak_start=dtime(0, 30), offpeak_end=dtime(4, 30))
+    goal = Goal("g", frozenset(), 90, dtime(7, 0))
+
+    def want(soc, mode):
+        d = _dev("a", soc, 0.0, mode=mode)
+        return compute(World(now=now, devices=[d], settings=Settings(import_limit_w=None), goals=[goal], rates=rates, grid_w=400.0, grid_fresh=True)).wants.get("a")
+    assert want(89.6, Mode.AUTO) is None                                        # within 1.5 points and idle: left alone
+    assert want(87.0, Mode.AUTO).mode is Mode.CHARGE                            # a real shortfall is still charged
+    assert want(89.6, Mode.CHARGE).mode is Mode.CHARGE                          # once charging it carries on to the target
