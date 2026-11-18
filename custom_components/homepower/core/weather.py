@@ -33,7 +33,7 @@ def _num(v) -> float | None:
 def pick_tomorrow(forecast: list, tomorrow: date, tz: tzinfo | None, unit: str | None = "C") -> float | None:
     """Tomorrow's mean temperature (°C) from a weather entity's forecast list (daily entries, or hourly ones)."""
     temps: list[float] = []
-    for item in forecast or []:
+    for item in forecast if isinstance(forecast, (list, tuple)) else []:
         if not isinstance(item, dict):
             continue
         try:
@@ -57,7 +57,7 @@ def parse_open_meteo(data: dict, tomorrow: date) -> float | None:
         d = data["daily"]
         i = d["time"].index(tomorrow.isoformat())
         hi, lo = _num(d["temperature_2m_max"][i]), _num(d["temperature_2m_min"][i])
-    except (KeyError, ValueError, IndexError, TypeError):
+    except (KeyError, ValueError, IndexError, TypeError, AttributeError):
         return None
     return round((hi + lo) / 2, 1) if hi is not None and lo is not None else None
 

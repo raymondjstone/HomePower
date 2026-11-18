@@ -198,3 +198,13 @@ def test_outdoor_temperature_is_logged_in_celsius_from_a_sensor_or_the_weather_e
     st2["weather.home"] = types.SimpleNamespace(state="sunny", attributes={"temperature": 7, "temperature_unit": "°C"})
     c2._observe_temp(datetime(2026, 3, 1, 12, 0, tzinfo=UTC))
     assert c2.temp_log.days["2026-03-01"] == [7.0, 1.0]
+
+
+def test_parsers_survive_junk_replies():
+    from datetime import date
+    from hp.core.weather import parse_open_meteo, pick_tomorrow
+    d = date(2026, 11, 18)
+    for junk in (None, 0, "x", [], {}, {"daily": None}, {"daily": {"time": 0}}, {"daily": {"time": "x", "temperature_2m_max": 5}}, {"daily": []}):
+        assert parse_open_meteo(junk, d) is None
+    for junk in (None, 0, "x", {}, True, 3.5):
+        assert pick_tomorrow(junk, d, None) is None
