@@ -208,3 +208,12 @@ def test_auto_never_touches_a_point_it_did_not_set():
     f.regs[0x1610] = 3
     run(d.apply(Desired(Mode.AUTO)))
     assert f.regs[0x1610] == 3 and f.writes == []           # not ours: never touched, not even a keep-alive
+
+
+def test_limits_are_required_when_the_battery_did_not_report_them():
+    from hp.core.serde import ValidationError, device_from_dict
+    base = {"device_id": "es", "name": "ES", "kind": "ecoflow_stream_5000_local", "capacity_wh": 5000, "connection": {"host": "10.0.0.213"}}
+    with pytest.raises(ValidationError, match="max charge and max discharge"):
+        device_from_dict(base)
+    with pytest.raises(ValidationError):
+        device_from_dict({**base, "max_charge_w": 3000})

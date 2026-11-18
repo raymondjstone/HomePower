@@ -106,6 +106,8 @@ def device_from_dict(d: dict) -> DeviceConfig:
             raise ValidationError("a controllable register map needs the battery's max charge and max discharge power")
         if isinstance(connection["map"], str):
             connection["map"] = json.loads(connection["map"])
+    if driver == "ecoflow_modbus" and not (_int(d.get("max_charge_w"), "max charge", 0, 50000, 0) and _int(d.get("max_discharge_w"), "max discharge", 0, 50000, 0)):
+        raise ValidationError("the battery's max charge and max discharge power are needed (it did not report them: enter them from its specification)")
     caps = Capabilities(
         capacity_wh=_int(d.get("capacity_wh"), "capacity", 100, 200000),
         max_charge_w=_int(d.get("max_charge_w"), "max charge", 0, 50000) or (
