@@ -35,11 +35,12 @@ PAIRS = (10002, 10008, 10010, 10012, 10036, 10038)  # 32-bit power registers use
 
 
 class AnkerModbusDriver:
-    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None) -> None:
+    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None, orig: dict | None = None, on_orig=None) -> None:
         self.config = config
         c = config.extra["connection"]
         self.client = client or ModbusTcpClient(c["host"], int(c.get("port", 502)), int(c.get("unit_id", 1)))
-        self._restore: int | None = None  # mode the device was in before we took control
+        self._on_orig = on_orig                        # called when the remembered mode changes, so it survives a restart or an edit
+        self._restore_val: int | None = int(orig["restore"]) if isinstance(orig, dict) and isinstance(orig.get("restore"), int) else None
         self._order: str | None = None    # "big" / "little" once detected
         self._slow_at = 0.0               # X1: next time to refresh the slowly-changing extras (temperature)
         self._firmware: str | None = None
@@ -47,6 +48,20 @@ class AnkerModbusDriver:
         self._limits: tuple | None = None
         self._pack_v: tuple = ()
         self._packs_at = 0.0
+
+    @property
+    def _restore(self) -> int | None:
+        """The mode the device was in before we took control (saved, so a restart or an edit does not lose it)."""
+        return self._restore_val
+
+    @_restore.setter
+    def _restore(self, value: int | None) -> None:
+        self._restore_val = value
+        if self._on_orig is not None:
+            try:
+                self._on_orig({"restore": value} if value is not None else None)
+            except Exception:  # noqa: BLE001 - failing to save must never stop a command
+                _LOGGER.debug("could not save the original mode", exc_info=True)
 
     async def close(self) -> None:
         await self.client.close()

@@ -26,6 +26,8 @@ HOSTS = {"eu": "api-e.ecoflow.com", "america": "api-a.ecoflow.com", "global": "a
 SIGN_ERRORS = ("8521", "7000")
 QUOTAS = ("backupReverseSoc", "f32ShowSoc", "soc", "cmsBattSoc", "powGetBpCms", "powGetSysGrid", "gridConnectionPower",
           "powGetPvSum", "powGetSysLoad", "cmsBattFullEnergy", "productName")
+RAISED_RESERVE = 85   # a reserve at or above this, with no saved original, is taken to be one HomePower raised (lower ones are the user's own)
+HANDBACK_QUIET_S = 600  # after a hand-back the cloud may still show the raised reserve for a while: no second hand-back in that time
 HOLD_RESERVE = 95  # STREAM accepts a backup reserve of 3-95 %; Hold raises the reserve to the current charge level
 SELF_MODE = "SELF_CONSUMPTION"   # STREAM 5000 series operating modes: SELF_CONSUMPTION, AI_MODE, TIMER_TASK, POU_MODE
 
@@ -194,6 +196,8 @@ class EcoFlowStreamDriver:
     _blocked_until = 0.0     # class defaults so a driver built without __init__ (tests) still works
     _orig_val = None
     _on_orig = None
+    _handed_at = -1e9
+
 
     def __init__(self, config: DeviceConfig, session, hub=None, orig: dict | None = None, on_orig=None) -> None:
         self.config = config
@@ -224,6 +228,9 @@ class EcoFlowStreamDriver:
                 self._on_orig(value)
             except Exception:  # noqa: BLE001 - failing to save must never stop a command
                 _LOGGER.debug("could not save the EcoFlow originals", exc_info=True)
+
+    def _just_handed_back(self) -> bool:
+        return time.monotonic() - self._handed_at < HANDBACK_QUIET_S
 
     def _note_changes(self, before: dict, after: dict) -> None:
         found = setting_changes(before, after) if before else []
@@ -343,15 +350,18 @@ class EcoFlowStreamDriver:
         soc = self._decode(q).soc
         if desired.mode is Mode.AUTO:
             if self._orig is None:
-                if q.get("backupSocOnOff") and self._decode(q, self.config.caps.min_soc).mode in (Mode.HOLD, Mode.CHARGE):
-                    await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, cmd_id=38)  # restarted while held
-                return
+                level = q.get("backupSoc")
+                if (q.get("backupSocOnOff") and isinstance(level, (int, float)) and level >= RAISED_RESERVE and not self._just_handed_back()
+                        and self._decode(q, self.config.caps.min_soc).mode in (Mode.HOLD, Mode.CHARGE)):
+                    await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, cmd_id=38)  # restarted while held, originals lost
+                return                          # otherwise it is the user's own reserve (or a stale reading): never touched
             o = self._orig                      # forgotten only once every command below has succeeded: a failed hand-back is retried with the same originals
             reserve = {"backupSocOnOff": True, "backupSoc": o["level"]} if o["on"] and o["level"] is not None else {"backupSocOnOff": False, "backupSoc": 0}
             await self.api.command(self.sn, {"bpBackupConfig": reserve}, cmd_id=38)
             if o["mode"] and o["mode"] != SELF_MODE:
                 await self.api.command(self.sn, {"workMode": o["mode"]}, cmd_id=38)
             self._orig = None
+            self._handed_at = time.monotonic()
             return
         if desired.mode not in (Mode.HOLD, Mode.CHARGE):
             raise ValueError(f"EcoFlow STREAM cannot {desired.mode.value} through the API")
@@ -402,12 +412,16 @@ class EcoFlowStreamDriver:
             await self.api.command(self.sn, {"cfgBackupReverseSoc": int(max(3, min(HOLD_RESERVE, soc)))})
         elif desired.mode is Mode.AUTO:
             o = self._orig                        # forgotten only after both commands succeed (a failed hand-back is retried with the same originals)
-            if o is None and self._decode(self._state or self.last_quota, self.config.caps.min_soc).mode is Mode.AUTO:
-                return                            # nothing of ours to hand back: leave the user's own reserve alone
+            if o is None:
+                cur = _first(self._state or self.last_quota, "backupReverseSoc")
+                if (cur is None or cur < RAISED_RESERVE or self._just_handed_back()
+                        or self._decode(self._state or self.last_quota, self.config.caps.min_soc).mode is Mode.AUTO):
+                    return                        # nothing of ours to hand back: the user's own reserve (or a stale reading) is left alone
             saved = o.get("reserve") if o else None
             await self.api.command(self.sn, {"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}})
             await self.api.command(self.sn, {"cfgBackupReverseSoc": int(saved) if saved is not None else max(3, self.config.caps.min_soc)})
             self._orig = None
+            self._handed_at = time.monotonic()
         elif desired.mode is Mode.CHARGE:
             # A reserve above the charge level makes the battery top itself up from the grid, at its own rate (the power
             # cannot be set). It stops when it reaches the reserve, so the reserve is the target (95 % at most).

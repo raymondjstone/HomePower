@@ -141,6 +141,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.grid_source = ""                  # where the grid reading comes from (shown in Settings / setup check)
         self.grid_age_s: float | None = None   # how old that reading is; None = read directly just now
         self._forced_ids = set(manager.forced)                     # persisted: devices we put into forced control
+        self._retry_handback: set[str] = set()                     # a hand-back that failed (safe mode, the phone button): the loop keeps trying even while paused
         self._last_persist = _time.monotonic()
         self._snap = Snapshot(devices={a.config.device_id: self._new_status(a.config.device_id) for a in adapters})
 
@@ -170,6 +171,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             return
         st.release_pending = value
         (self._forced_ids.add if value else self._forced_ids.discard)(did)
+        if not value:
+            self._retry_handback.discard(did)
         self.manager.on_forced_change(set(self._forced_ids))
 
     def apply_settings(self, cfg: dict) -> None:
@@ -1008,7 +1011,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 continue
             if st.desired.mode is Mode.AUTO and st.actual.online and st.actual.mode in (Mode.AUTO, None) and did not in self.testing:
                 self._set_release(did, st, False)  # handed back and confirmed
-            if self.paused or did in self.testing or not a.config.extra.get("control_enabled", True):
+            control_on = bool(a.config.extra.get("control_enabled", True))
+            handing_back = st.desired.mode is Mode.AUTO and st.release_pending     # giving a battery back is always safe to send
+            may_hand_back = handing_back and (not control_on or did in self._retry_handback or self.manager.safe)
+            if did in self.testing or ((self.paused or not control_on) and not may_hand_back):
                 st.decision = None  # monitor-only / paused / being tested: read and report, never write
                 continue
             fresh = materially_different(st.last_applied, st.desired)   # new instruction: no cooldown
@@ -1308,7 +1314,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         did = a.config.device_id
         self._log(did, f"{st.reason or 'plan'}: mismatch {[(d.field, d.desired, d.actual) for d in diffs]}; applying")
         st.last_apply = _time.monotonic()
-        if self.settings.dry_run:   # test run: show what would be sent, send nothing (re-logged once per cooldown)
+        if self.settings.dry_run and want.mode is not Mode.AUTO:   # test run: show what would be sent, send nothing (re-logged once per cooldown); handing back is still sent
             what = want.mode.value + (f" {want.power_w} W" if want.power_w else "")
             st.last_command = {"at": dt_util.now().isoformat(), "mode": want.mode.value, "power_w": want.power_w, "result": "dry run: not sent"}
             self._log(did, f"DRY RUN: would send {what}")
@@ -1711,6 +1717,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                     await a.apply(Desired(Mode.AUTO))
                     self._set_release(a.config.device_id, st, False)     # handed back: not "held from before" at the next start
                     self._log(a.config.device_id, "released to the device's own control on shutdown")
-                except Exception as err:  # noqa: BLE001 - flag stays set, retried on next start
+                except Exception as err:  # noqa: BLE001 - flag stays set; the control loop keeps retrying, and so does the next start
+                    self._retry_handback.add(a.config.device_id)
                     _LOGGER.warning("release failed for %s: %s", a.config.device_id, err)
         await self.manager.save_runtime()

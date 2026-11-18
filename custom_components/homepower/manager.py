@@ -141,13 +141,15 @@ class HomePowerManager:
     def make_adapter(self, cfg):
         driver = cfg.extra.get("driver", "entities")
         if driver == "anker_modbus":
-            return DirectAdapter(cfg, AnkerModbusDriver(cfg))
+            did = cfg.device_id
+            return DirectAdapter(cfg, AnkerModbusDriver(cfg, orig=self.ecoflow_orig.get(did), on_orig=lambda v, did=did: self._keep_orig(did, v)))
         if driver == "ecoflow_stream":
             did = cfg.device_id
             return DirectAdapter(cfg, EcoFlowStreamDriver(cfg, async_get_clientsession(self.hass), self._live_hub(cfg),
                                                           orig=self.ecoflow_orig.get(did), on_orig=lambda v, did=did: self._keep_orig(did, v)))
         if driver == "ecoflow_modbus":
-            return DirectAdapter(cfg, EcoFlowModbusDriver(cfg))
+            did = cfg.device_id
+            return DirectAdapter(cfg, EcoFlowModbusDriver(cfg, orig=self.ecoflow_orig.get(did), on_orig=lambda v, did=did: self._keep_orig(did, v)))
         if driver == "modbus_generic":
             return DirectAdapter(cfg, GenericModbusDriver(cfg))
         return HaEntityAdapter(self.hass, cfg)
@@ -433,18 +435,22 @@ class HomePowerManager:
             raise ValidationError(f"could not read that backup: {err}") from err
         return await self.import_all(data, entry)
 
-    async def _hand_back(self, device_id: str) -> None:
-        """Best effort: give a battery we are forcing back to its own control before we stop managing it."""
+    async def _hand_back(self, device_id: str) -> bool:
+        """Give a battery we are forcing back to its own control before we stop managing it. True when it is handed back (or was
+        never forced); False when the command failed: the flag stays set and the control loop keeps retrying."""
         cached = self._adapters.get(device_id)
         if cached is None or device_id not in self.forced:
-            return
+            return True
         try:
             await cached[1].apply(Desired(Mode.AUTO))
-            self.forced.discard(device_id)
-            if self.coordinator and device_id in self.coordinator._snap.devices:
-                self.coordinator._snap.devices[device_id].release_pending = False
-        except Exception:  # noqa: BLE001 - the flag stays set; the control loop retries while it still can
+        except Exception:  # noqa: BLE001
             _LOGGER.warning("could not hand %s back before stopping control", device_id, exc_info=True)
+            return False
+        self.forced.discard(device_id)
+        c = self.coordinator
+        if c and device_id in c._snap.devices:
+            c._set_release(device_id, c._snap.devices[device_id], False)      # also clears the coordinator's own saved copy
+        return True
 
     async def save_device(self, raw: dict) -> dict:
         d = device_to_dict(device_from_dict(await self._autofill(self._with_saved_secret(raw))))
@@ -472,8 +478,13 @@ class HomePowerManager:
         await self._apply()
 
     async def delete_device(self, device_id: str) -> None:
+        if not await self._hand_back(device_id):
+            st = self.coordinator._snap.devices.get(device_id) if self.coordinator else None
+            if st is not None and st.actual is not None and st.actual.online:
+                # reachable but refused: deleting now would abandon it in a forced mode with nothing left to retry
+                raise ValidationError("this battery is being held by HomePower and could not be handed back to its own control just now. "
+                                      "Try again in a minute (or use Safe mode first); it was not deleted.")
         self.register_notes.pop(device_id, None)
-        await self._hand_back(device_id)
         self.devices.pop(device_id, None)
         self.forced.discard(device_id)
         self.tests.pop(device_id, None)

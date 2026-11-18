@@ -808,3 +808,49 @@ def test_live_connection_finishing_after_stop_is_closed_not_kept():
     gen_then = live._gen - 1                                 # a connection that started before the stop and finishes after it
     live._connect(mqtt, cert, gen_then)
     assert live._client is None and "disconnect" in made[1].calls and "loop_stop" in made[1].calls
+
+
+def test_ecoflow_retry_never_overwrites_the_users_own_reserve():
+    async def go():
+        d = eco({"cmsBattSoc": 0.0, "soc": 31, "powGetBpCms": 0.0, "backupReverseSoc": 30, "powGetSysGrid": 0})
+        await d.read()
+        # the user's own 30 % reserve with the battery at 31 % already reads like a Hold: with nothing of ours saved, Auto sends nothing
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == []
+        # a real hold, then the hand-back puts the user's 30 back ...
+        await d.apply(Desired(Mode.HOLD))
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))
+        assert {"cfgBackupReverseSoc": 30} in d.api.sent
+        # ... and a second Auto straight after (the cloud still shows the old reserve) does not write a made-up value
+        d.api.sent.clear()
+        d._state = {**d._state, "backupReverseSoc": 95}
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == []
+    asyncio.run(go())
+
+
+def test_ecoflow_hand_back_still_clears_a_clearly_raised_reserve_when_originals_were_lost():
+    async def go():
+        d = eco({"cmsBattSoc": 0.0, "soc": 60, "powGetBpCms": 0.0, "backupReverseSoc": 95, "powGetSysGrid": 0})
+        await d.read()
+        await d.apply(Desired(Mode.AUTO))                        # no saved original, reserve at the top and not just handed back
+        assert {"cfgBackupReverseSoc": 10} in d.api.sent
+    asyncio.run(go())
+
+
+def test_anker_and_local_ecoflow_remember_the_original_across_a_rebuild():
+    from hp.drivers.ecoflow_modbus import EcoFlowModbusDriver
+    saved = []
+    caps = Capabilities(10000, 3000, 3000, 10)
+    cfg = DeviceConfig("a", "A", "anker_e5000_pro", caps, extra={"connection": {"host": "127.0.0.1", "port": 1, "unit_id": 1}})
+    a = AnkerModbusDriver(cfg, orig={"restore": 5}, on_orig=saved.append)
+    assert a._restore == 5                                   # restored from the saved copy after a restart or an edit
+    a._restore = 7
+    a._restore = None
+    assert saved == [{"restore": 7}, None]
+    cfg2 = DeviceConfig("e", "E", "ecoflow_stream_5000_local", caps, extra={"connection": {"host": "x"}})
+    e = EcoFlowModbusDriver(cfg2, client=object(), orig={"prev": [2, 50]}, on_orig=saved.append)
+    assert e._prev == (2, 50)
+    e._prev = (3, 10)
+    assert saved[-1] == {"prev": [3, 10]}

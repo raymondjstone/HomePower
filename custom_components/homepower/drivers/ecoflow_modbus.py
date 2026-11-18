@@ -49,7 +49,7 @@ def _clean(x: float | None) -> float | None:
 
 
 class EcoFlowModbusDriver:
-    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None) -> None:
+    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None, orig: dict | None = None, on_orig=None) -> None:
         self.config = config
         c = config.extra["connection"]
         self.client = client or ModbusTcpClient(c["host"], int(c.get("port", 502)), int(c.get("unit_id", 1)))
@@ -57,7 +57,23 @@ class EcoFlowModbusDriver:
         self.last_quota: dict = {}
         self.last_error: str | None = None
         self._beat = 0.0
-        self._prev: tuple[int, int] | None = None     # a control point someone else had set (point, its target), restored on Auto
+        self._on_orig = on_orig                       # called when the remembered point changes, so it survives a restart or an edit
+        p = orig.get("prev") if isinstance(orig, dict) else None
+        self._prev_val: tuple[int, int] | None = (int(p[0]), int(p[1])) if isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(x, int) for x in p) else None
+
+    @property
+    def _prev(self) -> tuple[int, int] | None:
+        """A control point someone else had set (point, its target), put back on Auto."""
+        return self._prev_val
+
+    @_prev.setter
+    def _prev(self, value: tuple[int, int] | None) -> None:
+        self._prev_val = value
+        if self._on_orig is not None:
+            try:
+                self._on_orig({"prev": list(value)} if value is not None else None)
+            except Exception:  # noqa: BLE001 - failing to save must never stop a command
+                _LOGGER.debug("could not save the original control point", exc_info=True)
 
     async def close(self) -> None:
         await self.client.close()
