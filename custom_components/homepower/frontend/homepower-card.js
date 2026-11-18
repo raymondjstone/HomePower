@@ -25,7 +25,11 @@ class HomePowerCard extends HTMLElement {
     const states = (this._hass && this._hass.states) || {};
     const id = this._config && this._config.entity;
     if (id) return states[id];
-    return Object.values(states).find((s) => s.entity_id.startsWith("sensor.") && s.attributes && s.attributes.homepower === true && Array.isArray(s.attributes.batteries));
+    const known = this._autoId && states[this._autoId];       // found once, then looked up directly (the scan covers every entity)
+    if (known && known.attributes && known.attributes.homepower === true) return known;
+    const found = Object.values(states).find((s) => s.entity_id.startsWith("sensor.") && s.attributes && s.attributes.homepower === true && Array.isArray(s.attributes.batteries));
+    this._autoId = found ? found.entity_id : null;
+    return found;
   }
 
   _ring(soc) {
@@ -40,6 +44,9 @@ class HomePowerCard extends HTMLElement {
   _render() {
     if (!this.shadowRoot || !this._config) return;
     const st = this._entity(), title = this._config.title || "Home battery";
+    const stamp = st ? `${st.last_updated}|${st.state}` : "";
+    if (this._drawn && this._drawn.st === st && this._drawn.stamp === stamp && this._drawn.cfg === this._config) return;   // Home Assistant calls hass for every state change anywhere: only redraw when ours changed
+    this._drawn = { st, stamp, cfg: this._config };
     let body;
     if (!st) {
       body = `<div class="empty">No HomePower battery sensor found. Set <code>entity:</code> to the “Home battery” sensor.</div>`;
