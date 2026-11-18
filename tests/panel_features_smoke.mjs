@@ -79,3 +79,70 @@ must("grid order list: saved order first, unused ones unticked", go.indexOf('dat
 const mkRow = (k, on) => ({ dataset: { key: k }, querySelector: () => ({ checked: on }) });
 els["st-grid_order"] = { querySelectorAll: () => [mkRow("battery", true), mkRow("glow", false), mkRow("sensor", true)] };
 must("grid order collects ticked rows in order", p._collectSettings().grid_order === "battery,sensor");
+
+// ---- EcoFlow report, plan versus actual, weather, why-idle chips, safe mode
+p.live.devices.a = { online: true, soc: 40, power_w: 1200, mode: "charge", desired_mode: "charge", why: "Held by the software charge limit.", awaiting_confirm: true,
+  charge_verdict: "unreliable", measured_charge_w: 2700, traces: [{ at: "2026-03-01T10:00:00", mode: "charge", ok: false, peak_w: 0 }], setting_changes: [{ at: "t", key: "workMode", from: "A", to: "B" }],
+  report: { sent: 6, worked: 5, avg_reaction_s: 40, charge_rate_w: 2700, follows_plan_pct: 88, verdict: "works", advice: "Control looks reliable." }, cycling: null };
+const rows = [];
+for (let i = 0; i < 48; i++) rows.push([new Date(Date.UTC(2026, 2, 1, 0, 30 * i)).toISOString(), i % 3 ? 1500 : null, i % 2 ? 1400 : -200]);
+p.live.plan_actual = { a: { rows, match_pct: 87 }, b: { rows: [], match_pct: null } };
+p.live.health = { a: { efficiency: [["w1", 90]], warning: null, cycling: { net_per_kwh: 0.12, worth_it: true, efficiency_pct: 85, measured: false } } };
+p.live.weather = { status: "raising the overnight target", tomorrow_c: -2, source: "weather entity (daily)", lately_c: 6, k_wh_per_degree: 800, days_learned: 14, extra_wh: 2100 };
+p.live.startup = "Started. Restored 2 learned charge rates.";
+p.data.safe = true; p.data.paused = true;
+const card = p._ecoflowCard();
+must("ecoflow report card", card.includes("5 of 6") && card.includes("40 s") && card.includes("Control looks reliable") && card.includes("88%"));
+const plan = p._planCard();
+must("plan versus actual card", plan.includes("Plan versus actual") && plan.includes("Followed the plan 87%") && plan.includes("stroke-dasharray") && !plan.includes("NaN"));
+must("weather text", p._weatherText().includes("-2 °C") && p._weatherText().includes("0.80 kWh") && p._weatherText().includes("raising"));
+const ovw = p._overview();
+must("battery chips: why idle, measured rate, confirm button, charge not working, changes",
+  ovw.includes("Why idle") && ovw.includes("measured") && ovw.includes('data-act="confirm-first"') && ovw.includes("Charge not working") && ovw.includes("Settings changed (1)"));
+must("health card shows cycling", p._healthCard().includes("Worth cycling") && p._healthCard().includes("Yes: about"));
+must("settings has the cold weather group", p._settingsView().includes("weather_boost") && p._settingsView().includes("Open-Meteo"));
+p._diag = { alerts: [], devices: {}, decisions: [], events: [] };
+const dv = p._diagView();
+must("diagnostics: download button and startup note", dv.includes('data-act="download-debug"') && dv.includes("Restored 2 learned charge rates"));
+
+// ---- find local control ports
+els["ps-host"] = { value: "192.168.1.50" };
+const row = (port, service, state, banner = "") => ({ port, service, state, banner });
+const scans = [
+  { host: "192.168.1.50", address: "192.168.1.50", results: [row(502, "Modbus TCP", "closed"), row(1883, "MQTT", "closed"), row(80, "HTTP", "no answer")] },
+  { host: "192.168.1.50", address: "192.168.1.50", results: [row(502, "Modbus TCP", "open"), row(1883, "MQTT", "closed"), row(80, "HTTP", "open", "nginx <b>x</b>")] },
+];
+let scanN = 0; const sent = []; p._render = () => {};      // this fake page cannot re-render; the card is built straight from the stored state
+p._hass.callWS = async (m) => { sent.push(m); if (m.type === "homepower/scan_ports") return scans[scanN++]; return {}; };
+must("port scan card is on the diagnostics tab", p._portScanCard().includes("Find local control ports") && p._portScanCard().includes('data-act="scan-ports"') && p._portScanCard().includes('id="ps-host"'));
+await p._scanPorts();
+must("first scan: nothing listening, one request with the typed address", p._portScanCard().includes("Nothing is listening") && sent.at(-1).host === "192.168.1.50" && !p._portScanCard().includes("Changed since"));
+await p._scanPorts();
+const after = p._portScanCard();
+must("second scan: shows the open ports and what changed", after.includes("2 open: 502 (Modbus TCP), 80 (HTTP)") && after.includes("502 is now open") && after.includes("OPEN"));
+must("a banner is escaped, never run as HTML", after.includes("nginx &lt;b&gt;x&lt;/b&gt;") && !after.includes("<b>x</b>"));
+p._hass.callWS = async () => { throw new Error("this only scans devices on your own network"); };
+await p._scanPorts();
+must("a refused address shows the reason", p._portScanCard().includes("only scans devices on your own network"));
+els["ps-host"] = { value: "   " };
+await p._scanPorts();
+must("an empty address asks for one and sends nothing", p._portScanCard().includes("Type the device&#39;s IP address") && sent.length === 2);
+
+// ---- wide scan
+els["ps-host"] = { value: "10.0.0.213" };
+const wideReply = (open, counts, complete = true) => ({ host: "10.0.0.213", address: "10.0.0.213", wide: true, total: 10000, complete, counts: { open: open.length, closed: 9990, "no answer": 0, skipped: 0, ...counts }, results: open.map((x) => row(...x, "open")) });
+const wides = [wideReply([]), wideReply([[8883, "MQTT over TLS"], [4321, ""]]), wideReply([[4321, ""]], { skipped: 300, closed: 9600 }, false)];
+let widN = 0; sent.length = 0;
+p._hass.callWS = async (m) => { sent.push(m); return wides[widN++]; };
+must("wide scan button is on the card", p._portScanCard().includes('data-act="scan-ports-wide"') && p._portScanCard().includes("Wide scan (1-10,000)"));
+await p._scanPorts(true);
+must("wide scan sends wide=true and says no open port", sent[0].wide === true && p._portScanCard().includes("No open port found") && p._portScanCard().includes("Checked ports 1 to 10,000"));
+await p._scanPorts(true);
+const w2 = p._portScanCard();
+must("second wide scan lists open ports and what changed", w2.includes("2 open") && w2.includes("4321 is now open") && w2.includes("8883 (MQTT over TLS)") && w2.includes("wide scan"));
+await p._scanPorts(true);
+const w3 = p._portScanCard();
+must("an incomplete wide scan says so and shows a port that closed", w3.includes("Incomplete") && w3.includes("300 ports were not checked") && w3.includes("8883 is no longer open"));
+p._hass.callWS = async (m) => ({ host: "10.0.0.213", address: "10.0.0.213", wide: false, results: [row(502, "Modbus TCP", "closed")] });
+await p._scanPorts(false);
+must("a normal scan after wide ones does not compare against a wide scan", !p._portScanCard().includes("Changed since") && !p._portScanCard().includes("No change since"));

@@ -44,6 +44,15 @@
           "port": "Modbus port"
         }
       },
+      "ecoflow_local": {
+        "title": "EcoFlow STREAM over local Modbus",
+        "description": "In the EcoFlow app open the STREAM system > Energy management > Device integration > Third-party control and switch on Modbus TCP (off by default). Then enter the battery's IP address. {error}",
+        "data": {
+          "host": "Battery IP address",
+          "port": "Modbus port",
+          "reverse_sign": "Reverse the charge/discharge sign (only if Test control does the opposite)"
+        }
+      },
       "ecoflow_account": {
         "title": "EcoFlow account keys",
         "description": "Create an Access Key and Secret Key at developer.ecoflow.com with your EcoFlow account. HomePower then lists your batteries. {error}",

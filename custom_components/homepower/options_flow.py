@@ -98,6 +98,8 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             driver = self._driver()
             if driver == "anker_modbus":
                 return await self.async_step_anker_find()
+            if driver == "ecoflow_modbus":
+                return await self.async_step_ecoflow_local()
             if driver == "ecoflow_stream":
                 return await self.async_step_ecoflow_account()
             if driver == "modbus_generic":
@@ -132,6 +134,25 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                                     vol.Optional("port", default=502): _num(1, 65535)}),
             description_placeholders={"found": f"{len(self._found)} found on your network" if self._found else "none found automatically - enter its IP address",
                                       "error": detail})
+
+    # ---- EcoFlow STREAM 5000 over its own local Modbus TCP (Third-party control in the EcoFlow app)
+    async def async_step_ecoflow_local(self, user_input=None):
+        errors, detail = {}, ""
+        if user_input is not None:
+            conn = {"host": str(user_input["host"]).strip(), "port": int(user_input.get("port", 502))}
+            if user_input.get("reverse_sign"):
+                conn["reverse_sign"] = True
+            try:
+                self._info = await self._mgr().probe({"kind": self._d["kind"], "connection": conn})
+                self._d["connection"] = conn
+                return await self.async_step_battery_details()
+            except ValidationError as err:
+                errors, detail = {"base": "cannot_connect"}, str(err)
+        return self.async_show_form(
+            step_id="ecoflow_local", errors=errors,
+            data_schema=vol.Schema({vol.Required("host"): str, vol.Optional("port", default=502): _num(1, 65535),
+                                    vol.Optional("reverse_sign", default=False): bool}),
+            description_placeholders={"error": detail})
 
     # ---- Generic Modbus device described by a register map
     async def async_step_modbus_map(self, user_input=None):
@@ -190,7 +211,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
 
     # ---- direct batteries: everything the battery can report is read from it; ask only for the rest
     async def async_step_battery_details(self, user_input=None):
-        sized = self._driver() == "anker_modbus" or (self._driver() == "modbus_generic" and self._info.get("control"))
+        sized = self._driver() in ("anker_modbus", "ecoflow_modbus") or (self._driver() == "modbus_generic" and self._info.get("control"))
         wanted = ("capacity_wh", "max_charge_w", "max_discharge_w") if sized else ("capacity_wh",)
         missing = [k for k in wanted if not self._info.get(k)]
         if user_input is not None:

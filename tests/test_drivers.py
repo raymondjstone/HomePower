@@ -280,8 +280,9 @@ class FakeApi:
     async def quota(self, sn):
         return self._q
 
-    async def command(self, sn, params):
+    async def command(self, sn, params, cmd_id=17):
         self.sent.append(params)
+        self.ids = getattr(self, "ids", []) + [cmd_id]
 
 
 def eco(quota):
@@ -304,7 +305,7 @@ def test_ecoflow_read_and_commands():
         assert d.api.sent == [{"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}},
                               {"cfgBackupReverseSoc": 10}]
         with pytest.raises(ValueError):
-            await d.apply(Desired(Mode.CHARGE, 1000))
+            await d.apply(Desired(Mode.DISCHARGE, 1000))     # no discharge setpoint exists
         d.api._q = {"backupReverseSoc": 95}
         assert (await d.read()).mode is Mode.HOLD
         d._cache = None
@@ -552,3 +553,206 @@ def test_ecoflow_live_messages_and_driver_merge():
 
     asyncio.run(go())
     assert got == [(71.5, -900.0, 2)]
+
+
+def test_register_names_cover_what_a_real_x1_changes_between_two_scans():
+    from core.anker_x1_map import describe_all
+    names = describe_all(True)
+    # registers seen moving on a real X1 (live readings), all of which must be named and filed as live
+    for a in (10010, 10012, 10024, 10026, 10028, 10030, 10156, 10199, 10205, 10208, 10210, 10212, 10213, 10224, 10230, 10233,
+              10237, 10238, 10254, 10328, 10496, 10632, 10638, 10644, 10646, 10649, 10656):
+        assert str(a) in names and names[str(a)][2] == "live", a
+    assert names["10496"][0] == "Pack 4 maximum temperature" and names["10064"][2] == "setting"
+
+
+def test_read_registers_reads_only_what_is_asked_and_never_writes():
+    async def go():
+        async with fake_anker() as dev:
+            d = AnkerModbusDriver(cfg(dev.port))
+            dev.inp[10014] = 62
+            dev.hold[10064] = 3
+            try:
+                out = await d.read_registers([10064, 10014, 10015, 59999])
+                assert out["10014"] == 62 and out["10064"] == 3 and out["10015"] == 0 and "59999" not in out
+                assert dev.writes == []
+            finally:
+                await d.close()
+    asyncio.run(go())
+
+
+def test_x1_reports_pack_voltages_and_stops_at_the_first_missing_pack():
+    async def go():
+        async with fake_anker() as dev:
+            dev.inp[10321], dev.inp[10377] = 500, 520          # packs 1 and 2; pack 3 is not answered
+            d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            try:
+                assert (await d.read()).pack_v == (500, 520)
+            finally:
+                await d.close()
+    asyncio.run(go())
+
+
+def test_ecoflow_charge_raises_reserve_to_target():
+    async def go():
+        d = eco({"soc": 40, "backupReverseSoc": 10, "powGetBpCms": 0})
+        await d.read()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=80))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 80}]
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=100))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 95}]          # the API tops out at 95
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=30))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 40}]          # already above target: hold, do not top up
+        with pytest.raises(ValueError):
+            await d.apply(Desired(Mode.DISCHARGE, 1000))
+        d._cache = None
+        d.api._q = {"soc": 40, "backupReverseSoc": 80}
+        assert (await d.read()).mode is Mode.CHARGE
+    asyncio.run(go())
+
+
+# What a real ES5000 (STREAM 5000 series, developer API) reported: reserve switched off, in timer-task mode, discharging.
+ES5000 = {"bpSoc": 40, "bpPwr": -790, "gridPwr": 10, "loadPwr": 800, "pvPwr": 0, "onGridPwr": 790, "backupSoc": 40,
+          "backupSocOnOff": False, "workMode": "TIMER_TASK", "feedToGridLimitOnOff": True, "acSocketOnoff": False}
+
+
+def test_es5000_hold_charge_and_auto_use_the_5000_series_commands():
+    async def go():
+        d = eco(dict(ES5000))
+        a = await d.read()
+        assert (a.soc, a.power_w, a.grid_w, a.mode) == (40, -790, 10, Mode.AUTO)      # reserve off = the battery runs itself
+        await d.apply(Desired(Mode.HOLD))
+        assert d.api.sent == [{"workMode": "SELF_CONSUMPTION"}, {"bpBackupConfig": {"backupSocOnOff": True, "backupSoc": 40}}]
+        assert set(d.api.ids) == {38}
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=80))                    # already in self-consumption: no mode change needed
+        d.api._q = {**ES5000, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 80}
+        d._cache, d._state = None, {}
+        assert (await d.read()).mode is Mode.CHARGE                                  # reserve above the charge level
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == [{"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, {"workMode": "TIMER_TASK"}]
+        d.api.sent.clear()
+        d.api._q, d._state, d.last_quota = dict(ES5000), {}, dict(ES5000)            # back to how it was
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == []                                                      # nothing of ours to hand back
+        with pytest.raises(ValueError):
+            await d.apply(Desired(Mode.DISCHARGE, 1000))
+    asyncio.run(go())
+
+
+def test_setting_changes_ignore_live_figures():
+    from hp.drivers.ecoflow import setting_changes
+    old = {"bpPwr": -700, "bpSoc": 40, "workMode": "TIMER_TASK", "backupSocOnOff": False, "backupSoc": 40, "newKey": 1}
+    new = {"bpPwr": -650, "bpSoc": 41, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 80, "newKey": 2, "other": 3}
+    got = {c["key"]: (c["from"], c["to"]) for c in setting_changes(old, new)}
+    assert got == {"workMode": ("TIMER_TASK", "SELF_CONSUMPTION"), "backupSocOnOff": (False, True), "backupSoc": (40, 80)}
+
+
+def test_es5000_originals_survive_a_restart():
+    async def go():
+        saved = []
+        d = eco(dict(ES5000))
+        d._on_orig = saved.append
+        await d.read()
+        await d.apply(Desired(Mode.HOLD))
+        assert saved and saved[-1]["mode"] == "TIMER_TASK"
+        # Home Assistant restarts while the battery is held: a new driver is built from what was saved
+        c = eco({**ES5000, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 40})
+        again = EcoFlowStreamDriver(c.config, session=None, orig=saved[-1], on_orig=saved.append)
+        again.api = c.api
+        await again.read()
+        await again.apply(Desired(Mode.AUTO))
+        assert {"workMode": "TIMER_TASK"} in again.api.sent and {"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}} in again.api.sent
+        assert saved[-1] is None                                  # handed back: nothing left to remember
+    asyncio.run(go())
+
+
+def test_ecoflow_refusal_and_rate_limit_back_off_and_say_so():
+    from hp.drivers.ecoflow import EcoFlowError
+
+    class Refusing(FakeApi):
+        async def command(self, sn, params, cmd_id=17):
+            err = EcoFlowError("EcoFlow error 1006: x")
+            err.code = "1006"
+            raise err
+
+    async def go():
+        d = eco({"soc": 40, "backupReverseSoc": 10})
+        await d.read()
+        d.api = Refusing({})
+        with pytest.raises(ValueError, match="1006"):
+            await d.apply(Desired(Mode.HOLD))
+        with pytest.raises(ValueError):                           # backing off: no second attempt reaches EcoFlow
+            await d.apply(Desired(Mode.HOLD))
+        d.api = FakeApi({})
+        await d.apply(Desired(Mode.AUTO))                         # handing back is still attempted while backing off
+        assert d.api.sent
+    asyncio.run(go())
+
+
+def test_ultra_x_auto_puts_back_the_reserve_the_user_had_not_the_minimum():
+    async def go():
+        saved = []
+        d = eco({"soc": 50, "backupReverseSoc": 30, "powGetBpCms": 0})            # the user keeps a 30 % reserve
+        d._on_orig = saved.append
+        await d.read()
+        await d.apply(Desired(Mode.HOLD))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 50}] and saved[-1] == {"reserve": 30}
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent[-1] == {"cfgBackupReverseSoc": 30} and saved[-1] is None
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))                                          # nothing of ours left to hand back
+        assert d.api.sent == []
+    asyncio.run(go())
+
+
+def test_ultra_x_original_reserve_survives_a_restart_and_a_raised_reserve_is_not_trusted():
+    async def go():
+        d = eco({"soc": 50, "backupReverseSoc": 30})
+        await d.read()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=80))
+        orig = d._orig
+        c = eco({"soc": 60, "backupReverseSoc": 80})                               # restarted while charging
+        again = EcoFlowStreamDriver(c.config, session=None, orig=orig)
+        again.api = c.api
+        await again.read()
+        await again.apply(Desired(Mode.AUTO))
+        assert again.api.sent[-1] == {"cfgBackupReverseSoc": 30}
+        h = eco({"soc": 60, "backupReverseSoc": 95})                               # left at 95 by something earlier
+        await h.read()
+        await h.apply(Desired(Mode.HOLD))
+        assert h._orig == {"reserve": None}
+        h.api.sent.clear()
+        await h.apply(Desired(Mode.AUTO))
+        assert h.api.sent[-1] == {"cfgBackupReverseSoc": 10}                       # unknown original: the battery's minimum
+    asyncio.run(go())
+
+
+def test_a_resting_reserve_three_above_the_discharge_limit_is_not_mistaken_for_hold_or_charge():
+    """EcoFlow raises a reserve to at least the discharge limit + 3, so a nearly empty battery rests at 13 when min is 10."""
+    from hp.drivers.ecoflow import EcoFlowStreamDriver as D
+    for soc in (5, 11, 13, 14, 20, 80):
+        assert D._mode(13, soc, 10) is Mode.AUTO, soc
+    assert D._mode(14, 40, 10) is Mode.AUTO and D._mode(45, 40, 10) is Mode.CHARGE      # a real raise is still seen
+    assert D._mode(40, 40, 10) is Mode.HOLD and D._mode(95, 60, 10) is Mode.CHARGE
+
+
+def test_a_held_battery_resting_at_its_own_floor_reads_as_held_so_hold_is_not_resent():
+    async def go():
+        d = eco({"soc": 12, "backupReverseSoc": 10, "powGetBpCms": 0})
+        assert (await d.read()).mode is Mode.AUTO                      # nothing of ours: just a battery at its floor
+        await d.apply(Desired(Mode.HOLD))                              # the device raises/keeps its floor; reads as Auto again
+        d._cache = None
+        d.api._q = {"soc": 12, "backupReverseSoc": 13, "powGetBpCms": 0}
+        assert (await d.read()).mode is Mode.HOLD                      # held (it cannot discharge): the Hold counts as done
+        d._cache = None
+        d.api._q = {"soc": 40, "backupReverseSoc": 10, "powGetBpCms": -300}
+        assert (await d.read()).mode is Mode.AUTO                      # a battery well above its floor is not claimed as held
+        await d.apply(Desired(Mode.AUTO))
+        d._cache = None
+        d.api._q = {"soc": 12, "backupReverseSoc": 10}
+        assert (await d.read()).mode is Mode.AUTO                      # handed back: Auto again
+    asyncio.run(go())

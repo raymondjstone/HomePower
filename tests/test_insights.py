@@ -350,3 +350,103 @@ def test_grid_order_setting_and_battery_meter_flag():
         assert False
     except ValidationError:
         pass
+
+
+def test_grid_events_record_start_end_and_charge_and_survive_a_round_trip():
+    from core.insights import GridEvents
+    g, t = GridEvents(), datetime(2026, 11, 10, 3, 0, tzinfo=UTC)
+    g.observe("a", "A", False, t, 80)
+    assert g.events == []
+    g.observe("a", "A", True, t, 80)
+    g.observe("a", "A", True, t + timedelta(minutes=1), 79)
+    assert len(g.events) == 1 and g.events[0]["end"] is None
+    g.observe("a", "A", None, t + timedelta(minutes=2), 78)        # cannot tell: nothing changes
+    assert g.events[0]["end"] is None
+    g.observe("a", "A", False, t + timedelta(minutes=20), 60)
+    e = GridEvents(g.dump()).view()[0]
+    assert e["soc_start"] == 80 and e["soc_end"] == 60 and e["end"]
+
+
+def test_health_trend_warns_when_packs_drift_apart_or_run_hot():
+    from core.insights import HealthTrend
+    h = HealthTrend()
+    for i in range(7):
+        h.update(f"2026-11-0{i + 1}", "a", 30.0, (500, 501, 500))
+    assert h.warning("a") is None
+    h.update("2026-11-08", "a", 31.0, (500, 520, 500))
+    assert "drifted" in h.warning("a")
+    hot = HealthTrend()
+    hot.update("2026-11-01", "a", 70.0, ())
+    assert "70" in hot.warning("a")
+    cool = HealthTrend()
+    cool.update("2026-11-01", "a", 55.0, ())
+    assert cool.warning("a") is None
+    assert HealthTrend(h.dump()).series("a")[-1] == h.series("a")[-1]
+
+
+def test_removing_a_battery_closes_its_open_outage():
+    from core.insights import GridEvents
+    g, t = GridEvents(), datetime(2026, 11, 10, 3, 0, tzinfo=UTC)
+    g.observe("a", "A", True, t, 80)
+    g.forget("a", t + timedelta(minutes=5))
+    assert g.events[0]["end"] and g.view()[0]["end"] == g.events[0]["end"]
+
+
+def test_damaged_saved_history_is_dropped_not_fatal():
+    from core.insights import GridEvents, HealthTrend, UsageHistory
+    u = UsageHistory({"2026-11-01": {"imp": [0.0] * 48, "exp": [0.0] * 48, "load": ["x"] * 48, "pv": [0.0] * 48}})
+    assert "2026-11-01" in u.days and "load" not in u.days["2026-11-01"]
+    assert GridEvents([{"start": "2026-11-01T00:00:00"}, "junk", None]).events == []
+    h = HealthTrend({"a": {"2026-11-01": {}}, "b": "junk"})
+    assert h.warning("a") is None and h.series("a") == [["2026-11-01", None, None]]
+
+
+def test_plan_log_averages_per_slot_and_scores_how_closely_the_plan_was_followed():
+    from datetime import datetime, timezone
+    from hp.core.insights import PlanLog
+    log = PlanLog()
+    t0 = datetime(2026, 3, 1, 1, 0, tzinfo=timezone.utc)
+    for k in range(8):                                           # four hours of half-hour slots, 2 samples each
+        for j in range(2):
+            t = t0.replace(hour=1 + k // 2, minute=30 * (k % 2))
+            log.add(t, "e", 2000.0, 1800.0 if j else 2200.0)     # follows the plan on average
+    log.add(t0.replace(hour=6), "e", None, -300.0)               # left to itself: an actual figure only
+    now = datetime(2026, 3, 1, 8, 10, tzinfo=timezone.utc)
+    v = log.view("e", now, hours=24)
+    row = {r[0][11:16]: r for r in v["rows"]}
+    assert row["01:00"][1:] == [2000, 2000] and row["06:00"][1:] == [None, -300]
+    assert v["match_pct"] == 100
+    off = PlanLog()
+    for k in range(6):
+        off.add(t0.replace(hour=1 + k // 2, minute=30 * (k % 2)), "e", 2000.0, 0.0)   # told to charge, did nothing
+    assert off.view("e", now)["match_pct"] == 0
+
+
+def test_plan_log_survives_a_save_and_ignores_damaged_days():
+    from datetime import datetime, timezone
+    from hp.core.insights import PlanLog
+    log = PlanLog()
+    t = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
+    log.add(t, "e", 100.0, 90.0)
+    again = PlanLog({**log.dump(), "2026-03-02": {"e": {"ps": [1]}}})       # a damaged day alongside a good one
+    assert "2026-03-02" not in again.days and again.days["2026-03-01"]["e"]["ps"][24] == 100.0
+
+
+def test_plan_chart_rows_stay_evenly_spaced_when_the_clocks_change():
+    import pytest
+    from datetime import datetime, timedelta, timezone
+    from hp.core.insights import PlanLog
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Europe/London")
+    except Exception:  # noqa: BLE001 - no time zone database on this machine
+        pytest.skip("no tz database")
+    for now in (datetime(2026, 10, 25, 12, 10, tzinfo=tz), datetime(2026, 3, 29, 12, 10, tzinfo=tz)):
+        log = PlanLog()
+        cur = now.astimezone(timezone.utc) - timedelta(hours=26)
+        while cur < now.astimezone(timezone.utc):
+            log.add(cur.astimezone(tz), "a", 1000.0, 900.0)
+            cur += timedelta(minutes=30)
+        rows = log.view("a", now)["rows"]
+        inst = [datetime.fromisoformat(r[0]).astimezone(timezone.utc) for r in rows]
+        assert len(rows) == 48 and {b - a for a, b in zip(inst, inst[1:])} == {timedelta(minutes=30)}, now

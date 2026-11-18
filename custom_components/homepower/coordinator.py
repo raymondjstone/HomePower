@@ -6,8 +6,8 @@ import asyncio
 import logging
 import time as _time
 from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field, replace as _replace
+from datetime import datetime, time, timedelta
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -23,8 +23,13 @@ from .core.models import Actual, Desired, Mode
 from .core.preview import find_conflicts, preview as build_preview
 from .core.meter import MeterReader
 from .core.anker_x1_map import X1_ALARMS
-from .core.insights import BatteryFigures, DailyStats, Diverter, Health, LoadProfile, UsageHistory, combine
+from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, PlanLog, UsageHistory, combine
 from .core.rates import SLOT, RateTable, Slot, infer_offpeak, parse_rates, to_main_units
+from .core.report import charge_efficiency, ecoflow_report, startup_summary, window_drift
+from .core.traces import CommandTrace
+from .core.weather import (BASE_C, ColdModel, TempLog, cold_extra_wh, parse_open_meteo, pick_tomorrow,
+                           recent_degree_days, to_celsius)
+from .core.sanity import ChargeWatch, CommandBudget, RateLearner, cycling_margin, explain_idle, grid_sign_mismatch, next_unconfirmed
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
 from .core.settings import AppSettings, build as build_settings
@@ -46,6 +51,7 @@ PROTECT_ALERT_AFTER_S = 60
 UNCONFIRMED_ALERT_AFTER = 3
 GRID_SLOW_AFTER_S = 120     # setup check: warn that the grid reading is not live
 GRID_STALE_AFTER_S = 300    # control: too old to steer by (solar surplus tracking waits instead)
+ACTION_PAUSE, ACTION_HAND_BACK = "HOMEPOWER_PAUSE", "HOMEPOWER_HAND_BACK"   # buttons on phone notifications
 FORCING_REASONS = ("schedule", "goal", "manual override", "backup reserve")
 
 
@@ -61,6 +67,8 @@ class DeviceStatus:
     guard_held: bool = False        # software SOC limit is currently holding this device
     last_read_ok: float | None = None
     unconfirmed: int = 0
+    awaiting_confirm: bool = False  # the first command to an unproven battery is waiting for the user
+    waited: int = 0                 # cycles a slow (cloud) battery has been given to show a command's effect
     last_keepalive: float = 0.0
     last_command: dict | None = None
     last_applied: Desired | None = None   # what we last sent, to tell a new instruction from a retry
@@ -103,7 +111,24 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         self.profile = LoadProfile(manager.profile_data)   # the household's usual load by time of day
         self.usage = UsageHistory(manager.usage_data)          # grid import/export per half-hour, for the tariff comparison
         self.daily = DailyStats(manager.daily_data)         # self-consumption / cheap-rate share per day
+        self._unsub_action = hass.bus.async_listen("mobile_app_notification_action", self._on_action)
+        self.startup_note: str | None = None
+        self.temp_log = TempLog((manager.weather_data or {}).get("temps"))       # outdoor temperature per day
+        self.cold_model = ColdModel((manager.weather_data or {}).get("model"))   # extra use per degree of cold
+        self.weather: dict = {}                                                  # tomorrow's temperature and what it means, for the panel
+        self._weather_at, self._weather_busy = -1e9, False
+        self._started = False
+        self.rate_learner = RateLearner(manager.charge_rates)   # real charge rate of batteries that pick their own
+        self.budget = CommandBudget()                       # daily cap on commands to cloud batteries
+        self.charge_watch = ChargeWatch()                    # told to charge but nothing happens
+        self.traces = CommandTrace(manager.trace_data)       # what happened after each command to EcoFlow batteries
+        self.plan_log = PlanLog(manager.plan_log_data)       # planned against actual power per half hour
         self.health = Health(manager.health_data)           # weekly round-trip efficiency per battery
+        self.grid_events = GridEvents(manager.grid_events)  # each time a battery reported the grid down
+        self.trend = HealthTrend(manager.trend_data)        # daily temperature and pack-voltage spread per battery
+        self.forecast_floor: dict = {}                      # the forecast-based reserve working, shown in the panel
+        self.why: deque = deque(maxlen=80)                  # what each battery was told to do and the inputs behind it
+        self._why_sig: dict[str, tuple] = {}
         self._event_state: dict[str, bool] = dict(manager.event_state)   # which heads-up messages are showing (survives restarts)
         self.diverter = Diverter()                           # solar-surplus load
         self._divert_entity = manager.divert_on or ""        # the entity we switched on, to switch the same one off
@@ -155,7 +180,9 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
     def set_config(self, adapters: list[DeviceAdapter], schedules: list[ScheduleEntry], goals: list[Goal]) -> None:
         for gone in {a.config.device_id for a in self.adapters} - {a.config.device_id for a in adapters}:
             self.alerts.forget(f"offline:{gone}"), self.alerts.forget(f"error:{gone}"), self.alerts.forget(f"grid:{gone}"), self.alerts.forget(f"alarm:{gone}:")
-            self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}")
+            self.alerts.forget(f"unconfirmed:{gone}"), self.alerts.forget(f"stuck:{gone}"), self.alerts.forget(f"gridsign:{gone}"), self.charge_watch.forget(gone), self.rate_learner.forget(gone), self.traces.forget(gone), self._forget_plan(gone), self.alerts.forget(f"protect:{gone}"), self.alerts.forget(f"health:{gone}"), self.alerts.forget(f"trend:{gone}")
+            self.grid_events.forget(gone, dt_util.now())
+            self.trend.days.pop(gone, None)
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
         old = self._snap.devices
         self._snap.devices = {a.config.device_id: old.get(a.config.device_id) or self._new_status(a.config.device_id) for a in adapters}
@@ -391,6 +418,123 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 out[did] = pct
         return out
 
+    def _note_decision(self, did: str, name: str, st: DeviceStatus, act: Actual, world: World, res: Result, grid: float | None, now: datetime) -> None:
+        """Remember what a battery was told to do, why, and the readings behind it (Diagnostics > Why it did that). Only
+        a change is recorded, and power is rounded so a zero-import battery adjusting by a few watts is not a change."""
+        d = st.desired
+        sig = (d.mode.value if d else None, round((d.power_w or 0) / 500) if d else 0, st.reason)
+        if self._why_sig.get(did) == sig:
+            return
+        self._why_sig[did] = sig
+        self.why.append({
+            "t": now.isoformat(timespec="seconds"), "did": did, "name": name,
+            "mode": d.mode.value if d else "auto", "power_w": d.power_w if d else None, "reason": st.reason or "nothing manages it: the battery runs itself",
+            "inputs": {"charge_pct": act.soc, "grid_w": None if grid is None else round(grid), "price_now": self._price_now(world.rates, now),
+                       "cheap_rate": world.cheap_now, "backup_mode": world.backup_active, "away": world.away, "paused": self.paused,
+                       "forecast_kwh": world.forecast_kwh, "reserve_floor_pct": world.reserve_floor_pct or None,
+                       "solar_ceiling_pct": world.solar_ceiling.get(did), "notes": list(res.notes)[:3]}})
+
+    def readiness(self) -> dict | None:
+        """How long the batteries could run the house if the grid went down now: the usable energy (above each battery's
+        minimum) against the usual household load for the coming hours, or the current load if that is not learned yet.
+        Ignores solar, so it is the cautious figure."""
+        now, wh, n = dt_util.now(), 0.0, 0
+        for a in self.adapters:
+            st = self._snap.devices.get(a.config.device_id)
+            act = st.actual if st else None
+            if act and act.online and act.soc is not None:
+                wh += max(0.0, act.soc - a.config.caps.min_soc) / 100 * a.config.caps.capacity_wh
+                n += 1
+        if not n:
+            return None
+        left, t, hours, basis = wh, now, 0.0, "usual use at this time of day"
+        while hours < 72:
+            e = self.profile.expected_wh(t, 0.5)
+            if e is None:
+                hours = None
+                break
+            if e >= left:
+                hours += 0.5 * left / max(e, 1e-9)
+                left = 0.0
+                break
+            left -= e
+            t += timedelta(minutes=30)
+            hours += 0.5
+        if hours is None:
+            loads = [s.actual.load_w for s in self._snap.devices.values() if s.actual and s.actual.online and s.actual.load_w]
+            basis = "the load right now"
+            hours = wh / max(loads) if loads else None
+        return {"usable_kwh": round(wh / 1000, 1), "hours": None if hours is None else round(min(hours, 72.0), 1),
+                "capped": bool(hours is not None and hours >= 72), "basis": basis}
+
+    def _cover_text(self) -> str:
+        r = self.readiness()
+        if not r or r["hours"] is None:
+            return ""
+        return f" About {'more than ' if r['capped'] else ''}{r['hours']:g} h of cover left at {r['basis']}, ignoring solar."
+
+    def whatif(self, days: int, base: dict, alt: dict) -> dict:
+        """Replay the recorded house load and solar with two different sets of battery settings (core/whatif.py)."""
+        from .core.tariffs import parse_tariffs
+        from .core.whatif import simulate
+        ts = parse_tariffs(self.settings.compare_tariffs)
+        if not ts:
+            raise ValueError("List the tariff you are on, first, in Settings > Compare tariffs so there are prices to work with")
+        usable = {k: v for k, v in self.usage.days.items() if "load" in v}
+        keys = sorted(usable)[-days:]
+        if len(keys) < 3:
+            raise ValueError(f"needs at least 3 days of recorded house load and solar; HomePower has {len(keys)} so far (it records them from this version on)")
+        cap = sum(a.config.caps.capacity_wh for a in self.adapters) / 1000
+        kw = sum(a.config.caps.max_charge_w for a in self.adapters) / 1000
+        if cap <= 0 or kw <= 0:
+            raise ValueError("the batteries' capacity and charge power are not known")
+        data = {k: usable[k] for k in keys}
+        return {"days": len(keys), "capacity_kwh": round(cap, 1), "max_kw": round(kw, 1), "tariff": ts[0]["name"],
+                "base": simulate(data, ts[0], cap, kw, **base), "alt": simulate(data, ts[0], cap, kw, **alt)}
+
+    def _weekly_digest(self, now: datetime) -> str:
+        """One message a week: savings, grid use, outages and how the batteries are doing."""
+        cur = self.settings.currency
+        days = [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 8)]
+        parts = [f"Last 7 days: saved about {cur}{sum(self.ledger.saved(d) for d in days):.2f}."]
+        imp = sum(sum(self.usage.days[d]["imp"]) for d in days if d in self.usage.days)
+        exp = sum(sum(self.usage.days[d]["exp"]) for d in days if d in self.usage.days)
+        if imp or exp:
+            parts.append(f"Imported {imp:.0f} kWh from the grid and exported {exp:.0f} kWh.")
+        cutoff = (now - timedelta(days=7)).isoformat()
+        outs = [e for e in self.grid_events.events if e["start"] >= cutoff]
+        if outs:
+            mins = sum(max(0, ((datetime.fromisoformat(e["end"]) if e["end"] else now) - datetime.fromisoformat(e["start"])).total_seconds()) for e in outs) / 60
+            parts.append(f"{len(outs)} grid outage{'s' if len(outs) != 1 else ''}, {mins:.0f} min in total.")
+        for a in self.adapters:
+            eff = self.health.efficiency(a.config.device_id)
+            if eff:
+                parts.append(f"{a.config.name}: round-trip efficiency {eff[-1][1]:g}%.")
+            if (w := self.trend.warning(a.config.device_id)):
+                parts.append(f"{a.config.name}: {w}.")
+        try:
+            flag = self.tariff_comparison(30)["monthly"]["cheaper_than_current"]
+        except ValueError:
+            flag = None
+        if flag:
+            parts.append(f"{flag['tariff']} has been cheaper than {flag['current']} for {flag['months']} months running.")
+        return " ".join(parts)
+
+    def _forecast_floor(self, now: datetime) -> int:
+        """Settings > Backup: on a day forecast to be dull, batteries are not drained below a set charge. Before midday it
+        is today's forecast that counts, after it tomorrow's (the night and morning ahead). No forecast, no floor."""
+        s = self.settings
+        self.forecast_floor = {}
+        if not s.forecast_reserve_kwh:
+            return 0
+        fc = self._forecast_by_day(now)
+        day = (now.date() if now.hour < 12 else now.date() + timedelta(days=1)).isoformat()
+        kwh = fc.get(day)
+        low = kwh is not None and kwh < s.forecast_reserve_kwh
+        self.forecast_floor = {"day": day, "forecast_kwh": None if kwh is None else round(kwh, 1), "below_kwh": s.forecast_reserve_kwh,
+                               "pct": s.forecast_reserve_pct, "active": low}
+        return s.forecast_reserve_pct if low else 0
+
     def _forecast_kwh(self) -> float | None:
         st = self.hass.states.get(self.settings.forecast_entity) if self.settings.forecast_entity else None
         try:
@@ -466,7 +610,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         said = cfg.extra.get("grid_meter", "auto")
         if said != "auto":
             return said == "yes"
-        return bool(cfg.extra.get("house_meter")) or cfg.extra.get("driver") == "ecoflow_stream"
+        return bool(cfg.extra.get("house_meter")) or cfg.extra.get("driver") in ("ecoflow_stream", "ecoflow_modbus")
 
     def _entity_age(self, entity_id: str) -> float | None:
         st = self.hass.states.get(entity_id) if entity_id else None
@@ -538,6 +682,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         _LOGGER.info("%s: %s", device_id, msg)
 
     async def _notify(self, key: str, message: str, raised: bool) -> None:
+        """Tell the user: a notification in Home Assistant and, if chosen, one on the phone. Each is tried on its own, so a
+        failure of one never stops the other (and alerts never break the control loop)."""
         nid = f"homepower_alert_{key}"
         try:
             if raised:
@@ -545,12 +691,19 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                                                     {"title": "HomePower", "message": message, "notification_id": nid})
             else:
                 await self.hass.services.async_call("persistent_notification", "dismiss", {"notification_id": nid})
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("in-app alert delivery failed", exc_info=True)
+        try:
             svc = self.settings.notify_service
             if svc and "." in svc:
                 domain, name = svc.split(".", 1)
-                await self.hass.services.async_call(domain, name, {"title": "HomePower", "message": message if raised else f"Resolved: {message}"})
-        except Exception:  # noqa: BLE001 - alerts must never break the control loop
-            _LOGGER.debug("alert delivery failed", exc_info=True)
+                data = {"title": "HomePower", "message": message if raised else f"Resolved: {message}"}
+                if raised and name.startswith("mobile_app_"):     # the phone app shows these as buttons on the notification
+                    data["data"] = {"tag": nid, "actions": [{"action": ACTION_PAUSE, "title": "Pause HomePower"},
+                                                            {"action": ACTION_HAND_BACK, "title": "Hand back to Auto"}]}
+                await self.hass.services.async_call(domain, name, data)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("phone alert delivery failed", exc_info=True)
 
     async def _check_events(self, now: datetime, now_s: float, actuals: dict[str, Actual], rates: RateTable | None) -> None:
         """Optional heads-up messages: battery full, battery low, cheap rate starting soon with a low battery."""
@@ -569,8 +722,21 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 await self._notify(f"event_{key}", msg, False)
 
         today = f"{now:%Y%m%d}"
-        for k in [k for k in self._event_state if k.startswith(("cheap_", "summary_")) and today not in k]:
+        for k in [k for k in self._event_state if k.startswith(("cheap_", "summary_", "tariff_", "digest_")) and today not in k]:
             del self._event_state[k]            # yesterday's once-a-day markers
+        if s.weekly_digest and now.weekday() == 0:
+            at = s.daily_summary_time or time(8, 0)
+            due = now.time() >= at
+            await edge(f"digest_{today}", due, False, self._weekly_digest(now) if due and not self._event_state.get(f"digest_{today}") else "")
+        if f"tariff_{today}" not in self._event_state:
+            self._event_state[f"tariff_{today}"] = True
+            try:
+                flag = self.tariff_comparison(30)["monthly"]["cheaper_than_current"]
+            except ValueError:
+                flag = None
+            if flag:
+                await self._notify(f"tariff_{flag['tariff']}", f"{flag['tariff']} would have been cheaper than {flag['current']} for the last {flag['months']} months running "
+                                   f"(about {self.settings.currency}{flag['saved']:.2f} less in total), going by the usage HomePower recorded.", True)
         if soc is None:
             return
         # "Full" is 95%: many batteries stop at their own charge ceiling below 100. Switching a heads-up off clears it.
@@ -652,6 +818,12 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                     add(f"tested:{did}", bool(t and t.get("ok")), f"{name}: control tested",
                         "" if t and t.get("ok") else ("The last test failed." if t else "Run Test control once to check the battery follows commands."),
                         "test", did)
+        for a in self.adapters:
+            if not a.config.caps.power_control and a.config.extra.get("control_enabled", True):
+                did, t = a.config.device_id, self.manager.tests.get(a.config.device_id)
+                ok = did in self.manager.confirmed or bool(t and t.get("ok"))
+                add(f"first:{did}", ok, f"{a.config.name}: first command allowed", "" if ok else
+                    "Press 'Allow first command' on its card (or pass Test control). This battery's control has not been proven yet.", "tab", "overview")
         rates = self._rates()
         add("prices", rates is not None, "Electricity prices known", "" if rates is not None else
             "Pick a rates sensor or type your standard and cheap rate.", "tab", "settings")
@@ -697,10 +869,26 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 f"offline:{did}": (bool(st.actual and not st.actual.online), f"{name} is offline: HomePower cannot read it.", OFFLINE_ALERT_AFTER_S),
                 f"error:{did}": (st.last_error is not None, f"A command to {name} failed: {st.last_error}", 0),
                 f"unconfirmed:{did}": (st.unconfirmed >= UNCONFIRMED_ALERT_AFTER, f"{name} is not following HomePower's commands (not confirmed after {UNCONFIRMED_ALERT_AFTER} tries).", 0),
-                f"grid:{did}": (bool(st.actual and st.actual.off_grid), f"{name} reports the grid is down and is running the house itself. HomePower is not sending it commands until the grid is back.", 0),
+                f"grid:{did}": (bool(st.actual and st.actual.off_grid), f"{name} reports the grid is down and is running the house itself. HomePower is not sending it commands until the grid is back."
+                                + (self._cover_text() if st.actual and st.actual.off_grid else ""), 0),
                 f"protect:{did}": (st.decision is Decision.SKIP_PROTECTED and not (st.actual and st.actual.off_grid), f"{name} has manufacturer protection active, so HomePower is not overriding it.", PROTECT_ALERT_AFTER_S),
             }
             act = st.actual
+            watching = bool(act and act.online and did not in self.testing and not self.settings.dry_run
+                            and a.config.extra.get("control_enabled", True))
+            if watching:
+                tgt = st.desired.target_soc if st.desired else None
+                stuck = self.charge_watch.stuck(did, self._grid_charging(st), act.soc, act.power_w, tgt, now_s)
+            else:
+                self.charge_watch.forget(did)
+                stuck = False                       # offline, being tested or not controlled: the alert (if raised) clears
+            checks[f"stuck:{did}"] = (stuck, f"{name} was told to charge but is not charging (no power and no rise in charge for "
+                                             f"{int(self.charge_watch.after_s // 60)} min). Check the battery's own app for a mode or schedule overriding HomePower.", 0)
+            if a.config.extra.get("driver") in ("ecoflow_stream", "ecoflow_modbus"):
+                checks[f"gridsign:{did}"] = (bool(act and act.online) and grid_sign_mismatch(self.last_grid, act.grid_w),
+                                             f"{name}'s grid reading ({act.grid_w:g} W) points the opposite way to your grid meter ({self.last_grid:g} W). "
+                                             "One of them is reversed or measures a different point: check Settings > grid sensor and its 'invert' option."
+                                             if self.last_grid is not None and act and act.grid_w is not None else "", 600)
             for text in X1_ALARMS.values():     # alarms the X1 itself reports (a failed meter or inverter link, ...)
                 checks[f"alarm:{did}:{text}"] = (bool(act and text in act.alarms), f"{name} reports: {text}.", 0)
             fw, fw_key = act.firmware if act else None, f"fw:{did}"
@@ -712,6 +900,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 self._event_state[fw_key] = fw
             weak = self.health.degraded(did)
             checks[f"health:{did}"] = (weak is not None, f"{name}: {weak}", 0)
+            if act and act.online:
+                self.grid_events.observe(did, name, act.off_grid, dt_util.now(), act.soc)
+                self.trend.update(dt_util.now().strftime("%Y-%m-%d"), did, act.temp_c, act.pack_v)
+            drift = self.trend.warning(did)
+            checks[f"trend:{did}"] = (drift is not None, f"{name}: {drift}", 0)
             for key, (active, msg, after) in checks.items():
                 ev = self.alerts.observe(key, active, now_s, after)
                 if ev:
@@ -741,21 +934,27 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             if act.online:
                 self._snap.devices[did].last_read_ok = wall
 
+        self._observe_temp(now)
         self.hass.async_create_task(self._refresh_tariff())
+        self.hass.async_create_task(self._refresh_weather())
         grid = self._grid_w(actuals)
         rates = self._rates()
         world = World(
             now=now, settings=self.settings.engine, schedules=self.schedules, goals=self.goals,
             overrides=self._active_overrides(now), grid_w=grid, condition_ok=self._condition_ok, usage_wh=self.profile.expected_wh,
-            backup_active=self.backup_active, away=self.away, load_blocks=self._load_blocks(),
+            backup_active=self.backup_active, away=self.away, load_blocks=self._load_blocks(), reserve_floor_pct=self._forecast_floor(now),
             grid_fresh=self.grid_age_s is None or self.grid_age_s <= GRID_STALE_AFTER_S,
             rates=rates, forecast_kwh=self._forecast_kwh(), cheap_now=self._is_cheap(rates, now, self._price_now(rates, now)),
-            devices=[DevIn(a.config, actuals[a.config.device_id],
+            devices=[DevIn(self._effective_config(a.config), actuals[a.config.device_id],
                            self._snap.devices[a.config.device_id].release_pending,
                            self._snap.devices[a.config.device_id].guard_held,
                            bool(a.config.extra.get("control_enabled", True)), self._has_solar(a.config)) for a in adapters],
             export_better=self._export_better(rates, now),
             solar_ceiling=self._solar_ceilings(now, actuals, rates),
+            efficiency={a.config.device_id: charge_efficiency((self.health.efficiency(a.config.device_id) or [(None, None)])[-1][1]) for a in adapters},
+            price_now=self._price_now(rates, now), price_later_max=self._price_later_max(rates, now),
+            cold_extra_wh=self.weather.get("extra_wh", 0.0) if self.settings.weather_boost else 0.0,
+            cold_note=self.weather.get("note", ""),
         )
         try:
             res = compute(world)
@@ -773,6 +972,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             st.desired = res.wants.get(did)
             st.reason = res.reasons.get(did, "")
             st.guard_held = res.guard_held.get(did, False)
+            try:
+                self._note_decision(did, a.config.name, st, actuals[did], world, res, grid, now)
+            except Exception:  # noqa: BLE001 - the decision log is for people: a bug there must not stop control of this or the next battery
+                _LOGGER.exception("could not record the decision for %s", did)
             if st.desired is None:  # nothing manages it: device runs its own logic
                 st.decision = None
                 st.unconfirmed = 0
@@ -793,10 +996,16 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             elif st.decision is Decision.OK:
                 st.unconfirmed = 0
 
+        if not self._started:
+            self._started = True
+            try:
+                self._startup_check(actuals)
+            except Exception:  # noqa: BLE001 - a report must never stop control
+                _LOGGER.debug("startup check failed", exc_info=True)
         if not self.paused:
             await self._keepalive(mono, adapters)
         self.last_grid = grid
-        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters),
+        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(wall, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals), lambda: self._check_tariff_drift(wall),
                      lambda: self._check_events(now, wall, actuals, rates),
                      lambda: self._divert(wall, actuals, grid), lambda: self._sync_x1_limits(mono, adapters)):
             try:   # accounting / alerts are secondary: a bug there must not stop control
@@ -859,9 +1068,11 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
         pv_in, _ = self.meter.add("pv", wall, sum(pv) if pv else None)
         price = self._price_now(rates, now)
         self._cheap_now = self._is_cheap(rates, now, price)
-        self.usage.add(now, g_in, g_out)
         self.daily.add(now.strftime("%Y-%m-%d"), pv_kwh=pv_in, export_kwh=g_out, import_kwh=g_in, cheap=self._is_cheap(rates, now, price))
-        self.profile.record(now, self._house_load(actuals, grid, sum(pv) if pv else 0.0))
+        load_w = self._house_load(actuals, grid, sum(pv) if pv else 0.0)
+        l_in, _ = self.meter.add("load", wall, load_w)
+        self.usage.add(now, g_in, g_out, l_in, pv_in)
+        self.profile.record(now, load_w)
         self.health.update(now.strftime("%G-W%V"), {did: (self.meter.get(f"bat:{did}_in"), self.meter.get(f"bat:{did}_out"))
                                                      for did in actuals})
         self._account_savings(now, actuals, grid, rates, steps)
@@ -892,6 +1103,168 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             self.ledger.add(day, did, d_in, 1.0 if did in forced else free_share, d_out, exp_share, price, exp_price, stored, first)
         self.ledger.forget(set(caps))
 
+    # ------------------------------------------------------------------ weather (cold-day target)
+    def _state_temp(self, entity: str) -> float | None:
+        """A temperature (°C) from a sensor, or from a weather entity's current temperature."""
+        st = self.hass.states.get(entity) if entity else None
+        if st is None:
+            return None
+        attrs = getattr(st, "attributes", {}) or {}
+        try:
+            if str(entity).startswith("weather."):
+                return to_celsius(float(attrs["temperature"]), attrs.get("temperature_unit"))
+            return to_celsius(float(st.state), attrs.get("unit_of_measurement"))
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def _observe_temp(self, now: datetime) -> None:
+        """Remember today's outdoor temperature (from the sensor, else the weather entity) to learn how cold affects use."""
+        s = self.settings
+        t = self._state_temp(s.temp_sensor_entity) if s.temp_sensor_entity else self._state_temp(s.weather_entity)
+        if t is not None and -60 < t < 60:
+            self.temp_log.add(now.strftime("%Y-%m-%d"), t)
+
+    async def _fetch_json(self, url: str) -> dict | None:
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+        from aiohttp import ClientTimeout
+
+        async with async_get_clientsession(self.hass).get(url, timeout=ClientTimeout(total=15)) as resp:
+            return await resp.json(content_type=None) if resp.status == 200 else None
+
+    async def _tomorrow_temp(self, tomorrow) -> tuple[float | None, str]:
+        """Tomorrow's mean temperature (°C) and where it came from: the weather entity, then a sensor, then (only if switched on) Open-Meteo."""
+        s, tz = self.settings, dt_util.now().tzinfo
+        if s.weather_entity:
+            unit = getattr(self.hass.config.units, "temperature_unit", "°C")
+            for kind in ("daily", "hourly"):
+                try:
+                    reply = await self.hass.services.async_call("weather", "get_forecasts", {"entity_id": s.weather_entity, "type": kind},
+                                                                 blocking=True, return_response=True)
+                    t = pick_tomorrow((reply or {}).get(s.weather_entity, {}).get("forecast", []), tomorrow, tz, unit)
+                    if t is not None:
+                        return t, f"weather entity ({kind})"
+                except Exception:  # noqa: BLE001 - this entity may not support that forecast type: try the next source
+                    _LOGGER.debug("weather forecast (%s) unavailable", kind, exc_info=True)
+        if s.forecast_temp_entity:
+            t = self._state_temp(s.forecast_temp_entity)
+            if t is not None:
+                return round(t, 1), "forecast sensor"
+        if s.weather_online:
+            try:   # the home's location is rounded to about 10 km before it leaves Home Assistant
+                lat, lon = round(self.hass.config.latitude, 1), round(self.hass.config.longitude, 1)
+                data = await self._fetch_json("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s&daily=temperature_2m_max,temperature_2m_min"
+                                              "&forecast_days=3&timezone=auto" % (lat, lon))
+                t = parse_open_meteo(data or {}, tomorrow)
+                if t is not None:
+                    return t, "Open-Meteo"
+            except Exception:  # noqa: BLE001 - optional source
+                _LOGGER.debug("Open-Meteo unavailable", exc_info=True)
+        return None, ""
+
+    async def _refresh_weather(self) -> None:
+        """Hourly: tomorrow's temperature, how the house responds to cold, and the extra energy that implies."""
+        s = self.settings
+        if self._weather_busy or _time.monotonic() - self._weather_at < 3600 or not (
+                s.weather_boost or s.weather_entity or s.temp_sensor_entity):
+            return
+        self._weather_busy, self._weather_at = True, _time.monotonic()
+        try:
+            now = dt_util.now()
+            today = now.strftime("%Y-%m-%d")
+            self.cold_model.fit(self.temp_log, self.usage.days, today)
+            tomorrow_c, source = await self._tomorrow_temp((now + timedelta(days=1)).date()) if s.weather_boost else (None, "")
+            recent = recent_degree_days(self.temp_log, today)
+            extra = cold_extra_wh(self.cold_model.k, tomorrow_c, recent)
+            if not s.weather_boost:
+                status = "off"
+            elif tomorrow_c is None:
+                status = "no forecast temperature: pick a weather entity or sensor"
+            elif self.cold_model.k is None:
+                status = (f"still learning how cold affects your use ({self.cold_model.days} usable days; needs 7 with a spread of "
+                          "temperatures and an outdoor temperature sensor or weather entity)")
+            elif extra <= 0:
+                status = "tomorrow is not colder than lately: no change"
+            else:
+                status = "raising the overnight target"
+            lately = None if recent is None else round(BASE_C - recent, 1)
+            self.weather = {"tomorrow_c": tomorrow_c, "source": source, "k_wh_per_degree": self.cold_model.k,
+                            "days_learned": self.cold_model.days, "link": self.cold_model.r, "lately_c": lately,
+                            "extra_wh": extra, "status": status,
+                            "note": f"{tomorrow_c:g} °C forecast vs about {lately:g} °C lately" if tomorrow_c is not None and lately is not None else ""}
+        except Exception:  # noqa: BLE001 - weather is an extra: it must never disturb control
+            _LOGGER.debug("weather refresh failed", exc_info=True)
+        finally:
+            self._weather_busy = False
+
+    def _price_later_max(self, rates: RateTable | None, now: datetime, hours: int = 6) -> float | None:
+        """The dearest import price in the next few hours (main units), for 'keep it for later'."""
+        if rates is None:
+            return None
+        ahead = [to_main_units(x.price, self.settings.rates_unit) for x in rates.slots_between(now, now + timedelta(hours=hours))]
+        return max(ahead) if ahead else None
+
+    async def _check_tariff_drift(self, wall: float) -> None:
+        """Alert when the cheap hours in the price history no longer match the hours typed into Settings."""
+        s, inf = self.settings, self._tariff
+        msg = window_drift(s.offpeak_start, s.offpeak_end, inf.start, inf.end) if inf is not None and inf.days >= 5 else None
+        ev = self.alerts.observe("tariffdrift", bool(msg), wall, 6 * 3600)
+        if ev:
+            await self._notify("tariffdrift", msg or "Your cheap-rate hours match the price history again.", ev == "raised")
+
+    def _startup_check(self, actuals: dict[str, Actual]) -> None:
+        """Once after each start: what was picked up again, and which batteries cannot be reached."""
+        m = self.manager
+        restored = {"saved EcoFlow original settings": len(m.ecoflow_orig), "learned charge rates": len(self.rate_learner.rates),
+                    "command results": sum(len(v) for v in self.traces.results.values()),
+                    "days of plan history": len(self.plan_log.days), "batteries held from before": len(m.forced)}
+        down = [a.config.name for a in self.adapters if not (actuals.get(a.config.device_id) and actuals[a.config.device_id].online)]
+        self.startup_note = startup_summary(restored, down)
+        self._log("events", self.startup_note)
+
+    def _effective_config(self, cfg):
+        """The battery's config with the charge rate it has really shown (batteries that pick their own rate)."""
+        if cfg.caps.power_control:
+            return cfg
+        caps, rate = cfg.caps, self.rate_learner.rates.get(cfg.device_id)
+        if rate and rate != caps.max_charge_w:
+            caps = _replace(caps, max_charge_w=rate)
+        if Mode.CHARGE in caps.supported_modes and self.traces.verdict(cfg.device_id) == "unreliable":
+            caps = _replace(caps, supported_modes=frozenset(caps.supported_modes - {Mode.CHARGE}))   # it has not worked: stop relying on it
+        return cfg if caps is cfg.caps else _replace(cfg, caps=caps)
+
+    def _record_plan(self, now: datetime, actuals: dict[str, Actual]) -> None:
+        """Remember what each battery was told to do, and what it did, for the plan-versus-actual chart."""
+        for did, act in actuals.items():
+            st = self._snap.devices.get(did)
+            want = st.desired if st else None
+            planned = None
+            if want is not None and want.mode is not Mode.AUTO:
+                planned = {Mode.CHARGE: 1, Mode.DISCHARGE: -1}.get(want.mode, 0) * float(want.power_w or 0)
+            self.plan_log.add(now, did, planned, act.power_w if act.online else None)
+
+    def _watch_traces(self, wall: float, now: datetime, actuals: dict[str, Actual]) -> None:
+        for did, act in actuals.items():
+            if act.online:
+                rec = self.traces.observe(did, wall, act.soc, act.power_w, act.mode.value if act.mode else None)
+                if rec:
+                    self._log(did, f"command result: {rec['mode']} {'worked' if rec['ok'] else 'had no effect'} "
+                                   f"(peak {rec['peak_w']} W, {'reacted after ' + str(rec['reaction_s']) + ' s' if rec['ok'] else 'no reaction in 10 min'})")
+
+    def _forget_plan(self, did: str) -> None:
+        for devs in self.plan_log.days.values():
+            devs.pop(did, None)
+
+    def _learn_rates(self, adapters) -> None:
+        changed = False
+        for a in adapters:
+            st = self._snap.devices.get(a.config.device_id)
+            if st is None or st.actual is None or a.config.caps.power_control:
+                continue
+            changed |= self.rate_learner.observe(a.config.device_id, self._grid_charging(st), st.actual.power_w, st.actual.soc)
+        if changed:
+            self.manager.charge_rates = dict(self.rate_learner.rates)
+
     @staticmethod
     def _grid_charging(st: DeviceStatus) -> bool:
         """Is this battery being told to charge from the grid at a fixed power (schedule, goal, override, backup)?"""
@@ -915,18 +1288,40 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             st.last_command = {"at": dt_util.now().isoformat(), "mode": want.mode.value, "power_w": want.power_w, "result": "dry run: not sent"}
             self._log(did, f"DRY RUN: would send {what}")
             return
+        if (not a.config.caps.power_control and want.mode is not Mode.AUTO and did not in self.manager.confirmed
+                and not (self.manager.tests.get(did) or {}).get("ok")):
+            st.awaiting_confirm = True        # a battery whose control is unproven: the first command waits for the user
+            self._log(did, f"waiting for you to allow the first {want.mode.value} command (button on the battery's card), or pass Test control")
+            return
+        if not a.config.caps.power_control and not self.budget.allow(did, dt_util.now().strftime("%Y-%m-%d"), want.mode is Mode.AUTO):
+            st.last_error = (f"Daily limit of {self.budget.limit} commands reached for {a.config.name}: HomePower will not send more "
+                             "until tomorrow (it can still hand the battery back).")
+            self._log(did, st.last_error)
+            return
+        st.awaiting_confirm = False
         st.last_applied = want
         if want.mode is not Mode.AUTO:
             self._set_release(did, st, True)
-        st.last_command = {"at": dt_util.now().isoformat(), "mode": want.mode.value, "power_w": want.power_w, "result": "sent"}
+        st.last_command = {"at": dt_util.now().isoformat(), "mode": want.mode.value, "power_w": want.power_w, "result": "sent",
+                           "why": st.reason, "soc": st.actual.soc if st.actual else None, "target_soc": want.target_soc,
+                           "price": self._price_now(self._rates(), dt_util.now()), "grid_w": self.last_grid}
         try:
             await a.apply(want)
             st.actual = await a.read()
             st.last_error = None
+            if not a.config.caps.power_control and want.mode in (Mode.CHARGE, Mode.HOLD):
+                room = want.mode is Mode.HOLD or st.actual.soc is None or st.actual.soc < (want.target_soc or 95) - 3
+                if room:
+                    self.traces.start(did, want.mode.value, _time.time(), dt_util.now().isoformat(), st.actual.soc, st.actual.power_w)
+                else:
+                    self.traces.cancel(did)
             # Vendor state can lag; a remaining mismatch is retried after the cooldown.
             _, remaining = decide(want, st.actual, now=st.last_apply, last_apply=None)
-            st.unconfirmed = st.unconfirmed + 1 if remaining else 0
-            st.last_command["result"] = "confirmed" if not remaining else "not yet confirmed"
+            st.unconfirmed, st.waited = next_unconfirmed(st.unconfirmed, st.waited, bool(remaining), not a.config.caps.power_control,
+                                                         self.traces.grace(did, self.settings.cooldown_s))
+            st.last_command["result"] = "confirmed" if not remaining else ("waiting for the cloud to show it" if st.waited and not st.unconfirmed else "not yet confirmed")
+            if want.mode is Mode.AUTO:
+                self.traces.cancel(did)            # handed back: whatever it was doing before is no longer being judged
             if want.mode is Mode.AUTO and not remaining:
                 self._set_release(did, st, False)  # handed back and confirmed
             self._log(did, "verified" if not remaining else f"not yet confirmed: {remaining}")
@@ -936,6 +1331,12 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             self._log(did, f"apply failed: {err}")
 
     # ------------------------------------------------------------------ control test
+    @staticmethod
+    def _test_watts(a) -> int:
+        """Test power: 100 W, but 300 W for the local EcoFlow driver, whose power sign is unconfirmed (the direction check needs a step
+        clearly above the house's own ups and downs; 300 W for a few seconds either way is harmless)."""
+        return 300 if a.config.extra.get("driver") == "ecoflow_modbus" else 100
+
     async def test_control(self, device_id: str) -> dict:
         """Send a tiny safe command, check the battery follows it, then hand it back. Pauses normal control of it."""
         a = next((x for x in self.adapters if x.config.device_id == device_id), None)
@@ -948,31 +1349,85 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             return ok
 
         caps = a.config.caps
-        if not step("control allowed", bool(a.config.extra.get("control_enabled", True)),
-                    "turn on 'Let HomePower send commands' for this battery first"):
+        allowed = bool(a.config.extra.get("control_enabled", True))
+        if not step("control allowed", allowed, "" if allowed else "turn on 'Let HomePower send commands' for this battery first"):
             return {"ok": False, "steps": steps}
         self.testing.add(device_id)
         try:
             before = await a.read()
-            if not step("battery readable", before.online, "could not read the battery"):
+            if not step("battery readable", before.online, "" if before.online else "could not read the battery"):
                 return {"ok": False, "steps": steps}
             soc = before.soc if before.soc is not None else 50
             if Mode.CHARGE in caps.supported_modes and soc < 95:
-                want = Desired(Mode.CHARGE, min(100, caps.max_charge_w or 100))
+                want = Desired(Mode.CHARGE, min(self._test_watts(a), caps.max_charge_w or 100))
             elif Mode.DISCHARGE in caps.supported_modes and soc > max(caps.min_soc, 15) + 5:
-                want = Desired(Mode.DISCHARGE, min(100, caps.max_discharge_w or 100))
+                want = Desired(Mode.DISCHARGE, min(self._test_watts(a), caps.max_discharge_w or 100))
             else:
                 want = Desired(Mode.HOLD)
             self._set_release(device_id, self._snap.devices[device_id], True)
+            drv = getattr(a, "driver", None)
+            slow = not caps.power_control          # cloud batteries (EcoFlow) take a while to show a change
+            if slow and want.mode is Mode.CHARGE and Mode.HOLD in caps.supported_modes:
+                # Guided check: first prove the simpler command (Hold) takes effect, then Charge.
+                await a.apply(Desired(Mode.HOLD))
+                held, waited_h = None, 0
+                while held is None or (held.mode is not Mode.HOLD and waited_h < 45):
+                    await asyncio.sleep(10)
+                    waited_h += 10
+                    if drv is not None and hasattr(drv, "_cache"):
+                        drv._cache = None
+                    held = await a.read()
+                step("sent hold", held.mode is Mode.HOLD,
+                     f"after {waited_h} s the battery reports mode={held.mode.value if held.mode else '?'} (Hold raises its backup reserve to the current charge level)")
             await a.apply(want)
-            await asyncio.sleep(6)
-            after = await a.read()
+            after, waited = None, 0
+            while after is None or (after.mode != want.mode and waited < (45 if slow else 0)):
+                await asyncio.sleep(10 if slow else 6)
+                waited += 10 if slow else 6
+                if drv is not None and hasattr(drv, "_cache"):
+                    drv._cache = None                  # make the next read ask the battery, not repeat the last answer
+                after = await a.read()
             ok_mode = after.mode == want.mode
             ok_pw = want.power_w is None or after.set_power_w is None or abs(after.set_power_w - want.power_w) <= 10
-            step(f"sent {want.mode.value}" + (f" {want.power_w} W" if want.power_w else ""), ok_mode and ok_pw,
+            step(f"sent {want.mode.value}" + (f" {want.power_w} W" if want.power_w and caps.power_control else ""), ok_mode and ok_pw,
                  f"battery reports mode={after.mode.value if after.mode else '?'}, setpoint={after.set_power_w}")
+            if slow and want.mode is Mode.CHARGE:
+                if drv is not None and hasattr(drv, "_cache"):
+                    drv._cache = None
+                later = await a.read()
+                moved = (later.power_w or 0) >= 50 or (later.soc or 0) > soc + 0.5
+                if moved:
+                    self.traces.reset(device_id)       # proven by hand: Charge is offered again
+                steps.append({"name": "battery actually charged", "ok": moved, "info": True, "detail": (
+                    f"after {waited} s: power {later.power_w if later.power_w is not None else '?'} W, charge {later.soc if later.soc is not None else '?'} %. "
+                    + ("Raising the reserve does start charging on this battery." if moved else
+                       "The reserve was raised but it did not start charging yet: it may ignore the reserve in its current operating mode, "
+                       "or it was already full. Check its app, and try again with the charge level lower."))})
+            if a.config.extra.get("driver") == "ecoflow_modbus" and want.mode in (Mode.CHARGE, Mode.DISCHARGE) and ok_mode:
+                # The set point reads back from the same register that was written, so it cannot show a reversed sign: check the
+                # battery's own power reading moves the way the command says (only for the local EcoFlow driver, whose sign is unconfirmed; an info line).
+                await asyncio.sleep(6)
+                later = await a.read()
+                sign = 1 if want.mode is Mode.CHARGE else -1
+                p, p0 = later.power_w, before.power_w
+                moved = None if p is None or p0 is None else (p - p0) * sign       # how far the power moved the way the command asks
+                half = (want.power_w or 100) * 0.4
+                if moved is None:
+                    detail, good = "the battery did not report its power", True
+                elif moved < -half:
+                    detail = (f"asked to {want.mode.value} {want.power_w} W but the battery's power went from {p0:.0f} W to {p:.0f} W, the opposite way."
+                              + (" Its charge/discharge sign looks reversed: tick 'Reverse the charge/discharge sign' in this battery's connection settings and test again."
+                                 if a.config.extra.get("driver") == "ecoflow_modbus" else " Check its app for a mode or schedule overriding HomePower."))
+                    good = False
+                elif moved > half:
+                    detail, good = f"asked to {want.mode.value} {want.power_w} W; the battery's power went from {p0:.0f} W to {p:.0f} W.", True
+                else:
+                    detail, good = f"asked to {want.mode.value} {want.power_w} W; the battery's power is {p:.0f} W (it had not clearly moved yet, so the direction could not be checked).", True
+                steps.append({"name": "power moves the right way", "ok": good, "info": True, "detail": detail})
             await a.apply(Desired(Mode.AUTO))
             await asyncio.sleep(3)
+            if drv is not None and hasattr(drv, "_cache"):
+                drv._cache = None
             final = await a.read()
             ok_back = final.mode in (Mode.AUTO, None)
             step("handed back", ok_back, f"battery reports mode={final.mode.value if final.mode else '?'}")
@@ -986,7 +1441,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 pass
         finally:
             self.testing.discard(device_id)
-        result = {"ok": all(s["ok"] for s in steps), "steps": steps}
+        result = {"ok": all(s["ok"] for s in steps if not s.get("info")), "steps": steps}
         self.manager.tests[device_id] = {"ok": result["ok"], "at": dt_util.now().isoformat()}   # shown in the setup check
         self.hass.async_create_task(self.manager.save_runtime())
         return result
@@ -1019,6 +1474,51 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                  "cheap": rates.in_cheap_window(x.start.astimezone(now.tzinfo).time()) if rates.windows else (x.price < 0.9 * mean)}
                 for x in found]
 
+    _IPV4 = re.compile(r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w])")
+
+    def scrub(self, obj, strict: bool = False):
+        """Remove what must never be shared from any text: the keys and passwords always, and (strict, for anything the
+        user may paste or attach) also each battery's address and serial number and any IPv4 address. Error messages are
+        where these end up, so this works on every string, however deep."""
+        secrets: set[str] = set()
+        conns = [a.config.extra.get("connection", {}) for a in self.adapters]
+        conns += [d.get("connection", {}) for d in self.manager.devices.values() if isinstance(d, dict)]   # also ones that failed to build
+        keys = ("access_key", "secret_key", "password", "token") + (("host", "sn", "serial") if strict else ())
+        for conn in conns:
+            if isinstance(conn, dict):
+                secrets |= {str(conn[k]) for k in keys if isinstance(conn.get(k), (str, int)) and len(str(conn[k])) >= 4}
+        ordered = sorted(secrets, key=len, reverse=True)
+
+        def clean(text: str) -> str:
+            for s in ordered:
+                text = text.replace(s, "<hidden>")
+            return self._IPV4.sub("<ip>", text) if strict else text
+
+        def walk(x):
+            if isinstance(x, str):
+                return clean(x)
+            if isinstance(x, dict):
+                return {k: walk(v) for k, v in x.items()}
+            if isinstance(x, (list, tuple)):
+                return [walk(v) for v in x]
+            return x
+        return walk(obj)
+
+    def debug_bundle(self) -> dict:
+        """One file for a bug report: everything below is already free of keys; serial numbers and addresses are removed too."""
+        now = dt_util.now()
+        diag = self.diagnostics()
+        for d in diag.values():
+            d["connection"] = {k: v for k, v in (d.get("connection") or {}).items() if k in ("region", "port", "unit_id")}
+        from dataclasses import fields
+
+        plain = {f.name: getattr(self.settings, f.name) for f in fields(self.settings)
+                 if isinstance(getattr(self.settings, f.name), (int, float, str, bool, type(None))) and not re.search(r"notify|entity", f.name)}
+        return self.scrub({"made_at": now.isoformat(), "startup": self.startup_note, "settings": plain,
+                "batteries": diag, "command_traces": self.traces.dump(), "charge_rates": dict(self.rate_learner.rates),
+                "plan_against_actual": {a.config.device_id: self.plan_log.view(a.config.device_id, now) for a in self.adapters},
+                "events": [list(e) for e in list(self._snap.events)[-150:]], "alerts": sorted(self.alerts.active())}, strict=True)
+
     def diagnostics(self) -> dict:
         out = {}
         for a in self.adapters:
@@ -1039,6 +1539,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "unconfirmed": st.unconfirmed if st else 0, "release_pending": bool(st and st.release_pending),
                 "word_order": getattr(getattr(a, "driver", None), "_order", None),
                 "driver_error": getattr(getattr(a, "driver", None), "last_error", None),
+                "command_traces": self.traces.recent(did, 10) or None,
+                "recent_setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or []) or None,
                 "raw_readings": {k: v for k, v in (getattr(getattr(a, "driver", None), "last_quota", None) or {}).items()
                                  if not _PRIVATE_KEY.search(k)} or None,
             }
@@ -1075,6 +1577,18 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "override": ({"mode": ov[0].mode.value, "power_w": ov[0].power_w, "until": ov[1].isoformat()} if ov else None),
                 "guard_held": st.guard_held,
                 "last_error": st.last_error,
+                "awaiting_confirm": st.awaiting_confirm,
+                "charge_verdict": self.traces.verdict(did) if not a.config.caps.power_control else None,
+                "traces": self.traces.recent(did) if not a.config.caps.power_control else [],
+                "report": (ecoflow_report(self.traces.results.get(did, []), self.plan_log.view(did, now)["match_pct"],
+                                          self.rate_learner.rates.get(did), self.traces.verdict(did))
+                           if not a.config.caps.power_control else None),
+                "measured_charge_w": self.rate_learner.rates.get(did) if not a.config.caps.power_control else None,
+                "why": explain_idle(control_enabled=bool(a.config.extra.get("control_enabled", True)), paused=self.paused,
+                                    dry_run=self.settings.dry_run, online=bool(act and act.online), off_grid=bool(act and act.off_grid),
+                                    protected=bool(act and act.protected), last_error=st.last_error, guard_held=st.guard_held,
+                                    unconfirmed=st.unconfirmed, awaiting_confirm=st.awaiting_confirm),
+                "setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or [])[-8:],
             }
         return out
 
@@ -1098,8 +1612,13 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             "combined": self._combined(actuals), "setup": self.setup_check(), "solar_room": self.solar_room, "export_better": self._export_better(rates, now),
             "divert": {"entity": self.settings.divert_entity, "on": self.diverter.on} if self.settings.divert_entity else None,
             "daily": {"self_consumption": self.daily.self_consumption(day_key), "cheap_share": self.daily.cheap_share(day_key)},
+            "plan_actual": {a.config.device_id: self.plan_log.view(a.config.device_id, now) for a in self.adapters},
             "health": {a.config.device_id: {"efficiency": self.health.efficiency(a.config.device_id)[-8:],
-                                             "warning": self.health.degraded(a.config.device_id)} for a in self.adapters},
+                                             "warning": self.health.degraded(a.config.device_id),
+                                             "cycling": self._cycling(a.config.device_id, rates, now)} for a in self.adapters},
+            "grid_events": self.grid_events.view(),
+            "trend": {a.config.device_id: {"days": self.trend.series(a.config.device_id, 60), "warning": self.trend.warning(a.config.device_id)} for a in self.adapters},
+            "forecast_reserve": self.forecast_floor, "readiness": self.readiness(), "startup": self.startup_note, "weather": self.weather,
             "learning": {"known_slots": sum(1 for n in self.profile.n["wd"] if n >= self.profile.MIN_VISITS)},
             "tariff_inferred": ({"start": self._tariff.start.strftime("%H:%M"), "end": self._tariff.end.strftime("%H:%M"),
                                  "offpeak": self._tariff.offpeak, "peak": self._tariff.peak, "days": round(self._tariff.days, 1)}
@@ -1108,19 +1627,58 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             "energy": {k: round(v, 3) for k, v in self.meter.totals.items()},
         }
 
+    def _cycling(self, did: str, rates: RateTable | None, now: datetime) -> dict | None:
+        """What storing a kWh in this battery is worth right now: the cheapest import in the next 24 h against the dearest
+        price it could avoid, at this battery's own measured round-trip efficiency (or an 85 % estimate until it has one)."""
+        if rates is None:
+            return None
+        ahead = [to_main_units(x.price, self.settings.rates_unit) for x in rates.slots_between(now, now + timedelta(hours=24))]
+        if len(ahead) < 2:
+            return None
+        eff = self.health.efficiency(did)
+        measured = bool(eff)
+        out = cycling_margin(min(ahead), max(ahead), (eff[-1][1] / 100) if measured else 0.85)
+        out["measured"] = measured
+        return out
+
+    async def _on_action(self, event) -> None:
+        """A button on a HomePower phone notification was tapped."""
+        action = (event.data or {}).get("action")
+        try:
+            if action == ACTION_PAUSE:
+                await self.manager.set_paused(True)
+                self._log("events", "paused from a notification button")
+            elif action == ACTION_HAND_BACK:
+                await self.release_all(force=True)
+                await self.manager.set_paused(True)          # stay handed back: otherwise the plan would take them over again
+                self._log("events", "batteries handed back and HomePower paused from a notification button")
+        except Exception:  # noqa: BLE001 - a button must never break the control loop
+            _LOGGER.warning("notification action failed", exc_info=True)
+
+    def stop_listening(self) -> None:
+        """Stop reacting to phone notification buttons. Safe to call more than once; needed on unload or reload, or the
+        old coordinator would keep answering taps through a manager that no longer owns the saved state."""
+        unsub, self._unsub_action = getattr(self, "_unsub_action", None), None
+        if unsub:
+            unsub()
+
     async def async_close(self) -> None:
+        self.stop_listening()
         await self.manager.save_runtime()
         for a in self.adapters:
             await a.close()
 
-    async def release_all(self) -> None:
-        """Best effort on shutdown: hand every battery we forced back to its own control."""
-        if self.paused:
+    async def release_all(self, force: bool = False) -> None:
+        """Best effort on shutdown: hand every battery we forced back to its own control. While paused nothing is touched,
+        unless `force` (safe mode, and the notification's hand-back button, mean it even when paused)."""
+        if self.paused and not force:
+            await self.manager.save_runtime()      # nothing to hand back, but the running totals must still be kept
             return
         for a in self.adapters:
             st = self._snap.devices.get(a.config.device_id)
             if st and st.release_pending:
                 try:
+                    self.traces.cancel(a.config.device_id)
                     await a.apply(Desired(Mode.AUTO))
                     self._log(a.config.device_id, "released to the device's own control on shutdown")
                 except Exception as err:  # noqa: BLE001 - flag stays set, retried on next start

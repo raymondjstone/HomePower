@@ -18,7 +18,6 @@ import logging
 
 from ..core.models import Actual, Desired, DeviceConfig, Mode
 import time
-from dataclasses import replace
 
 from ..core.anker_x1_map import alarm_texts
 from .modbus import ModbusError, ModbusTcpClient, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
@@ -46,6 +45,8 @@ class AnkerModbusDriver:
         self._firmware: str | None = None
         self._temp: float | None = None
         self._limits: tuple | None = None
+        self._pack_v: tuple = ()
+        self._packs_at = 0.0
 
     async def close(self) -> None:
         await self.client.close()
@@ -82,7 +83,7 @@ class AnkerModbusDriver:
         plant = inp[0] if x1 else None
         off_grid = (plant == 2) if plant in (1, 2) else None
         return Actual(
-            online=True, off_grid=off_grid, protected=bool(off_grid), alarms=alarms, firmware=self._firmware, temp_c=self._temp, limits=self._limits,
+            online=True, off_grid=off_grid, protected=bool(off_grid), alarms=alarms, firmware=self._firmware, temp_c=self._temp, limits=self._limits, pack_v=self._pack_v,
             soc=float(inp[14]),
             power_w=float(-self._i32(inp, 10008)),  # register: negative = charging; we use + charging
             mode=mode, set_power_w=set_w,
@@ -108,6 +109,17 @@ class AnkerModbusDriver:
             self._temp = round((t - 0x10000 if t & 0x8000 else t) / 10, 1)
         except ModbusError:
             pass
+        if now >= self._packs_at:      # battery pack voltages every 5 minutes (pack n voltage = 10321 + 56 (n-1))
+            self._packs_at = now + 300
+            volts = []
+            for n in range(6):
+                try:
+                    v = (await self.client.read_input(10321 + 56 * n, 1))[0]
+                except ModbusError:
+                    break
+                if v:
+                    volts.append(v)
+            self._pack_v = tuple(volts)
         if self._firmware is None or now - getattr(self, "_fw_at", 0) > 6 * 3600:
             try:
                 self._firmware = to_text_low_first(await self.client.read_input(10112, 6)) or None
@@ -205,6 +217,41 @@ class AnkerModbusDriver:
                                 except ModbusError:
                                     pass
                     addr += n
+        return out
+
+    async def read_registers(self, addrs: list[int]) -> dict[str, int]:
+        """Read-only: the current value of the given registers (the holding copy, or the input copy if refused).
+        Nearby addresses are read together; a block the device refuses is retried register by register."""
+        out: dict[str, int] = {}
+        todo = sorted(set(int(a) for a in addrs))[:64]
+        runs: list[list[int]] = []
+        for a in todo:
+            if runs and a - runs[-1][-1] <= 3 and a - runs[-1][0] < 20:
+                runs[-1].append(a)
+            else:
+                runs.append([a])
+        silent = 0
+        for run in runs:
+            if silent >= 3:        # the device ignores these addresses: stop waiting on each one (the connection is shared)
+                break
+            left = list(run)
+            for read in (self.client.read_holding, self.client.read_input):
+                if not left:
+                    break
+                try:
+                    vals = await read(left[0], left[-1] - left[0] + 1)
+                    out.update({str(left[0] + i): v for i, v in enumerate(vals) if left[0] + i in left})
+                    left = []
+                except ModbusError as err:
+                    if err.code is None:       # no reply: try the other kind of register
+                        silent += 1
+                        continue
+                    for a in list(left):       # refused as a block: one by one
+                        try:
+                            out[str(a)] = (await read(a, 1))[0]
+                            left.remove(a)
+                        except ModbusError:
+                            pass
         return out
 
     async def keepalive(self) -> None:

@@ -80,6 +80,24 @@ async def main():
     r = await f.async_step_anker_find({"host": "127.0.0.1", "port": 1})
     print("failure   :", r["type"], r["errors"], "|", r["description_placeholders"]["error"][:60])
 
+    # ---- EcoFlow STREAM 5000 over local Modbus: host form -> probe -> details -> saved as a power-controlled battery
+    async def eco_probe(raw):
+        assert raw["connection"]["host"] == "10.0.0.213" and raw["connection"].get("reverse_sign") is True
+        return {"soc": 55.0, "power_w": 0, "capacity_wh": 5000, "max_charge_w": 3000, "max_discharge_w": 2300, "min_soc": 10,
+                "control": True, "model": "STREAM 5000", "serial": "ES21X", "firmware": "1.1.7.28", "mode": None}
+    real_probe, mgr.probe = mgr.probe, eco_probe
+    f = mkflow(mgr)
+    r = await f.async_step_add_battery({"name": "Cellar ES5000", "kind": "ecoflow_stream_5000_local"})
+    assert r["step_id"] == "ecoflow_local", r
+    r = await f.async_step_ecoflow_local(r["data_schema"]({"host": "10.0.0.213", "reverse_sign": True}))
+    assert r["step_id"] == "battery_details", r
+    r = await f.async_step_battery_details(r["data_schema"]({}))
+    assert r["type"] == "create_entry", r
+    sv = mgr.devices["cellar_es5000"]
+    assert sv["driver"] == "ecoflow_modbus" and sv["power_control"] is True and sv["max_discharge_w"] == 2300 and sv["connection"]["reverse_sign"] is True, sv
+    print("eco local :", sv["driver"], sv["connection"], sv["supported_modes"])
+    mgr.probe = real_probe
+
     # ---- EcoFlow
     f = mkflow(mgr)
     r = await f.async_step_add_battery({"name": "Shed", "kind": "ecoflow_stream_ultra_x"})

@@ -12,6 +12,22 @@ kind: "live"    a measurement that changes on its own (ignore it when looking fo
 """
 from __future__ import annotations
 
+def _pack(n: int) -> tuple[tuple[int, int, str, str, str], ...]:
+    b = 10284 + 56 * (n - 1)
+    return (
+        (b, 10, f"Pack {n} model name", "RO", "info"), (b + 10, 12, f"Pack {n} serial number", "RO", "info"),
+        (b + 22, 6, f"Pack {n} software version", "RO", "info"), (b + 28, 6, f"Pack {n} hardware version", "RO", "info"),
+        (b + 34, 2, f"Pack {n} rated capacity", "RO", "info"),
+        (b + 36, 1, f"Pack {n} status (1 charging, 2 discharging, 3 standby, 4 sleep, 5 correction, 6 heating)", "RO", "live"),
+        (b + 37, 1, f"Pack {n} voltage", "RO", "live"), (b + 38, 2, f"Pack {n} power", "RO", "live"),
+        (b + 40, 1, f"Pack {n} SOC", "RO", "live"), (b + 41, 1, f"Pack {n} SOH", "RO", "live"),
+        (b + 42, 2, f"Pack {n} total discharge energy", "RO", "live"),
+        (b + 44, 1, f"Pack {n} maximum temperature", "RO", "live"), (b + 45, 1, f"Pack {n} minimum temperature", "RO", "live"),
+    )
+
+
+_PACKS = tuple(r for n in range(1, 7) for r in _pack(n))
+
 # (first address, number of registers, name, access, kind)
 X1_REGISTERS: tuple[tuple[int, int, str, str, str], ...] = (
     (10000, 1, "Plant status (1 on-grid, 2 off-grid, 3 standby, 4 fault)", "RO", "info"),
@@ -69,22 +85,50 @@ X1_REGISTERS: tuple[tuple[int, int, str, str, str], ...] = (
     (10183, 2, "Total PV power", "RO", "live"),
     (10185, 2, "Daily PV generation", "RO", "live"),
     (10187, 2, "Total PV generation", "RO", "live"),
-    (10199, 3, "Grid voltage (Uab / phase A, B, C)", "RO", "live"),
+    (10199, 6, "Grid voltage (Uab / Ubc / Uca / phase A, B, C)", "RO", "live"),
     (10205, 3, "Grid current (phase A, B, C)", "RO", "live"),
     (10208, 2, "Grid active power", "RO", "live"),
     (10210, 2, "Grid reactive power", "RO", "live"),
     (10212, 1, "Grid power factor", "RO", "live"),
     (10213, 1, "Grid frequency", "RO", "live"),
-    (10249, 1, "Number of battery packs", "RO", "info"),
+    (10224, 6, "Backup (EPS) voltage (Uab / Ubc / Uca / phase A, B, C)", "RO", "live"),
+    (10230, 3, "Backup current (phase A, B, C)", "RO", "live"),
+    (10233, 2, "Backup active power", "RO", "live"),
+    (10235, 2, "Backup reactive power", "RO", "live"),
+    (10237, 1, "Backup power factor", "RO", "live"),
+    (10238, 1, "Backup frequency", "RO", "live"),
+    (10249, 1, "Battery status (1 charging, 2 discharging, 3 standby, 4 sleep, 5 SOC/SOH correction)", "RO", "live"),
     (10250, 2, "Battery rated capacity", "RO", "info"),
-    (10284, 10, "Pack 1 model name", "RO", "info"),
-    (10294, 12, "Pack 1 serial number", "RO", "info"),
-    (10306, 6, "Pack 1 software version", "RO", "info"),
-    (10320, 1, "Pack 1 status", "RO", "live"),
-    (10328, 2, "Pack 1 maximum / minimum temperature", "RO", "live"),
+    (10252, 1, "Battery voltage", "RO", "live"),
+    (10254, 2, "Battery pack power (+ discharging, - charging)", "RO", "live"),
+    (10256, 1, "Battery SOC", "RO", "live"),
+    (10257, 1, "Battery SOH", "RO", "live"),
+    (10258, 2, "Battery daily charge energy", "RO", "live"),
+    (10260, 2, "Battery daily discharge energy", "RO", "live"),
+    (10262, 2, "Battery total charge energy", "RO", "live"),
+    (10264, 2, "Battery total discharge energy", "RO", "live"),
+    (10266, 8, "Battery alarms 1-8", "RO", "alarm"),
+    *_PACKS,
     (10620, 10, "Meter model", "RO", "info"),
+    (10630, 1, "Meter type (1 single phase, 2 three phase)", "RO", "info"),
     (10631, 1, "Meter status (0 normal, 1 offline, 3 fault)", "RO", "info"),
-    (10632, 40, "Meter readings (voltage, current, power, energy)", "RO", "live"),
+    (10632, 3, "Meter voltage (phase A, B, C)", "RO", "live"),
+    (10635, 3, "Meter current (phase A, B, C)", "RO", "live"),
+    (10638, 2, "Meter phase A active power", "RO", "live"),
+    (10640, 2, "Meter phase B active power", "RO", "live"),
+    (10642, 2, "Meter phase C active power", "RO", "live"),
+    (10644, 2, "Meter total active power (+ from grid, - to grid)", "RO", "live"),
+    (10646, 2, "Meter total reactive power", "RO", "live"),
+    (10648, 1, "Meter power factor", "RO", "live"),
+    (10649, 1, "Meter grid frequency", "RO", "live"),
+    (10650, 2, "Meter phase A forward energy", "RO", "live"),
+    (10652, 2, "Meter phase B forward energy", "RO", "live"),
+    (10654, 2, "Meter phase C forward energy", "RO", "live"),
+    (10656, 2, "Meter total forward energy (bought from grid)", "RO", "live"),
+    (10658, 2, "Meter phase A reverse energy", "RO", "live"),
+    (10660, 2, "Meter phase B reverse energy", "RO", "live"),
+    (10662, 2, "Meter phase C reverse energy", "RO", "live"),
+    (10664, 2, "Meter total reverse energy (sold to grid)", "RO", "live"),
 )
 
 # Solarbank (E5000 Pro etc.): the same bank for the live readings, plus its own SOC limits. From Anker's official
@@ -129,11 +173,11 @@ X1_ALARMS: dict[int, str] = {
 
 
 def describe_all(x1: bool = True) -> dict[str, list[str]]:
-    """{register address: [name, access, kind]} for every register covered, for the panel."""
+    """{register address: [name, access, kind, first address, number of registers]} for every register covered."""
     out: dict[str, list[str]] = {}
     for addr, n, name, access, kind in (X1_REGISTERS if x1 else SOLARBANK_REGISTERS):
         for i in range(n):
-            out[str(addr + i)] = [name, access, kind]
+            out[str(addr + i)] = [name, access, kind, addr, n]
     return out
 
 

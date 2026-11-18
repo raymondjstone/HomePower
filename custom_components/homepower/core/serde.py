@@ -55,12 +55,15 @@ def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
         return {"host": host, "port": _int(raw.get("port"), "port", 1, 65535, 502),
                 "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, int(profile.get("default_unit", 1))),
                 "map": raw.get("map") or profile.get("preset_map"), "_parsed": parsed}
-    if driver == "anker_modbus":
+    if driver in ("anker_modbus", "ecoflow_modbus"):
         host = str(raw.get("host") or "").strip()
         if not host:
             raise ValidationError("the battery's IP address is required")
-        return {"host": host, "port": _int(raw.get("port"), "port", 1, 65535, 502),
-                "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, 1)}
+        out = {"host": host, "port": _int(raw.get("port"), "port", 1, 65535, 502),
+               "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, 1)}
+        if driver == "ecoflow_modbus" and raw.get("reverse_sign"):
+            out["reverse_sign"] = True
+        return out
     if driver == "ecoflow_stream":
         region = str(raw.get("region") or "eu")
         if region not in ("eu", "america", "global"):
@@ -93,7 +96,7 @@ def device_from_dict(d: dict) -> DeviceConfig:
     profile = PROFILE_BY_ID.get(kind) or PROFILE_BY_ID["custom"]
     driver = profile["driver"]
     spec = DRIVERS[driver]
-    modes = frozenset(Mode(m) for m in spec["modes"])
+    modes = frozenset(Mode(m) for m in (profile.get("modes") or spec["modes"]))
     connection = _connection(driver, d.get("connection"), profile) if driver != "entities" else {}
     if driver == "modbus_generic":
         parsed = connection.pop("_parsed")
@@ -103,12 +106,16 @@ def device_from_dict(d: dict) -> DeviceConfig:
             raise ValidationError("a controllable register map needs the battery's max charge and max discharge power")
         if isinstance(connection["map"], str):
             connection["map"] = json.loads(connection["map"])
+    if driver == "ecoflow_modbus" and not (_int(d.get("max_charge_w"), "max charge", 0, 50000, 0) and _int(d.get("max_discharge_w"), "max discharge", 0, 50000, 0)):
+        raise ValidationError("the battery's max charge and max discharge power are needed (it did not report them: enter them from its specification)")
     caps = Capabilities(
         capacity_wh=_int(d.get("capacity_wh"), "capacity", 100, 200000),
-        max_charge_w=_int(d.get("max_charge_w"), "max charge", 0, 50000),
+        max_charge_w=_int(d.get("max_charge_w"), "max charge", 0, 50000) or (
+            int(profile.get("default_charge_w", 0)) if driver == "ecoflow_stream" else 0),   # saved before Charge existed: size it
         max_discharge_w=_int(d.get("max_discharge_w"), "max discharge", 0, 50000),
         min_soc=_int(d.get("min_soc"), "minimum SOC", 0, 100, 0),
         supported_modes=modes,
+        power_control=bool(spec.get("power_control", True)),
     )
     extra: dict = {"driver": driver}
     if driver == "entities":
@@ -153,7 +160,7 @@ def device_to_dict(c: DeviceConfig) -> dict:
         "device_id": c.device_id, "name": c.name, "kind": c.kind, "priority": c.priority,
         "capacity_wh": c.caps.capacity_wh, "max_charge_w": c.caps.max_charge_w,
         "max_discharge_w": c.caps.max_discharge_w, "min_soc": c.caps.min_soc,
-        "supported_modes": sorted(m.value for m in c.caps.supported_modes),
+        "supported_modes": sorted(m.value for m in c.caps.supported_modes), "power_control": c.caps.power_control,
         "driver": e.get("driver", "entities"), "connection": e.get("connection", {}),
         "control_enabled": bool(e.get("control_enabled", True)),
         "entities": e.get("entities", {}), "mode_map": e.get("mode_map", {}),
@@ -271,3 +278,13 @@ def goal_to_dict(g: Goal) -> dict:
         "by": g.by.strftime("%H:%M"), "days": sorted(g.days), "use_forecast": g.use_forecast,
         "max_power_w": g.max_power_w, "enabled": g.enabled, "auto_target": g.auto_target, "source": g.source,
     }
+
+
+def current_abilities(saved: dict) -> dict:
+    """What a saved battery can do now. Modes and limits come from its profile, not from the copy saved when it was added,
+    so a new HomePower release shows new abilities without the battery being re-added. {} if it cannot be rebuilt."""
+    try:
+        cur = device_to_dict(device_from_dict(saved))
+    except Exception:  # noqa: BLE001 - an unreadable saved battery is shown as saved
+        return {}
+    return {k: cur[k] for k in ("supported_modes", "power_control", "max_charge_w")}

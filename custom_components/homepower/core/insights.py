@@ -4,7 +4,7 @@ the combined "home battery" figures, and saved scenes."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from statistics import median
 
 # ---------------------------------------------------------------- usual load by time of day
@@ -129,26 +129,34 @@ class DailyStats:
 class UsageHistory:
     """Grid import / export per half-hour of each day (kWh), kept for the tariff comparison."""
 
-    KEEP_DAYS = 90
+    KEEP_DAYS = 200
 
     def __init__(self, data: dict | None = None) -> None:
         self.days: dict[str, dict[str, list[float]]] = {}
         for k, v in (data or {}).items():
             if len(v.get("imp", [])) == 48 and len(v.get("exp", [])) == 48:
                 self.days[k] = {"imp": [float(x) for x in v["imp"]], "exp": [float(x) for x in v["exp"]]}
+                try:
+                    if len(v.get("load", [])) == 48 and len(v.get("pv", [])) == 48:      # days recorded before house load was kept have neither
+                        self.days[k]["load"], self.days[k]["pv"] = [float(x) for x in v["load"]], [float(x) for x in v["pv"]]
+                except (TypeError, ValueError):
+                    pass                                                               # damaged: that day simply has no load figures
 
-    def add(self, t: datetime, import_kwh: float, export_kwh: float) -> None:
-        if import_kwh <= 0 and export_kwh <= 0:
+    def add(self, t: datetime, import_kwh: float, export_kwh: float, load_kwh: float = 0.0, pv_kwh: float = 0.0) -> None:
+        if import_kwh <= 0 and export_kwh <= 0 and load_kwh <= 0 and pv_kwh <= 0:
             return
-        d = self.days.setdefault(t.strftime("%Y-%m-%d"), {"imp": [0.0] * 48, "exp": [0.0] * 48})
+        d = self.days.setdefault(t.strftime("%Y-%m-%d"), {"imp": [0.0] * 48, "exp": [0.0] * 48, "load": [0.0] * 48, "pv": [0.0] * 48})
         i = t.hour * 2 + t.minute // 30
         d["imp"][i] += import_kwh
         d["exp"][i] += export_kwh
+        if "load" in d:              # a day that began before the upgrade stays without load figures: they would be half a day
+            d["load"][i] += load_kwh
+            d["pv"][i] += pv_kwh
         for old in sorted(self.days)[:-self.KEEP_DAYS]:
             del self.days[old]
 
     def dump(self) -> dict:
-        return {k: {"imp": [round(x, 4) for x in v["imp"]], "exp": [round(x, 4) for x in v["exp"]]} for k, v in self.days.items()}
+        return {k: {n: [round(x, 4) for x in v[n]] for n in ("imp", "exp", "load", "pv") if n in v} for k, v in self.days.items()}
 
 
 # ---------------------------------------------------------------- weekly battery health
@@ -203,6 +211,85 @@ class Health:
 
     def dump(self) -> dict:
         return {"weeks": self.weeks, "base": self.base, "base_week": self.base_week}
+
+
+class GridEvents:
+    """When each battery reported the grid down: start, end, and the charge level at both."""
+
+    KEEP = 50
+
+    def __init__(self, data: list | None = None) -> None:
+        self.events: list[dict] = [dict(e) for e in (data or []) if isinstance(e, dict) and e.get("start") and e.get("did")][-self.KEEP:]
+
+    def observe(self, did: str, name: str, off_grid: bool | None, now: datetime, soc: float | None) -> None:
+        if off_grid is None:
+            return
+        open_ev = next((e for e in reversed(self.events) if e["did"] == did and e.get("end") is None), None)
+        if off_grid and open_ev is None:
+            self.events.append({"did": did, "name": name, "start": now.isoformat(timespec="seconds"), "end": None, "soc_start": soc, "soc_end": None})
+            del self.events[:-self.KEEP]
+        elif not off_grid and open_ev is not None:
+            open_ev["end"], open_ev["soc_end"] = now.isoformat(timespec="seconds"), soc
+
+    def forget(self, did: str, now: datetime) -> None:
+        """A battery was removed: an outage still open for it ends now, so the list does not show it down for ever."""
+        for e in self.events:
+            if e["did"] == did and e.get("end") is None:
+                e["end"] = now.isoformat(timespec="seconds")
+
+    def dump(self) -> list[dict]:
+        return self.events
+
+    def view(self, n: int = 20) -> list[dict]:
+        return list(reversed(self.events[-n:]))
+
+
+class HealthTrend:
+    """Daily highest battery temperature and how far apart the battery packs' voltages are (percent of their mean).
+    A pack drifting away from the others, or running hot, shows here well before it becomes a fault."""
+
+    KEEP_DAYS = 60
+    MIN_DAYS = 5          # days of history needed before the drift check speaks
+    ABS_SPREAD = 1.5      # percentage points: a spread under this is never worth a warning
+    HOT_C = 65.0          # an inverter's internal temperature runs well above the air around it
+
+    def __init__(self, data: dict | None = None) -> None:
+        self.days: dict[str, dict[str, dict]] = {}
+        for did, rows in (data or {}).items():
+            if isinstance(rows, dict):
+                self.days[did] = {d: {"tmax": v.get("tmax"), "spread": v.get("spread")} for d, v in rows.items() if isinstance(v, dict)}
+
+    def update(self, day: str, did: str, temp_c: float | None, pack_v: tuple) -> None:
+        rec = self.days.setdefault(did, {}).setdefault(day, {"tmax": None, "spread": None})
+        if temp_c is not None:
+            rec["tmax"] = temp_c if rec["tmax"] is None else max(rec["tmax"], temp_c)
+        if len(pack_v) >= 2 and (mean := sum(pack_v) / len(pack_v)) > 0:
+            sp = round(100 * (max(pack_v) - min(pack_v)) / mean, 2)
+            rec["spread"] = sp if rec["spread"] is None else max(rec["spread"], sp)
+        for old in sorted(self.days[did])[:-self.KEEP_DAYS]:
+            del self.days[did][old]
+
+    def series(self, did: str, n: int = 14) -> list[list]:
+        d = self.days.get(did, {})
+        return [[k, d[k]["tmax"], d[k]["spread"]] for k in sorted(d)[-n:]]
+
+    def warning(self, did: str) -> str | None:
+        d = self.days.get(did, {})
+        keys = sorted(d)
+        if not keys:
+            return None
+        last = d[keys[-1]]
+        if last["tmax"] is not None and last["tmax"] >= self.HOT_C:
+            return f"it reached {last['tmax']:g} °C today"
+        before = [d[k]["spread"] for k in keys[:-1] if d[k]["spread"] is not None]
+        if last["spread"] is not None and len(before) >= self.MIN_DAYS:
+            base = median(before)
+            if last["spread"] >= max(self.ABS_SPREAD, 2 * base):
+                return f"its battery packs have drifted apart ({last['spread']:g}% voltage spread, usually {base:g}%)"
+        return None
+
+    def dump(self) -> dict:
+        return self.days
 
 
 # ---------------------------------------------------------------- the combined "home battery"
@@ -311,3 +398,62 @@ class Diverter:
             return None
         self.on, self._since, self._want = want, None, None
         return "on" if want else "off"
+
+
+# ---------------------------------------------------------------- plan versus actual
+
+
+class PlanLog:
+    """What each battery was told to do against what it really did, averaged per half hour, for the last few days.
+
+    Power is signed like the readings: charging positive, discharging negative. A battery left to its own control has no
+    planned figure for that slot (None), only an actual one."""
+
+    KEEP_DAYS = 8
+
+    def __init__(self, data: dict | None = None) -> None:
+        self.days: dict[str, dict[str, dict[str, list[float]]]] = {}
+        for day, devs in (data.items() if isinstance(data, dict) else ()):
+            for did, r in (devs.items() if isinstance(devs, dict) else ()):
+                try:
+                    if all(len(r[k]) == 48 for k in ("ps", "pn", "as", "an")):
+                        self.days.setdefault(day, {})[did] = {k: [float(x) for x in r[k]] for k in ("ps", "pn", "as", "an")}
+                except (KeyError, TypeError, ValueError):
+                    continue                                    # a damaged day is dropped, never fatal
+
+    def add(self, t: datetime, did: str, planned_w: float | None, actual_w: float | None) -> None:
+        if planned_w is None and actual_w is None:
+            return
+        r = self.days.setdefault(t.strftime("%Y-%m-%d"), {}).setdefault(did, {k: [0.0] * 48 for k in ("ps", "pn", "as", "an")})
+        i = t.hour * 2 + t.minute // 30
+        if planned_w is not None:
+            r["ps"][i] += planned_w
+            r["pn"][i] += 1
+        if actual_w is not None:
+            r["as"][i] += actual_w
+            r["an"][i] += 1
+        for old in sorted(self.days)[:-self.KEEP_DAYS]:
+            del self.days[old]
+
+    def view(self, did: str, now: datetime, hours: int = 24) -> dict:
+        """The last `hours` hours as half-hour rows [start iso, planned W, actual W] (None = no reading), plus how closely
+        the battery followed the plan over the slots that had both."""
+        end = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0) + timedelta(minutes=30)
+        end_utc, local = end.astimezone(timezone.utc), now.tzinfo
+        rows, num, den = [], 0.0, 0.0
+        for k in range(hours * 2):
+            # step in real time and only then look at the local clock, so rows stay evenly spaced when the clocks change
+            start = (end_utc - timedelta(minutes=30 * (hours * 2 - k))).astimezone(local)
+            r = self.days.get(start.strftime("%Y-%m-%d"), {}).get(did)
+            i = start.hour * 2 + start.minute // 30
+            p = r["ps"][i] / r["pn"][i] if r and r["pn"][i] else None
+            a = r["as"][i] / r["an"][i] if r and r["an"][i] else None
+            rows.append([start.isoformat(), None if p is None else round(p), None if a is None else round(a)])
+            if p is not None and a is not None:
+                num += abs(p - a)
+                den += max(abs(p), abs(a), 1.0)
+        both = sum(1 for _, p, a in rows if p is not None and a is not None)
+        return {"rows": rows, "match_pct": round(100 * (1 - num / den)) if both >= 4 and den > 0 else None}
+
+    def dump(self) -> dict:
+        return {d: {did: {k: [round(x, 1) for x in v] for k, v in r.items()} for did, r in devs.items()} for d, devs in self.days.items()}

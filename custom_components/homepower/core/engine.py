@@ -19,6 +19,8 @@ from .insights import auto_target_soc
 from .grid import apply_load_rules, backup_desired, export_guard, peak_shave, split_power
 from .limits import apply_totals, charge_ceiling, soc_guard
 from .models import Actual, Capabilities, Desired, DeviceConfig, Mode
+from .report import hold_for_dearer
+from .weather import boost_points
 from .planner import Alloc, Need, adjust_target_for_forecast, plan_charge, power_now
 from .rates import RateTable
 from .reconcile import clamp
@@ -48,6 +50,7 @@ class Settings:
     peak_shaving: bool = False
     backup_pct: int = 50
     save_for_peak: bool = False   # during cheap hours, hold batteries instead of letting them discharge
+    hold_for_dearer: bool = False   # hold stored energy when a clearly dearer price is coming within hours
     forecast_share: float = 0.5
 
 
@@ -63,6 +66,7 @@ class World:
     grid_fresh: bool = True      # False = the grid reading is too old to steer charging by
     condition_ok: Callable[[str], bool] | None = None
     backup_active: bool = False
+    reserve_floor_pct: int = 0                     # never discharge below this (set ahead of a poor solar day)
     away: bool = False
     load_blocks: set[str] = field(default_factory=set)
     rates: RateTable | None = None
@@ -71,6 +75,11 @@ class World:
     cheap_now: bool | None = None                  # is this a cheap-rate period? None = unknown / flat tariff
     usage_wh: Callable[[datetime, float], float | None] | None = None   # learned household use: (from, hours) -> Wh
     solar_ceiling: dict[str, int] = field(default_factory=dict)   # battery -> highest charge that leaves room for the coming solar
+    efficiency: dict[str, float] = field(default_factory=dict)    # battery -> charging efficiency (measured, else the default is used)
+    cold_extra_wh: float = 0.0                     # extra energy expected tomorrow because it is colder than lately
+    cold_note: str = ""                             # the temperatures behind that, for the plan
+    price_now: float | None = None                 # current import price (main units)
+    price_later_max: float | None = None           # the dearest import price in the next few hours
 
 
 @dataclass
@@ -83,7 +92,8 @@ class Result:
 
 
 def _floor(caps: Capabilities, w: World) -> int:
-    return max(caps.min_soc, w.settings.backup_pct) if w.backup_active else caps.min_soc
+    floor = max(caps.min_soc, w.reserve_floor_pct)
+    return max(floor, w.settings.backup_pct) if w.backup_active else floor
 
 
 def _zero_import(w: World, dev: DevIn) -> Desired:
@@ -136,7 +146,7 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         if not devs:
             if any(g.covers(d.config.device_id) for d in w.devices):
                 res.notes.append(f"goal '{g.id}': none of its batteries can charge right now (offline, or charge control is not "
-                                 "supported: EcoFlow STREAM only offers Auto and Hold)")
+                                 "supported: check the battery's control settings)")
             continue
         target = g.target_soc
         if g.auto_target:
@@ -144,6 +154,13 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         if g.use_forecast:
             target = adjust_target_for_forecast(
                 target, w.forecast_kwh, sum(d.config.caps.capacity_wh for d in devs) / 1000, w.settings.forecast_share)
+        if w.cold_extra_wh > 0:
+            pts = boost_points(w.cold_extra_wh, sum(d.config.caps.capacity_wh for d in devs))
+            top = g.target_soc if g.auto_target else 100          # an auto target stays within the target the user set
+            if pts and min(top, target + pts) > target:
+                target = min(top, target + pts)
+                res.notes.append(f"goal '{g.id}': target raised to {target}% for the cold ({w.cold_note}: about {w.cold_extra_wh / 1000:.1f} kWh more use)")
+
         def tgt(d: DevIn, target: int = target) -> int:
             # grid charging stops short of the battery's room-for-solar ceiling; solar-only charging may fill it
             c = w.solar_ceiling.get(d.config.device_id)
@@ -154,8 +171,8 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
                 res.notes.append(f"goal '{g.id}': {d.config.name} charges to {tgt(d)}% from the grid, leaving room for the solar forecast")
         allocs: list[Alloc] = []
         if g.source != "solar" and w.rates is not None:
-            needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d))
-                     for d in devs]
+            needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d),
+                          not d.config.caps.power_control, w.efficiency.get(d.config.device_id)) for d in devs]
             slots = w.rates.slots_between(w.now, deadline)
             if not slots:
                 res.notes.append(f"goal '{g.id}': no price data before {deadline:%H:%M}")
@@ -173,7 +190,8 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
             p = power_now(allocs, did, w.now)
             if p > 0 and (did not in out or p > (out[did][0].power_w or 0)):
                 out[did] = (Desired(Mode.CHARGE, p, target_soc=tgt(d)), f"goal '{g.id}'", "both" if g.source == "both" else "grid")
-            elif (p <= 0 and g.source != "grid" and not w.export_better and did not in out and d.actual.soc < target):
+            elif (p <= 0 and g.source != "grid" and not w.export_better and did not in out and d.actual.soc < target
+                  and d.config.caps.power_control):
                 # no grid slot right now: take whatever solar would otherwise be exported (and nothing from the grid)
                 out[did] = (Desired(Mode.CHARGE, g.max_power_w, target_soc=target), f"goal '{g.id}'", "solar")
     return out
@@ -202,8 +220,10 @@ def compute(w: World) -> Result:
             want, reason = _zero_import(w, d), "zero-import"
         if want is None:
             continue
-        if (did in entries and want.mode is Mode.CHARGE and entries[did].source == "solar" and Mode.CHARGE not in caps.supported_modes
-                and Mode.HOLD in caps.supported_modes):
+        if want.mode is Mode.CHARGE and reason == "zero-import" and not caps.power_control:
+            want = Desired(Mode.HOLD)   # cannot follow the meter without a power setpoint, and must not charge from the grid
+        if (did in entries and want.mode is Mode.CHARGE and entries[did].source == "solar"
+                and (Mode.CHARGE not in caps.supported_modes or not caps.power_control) and Mode.HOLD in caps.supported_modes):
             if d.has_solar is False:
                 res.notes.append(f"{did}: solar-only charging does nothing for a battery without panels that cannot be told to charge; left alone")
                 continue
@@ -238,7 +258,8 @@ def compute(w: World) -> Result:
     # ---- 2b. where the charging energy may come from: the grid (fixed power), solar surplus only, or both
     src = {did: e.source for did, e in entries.items()}
     src.update({did: s for did, s in goal_src.items() if did not in entries})
-    trackers = [did for did, s in src.items() if did in res.wants and res.wants[did].mode is Mode.CHARGE and s in ("solar", "both")]
+    trackers = [did for did, s in src.items() if did in res.wants and res.wants[did].mode is Mode.CHARGE and s in ("solar", "both")
+                and by_id[did].config.caps.power_control]
     if trackers:
         fixed = sum(max(0.0, o.actual.power_w or 0.0) for o in w.devices
                     if o.actual.online and o.config.device_id not in trackers)   # deliberate charging elsewhere: not surplus
@@ -317,7 +338,7 @@ def compute(w: World) -> Result:
             chargers = []
             for d in free:
                 c = d.config.caps
-                if (d.config.device_id not in res.wants and Mode.CHARGE in c.supported_modes and c.max_charge_w > 0
+                if (d.config.device_id not in res.wants and Mode.CHARGE in c.supported_modes and c.max_charge_w > 0 and c.power_control
                         and d.actual.soc < 98 and "charge" not in w.load_blocks):
                     chargers.append((d.config.device_id, max(0.0, d.actual.power_w or 0.0), c.max_charge_w,
                                      max(c.capacity_wh * (100 - d.actual.soc) / 100, 1.0)))
@@ -352,6 +373,10 @@ def compute(w: World) -> Result:
             res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "kept in reserve while other batteries have charge"
         elif S.save_for_peak and w.cheap_now:
             res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "saving charge for peak-rate hours"
+        elif (S.hold_for_dearer and Mode.HOLD in caps.supported_modes and hold_for_dearer(w.price_now, w.price_later_max)
+              and (d.actual.pv_w or 0) < 100 and d.actual.soc is not None and d.actual.soc > caps.min_soc + 5):
+            # not while solar is charging it (Hold would stop that), and only when a clearly dearer price is coming
+            res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "saving charge for dearer hours later"
 
     # ---- 5. hand back batteries we forced earlier and nothing wants any more
     for d in w.devices:
