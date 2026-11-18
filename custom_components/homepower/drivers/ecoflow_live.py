@@ -49,6 +49,7 @@ class EcoFlowLive:
         self.api, self.loop = api, loop
         self._devs: dict[str, Callable[[dict], None]] = {}
         self._client = None
+        self._account = ""
         self._gen = 0                   # bumped by stop(): a connection that finishes after a stop is closed at once, not kept
         self._lock = threading.Lock()
         self._task: asyncio.Task | None = None
@@ -59,8 +60,16 @@ class EcoFlowLive:
         self.enabled = False            # opt-in: a second connection on the same account could disturb other EcoFlow integrations
 
     def register(self, sn: str, callback: Callable[[dict], None]) -> None:
+        new = sn not in self._devs
         self._devs[sn] = callback
         self.ensure()
+        if new and self._client is not None and self.connected:      # a battery added while the connection is up: subscribe now, not at the next reconnect
+            try:
+                acct = self._account
+                if acct:
+                    self._client.subscribe([(f"/open/{acct}/{sn}/quota", 1), (f"/open/{acct}/{sn}/status", 1)])
+            except Exception:  # noqa: BLE001 - it is subscribed at the next reconnect anyway
+                _LOGGER.debug("could not subscribe %s now", sn, exc_info=True)
 
     def unregister(self, sn: str, callback: Callable[[dict], None] | None = None) -> None:
         if callback is not None and self._devs.get(sn) != callback:
@@ -92,6 +101,7 @@ class EcoFlowLive:
 
     def _connect(self, mqtt, cert: dict, gen: int) -> None:
         account = str(cert["certificateAccount"])
+        self._account = account
         client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=f"HomePower-{account}-{int(time.time()) % 100000}")
         client.username_pw_set(account, str(cert["certificatePassword"]))
         client.tls_set()

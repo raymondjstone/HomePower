@@ -219,7 +219,8 @@
       }
     },
     "error": {
-      "cannot_connect": "Could not read the device. {error}"
+      "cannot_connect": "Could not read the device. {error}",
+      "remove_failed": "{error}"
     },
     "abort": {
       "not_loaded": "HomePower is not loaded yet; restart Home Assistant or check the log.",

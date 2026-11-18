@@ -1007,6 +1007,8 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             st = self._snap.devices.get(did)
             if st is None:        # removed while this cycle was reading
                 continue
+            if next((x for x in self.adapters if x.config.device_id == did), None) is not a:
+                continue          # replaced while this cycle was reading (settings saved, control switched off): its next cycle decides with the new settings
             st.actual = actuals[did]
             st.desired = res.wants.get(did)
             st.reason = res.reasons.get(did, "")

@@ -57,7 +57,7 @@ class HomePowerCard extends HTMLElement {
           <span>${esc(b.name)}</span><div class="bar"><i style="width:${b.soc == null ? 0 : Math.max(0, Math.min(100, b.soc))}%"></i></div>
           <span>${b.soc == null ? "–" : Math.round(b.soc) + "%"}${b.power_w == null ? "" : " · " + fmtW(b.power_w)}</span></div>`).join("")}</div>`;
       body = `<div class="top">${this._ring(a.soc)}<div class="nums">
-          ${n(`${(a.stored_kwh ?? 0).toFixed(1)} kWh`, `stored of ${(a.capacity_kwh ?? 0).toFixed(1)}`)}
+          ${a.stored_kwh == null ? n("–", "stored (no battery online)") : n(`${a.stored_kwh.toFixed(1)} kWh`, `stored of ${(a.capacity_kwh ?? 0).toFixed(1)}`)}
           ${n(`${kind} ${fmtW(Math.abs(flow))}`, "now")}
           ${a.runtime_h != null ? n(hours(a.runtime_h), "will last") : ""}
           ${a.full_in_h != null ? n(hours(a.full_in_h), "until full") : ""}</div></div>${bats}`;

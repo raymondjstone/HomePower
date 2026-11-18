@@ -52,3 +52,9 @@ def test_network_scan_never_covers_a_public_address():
     hosts = subnet_hosts("192.168.1.10", 24)
     assert hosts and "192.168.1.10" not in hosts and all(h.startswith("192.168.1.") for h in hosts)
     assert subnet_hosts("10.1.2.3", 8)[0].startswith("10.1.2.")      # never wider than a /24
+
+
+def test_currency_symbol_is_short_and_markup_free():
+    assert clean({"currency": "£"})["currency"] == "£"
+    got = clean({"currency": '<img src=x onerror="a">'})["currency"]
+    assert len(got) <= 8 and not any(c in got for c in "<>&\"'`")

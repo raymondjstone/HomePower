@@ -95,6 +95,8 @@ def clean(raw: dict) -> dict:
                 out[k] = bool(v)
             elif k in STR_KEYS:
                 out[k] = str(v or "").strip()
+                if k == "currency":
+                    out[k] = "".join(c for c in out[k] if c not in "<>&\"'`")[:8]       # a short symbol: it is shown in the panel
                 if k == "compare_tariffs":
                     from .tariffs import parse_tariffs
                     try:

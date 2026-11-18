@@ -21,7 +21,7 @@ export default (U) => {
   _priceChart() {
     const pv = this._preview, pr = (pv && pv.prices) || [];
     if (pr.length < 2) return "";
-    const cur = this.live.currency || "£", W = 800, H = 200;
+    const cur = esc(this.live.currency || "£"), W = 800, H = 200;
     const t0 = Date.parse(pr[0].start), t1 = Date.parse(pr[pr.length - 1].end), span = Math.max(1, t1 - t0);
     const nt = this._niceTicks(Math.min(0, ...pr.map((x) => x.price)), Math.max(...pr.map((x) => x.price), 0.01), 4);
     const X = (t) => ((t - t0) / span) * W, Y = (v) => H - ((v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo)) * H;

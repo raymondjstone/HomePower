@@ -68,6 +68,7 @@ class HomePowerPanel extends HTMLElement {
       this.data = await this._hass.callWS({ type: "homepower/get" });
       this.live = this.data.live || this.live;
       this._loaded = true;
+      this._loadError = null;                       // a later success clears an earlier failure
     } catch (e) {
       this._loadError = e.message || String(e);
     }
@@ -126,7 +127,14 @@ class HomePowerPanel extends HTMLElement {
   }
 
   _tick(force) {
-    if (this._modal || !this._loaded) return;
+    if (!this._loaded) {                            // the first load failed (Home Assistant still starting, a reload): keep trying
+      if (!this._retrying && Date.now() - (this._lastTry || 0) > 8000) {
+        this._retrying = true; this._lastTry = Date.now();
+        this._reload().then(() => this._subscribeIfNeeded?.()).finally(() => { this._retrying = false; });
+      }
+      return;
+    }
+    if (this._modal) return;
     const now = Date.now();
     const busy = this.tab === "diagnostics" && !!this.shadowRoot.querySelector('[id^="reg-t-"]');   // a register list is open: a refresh would wipe its filter
     if (!force && now - this._lastRender < 1900) return;
@@ -269,7 +277,7 @@ class HomePowerPanel extends HTMLElement {
       }
       case "del-schedule":
         if (!confirm(`Delete schedule "${id}"?`)) return;
-        await this._call({ type: "homepower/schedule/delete", schedule_id: id });
+        if (!(await this._call({ type: "homepower/schedule/delete", schedule_id: id }))) return;      // an error stays on screen (the dialog stays open)
         await this._reload(); return this._closeModal();
       case "add-battery": {
         this._editingId = null;                    // a cancelled edit must not leak its id into a new battery's test
@@ -363,7 +371,7 @@ class HomePowerPanel extends HTMLElement {
       }
       case "del-battery":
         if (!confirm("Remove this battery from HomePower? (The device itself is untouched.)")) return;
-        await this._call({ type: "homepower/device/delete", device_id: id });
+        if (!(await this._call({ type: "homepower/device/delete", device_id: id }))) return;          // e.g. "could not be handed back": say so, do not close
         await this._reload(); return this._closeModal();
       case "save-settings": {
         const msg = this.shadowRoot.getElementById("g-msg");
@@ -398,7 +406,7 @@ class HomePowerPanel extends HTMLElement {
       }
       case "del-goal":
         if (!confirm(`Delete goal "${id}"?`)) return;
-        await this._call({ type: "homepower/goal/delete", goal_id: id });
+        if (!(await this._call({ type: "homepower/goal/delete", goal_id: id }))) return;
         await this._reload(); this._closeModal(); return this._tabLoad();
       case "range": this._range = t.dataset.r; return this._tabLoad();
       case "setup-test": this.tab = "diagnostics"; this._render(); await this._tabLoad(); return this._runTest(id);
@@ -425,7 +433,7 @@ class HomePowerPanel extends HTMLElement {
       }
       case "del-scene":
         if (!confirm(`Delete scene "${id}"?`)) return;
-        await this._call({ type: "homepower/scene/delete", name: id });
+        if (!(await this._call({ type: "homepower/scene/delete", name: id }))) return;
         await this._reload(); return this._closeModal();
       case "do-export": {
         const keys = this.shadowRoot.getElementById("bk-secrets").checked, msg = this.shadowRoot.getElementById("bk-msg");

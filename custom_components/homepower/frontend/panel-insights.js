@@ -105,7 +105,7 @@ export default (U) => {
   },
 
   _whatifCard() {
-    const w = this._whatif || {}, cur = this.live.currency || "£", v = (k, d) => (w.in ? w.in[k] : d);
+    const w = this._whatif || {}, cur = esc(this.live.currency || "£"), v = (k, d) => (w.in ? w.in[k] : d);
     const box = (id, label, val) => `<div class="f"><label>${label}</label><input type="number" id="wi-${id}" min="0" max="100" value="${val}"></div>`;
     let res = "";
     if (w.error) res = `<div class="err">${esc(w.error)}</div>`;
@@ -191,7 +191,7 @@ export default (U) => {
   },
 
   _insightsView() {
-    const L = this.live, E = L.energy || {}, cur = L.currency || "£", ids = this.data.entity_ids || {}, H = this._hist2 || {};
+    const L = this.live, E = L.energy || {}, cur = esc(L.currency || "£"), ids = this.data.entity_ids || {}, H = this._hist2 || {};
     const pts = (eid) => (H[eid] || []).filter((r) => r.mean != null).map((r) => ({ t: typeof r.start === "number" ? r.start : Date.parse(r.start), v: r.mean }));
     const powerSeries = [];
     if (ids.battery_power) powerSeries.push({ name: "Battery power (+ charging)", color: SERIES[0], pts: pts(ids.battery_power) });
