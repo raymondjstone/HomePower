@@ -17,18 +17,89 @@ export default (U) => {
     return head + `<div class="grid g-cards">${cards}</div>`;
   },
 
-  // A read-only sheet of everything known about one battery: HomePower's settings, the live readings, what the battery itself
-  // reports (Anker's named registers, EcoFlow's values) and the Home Assistant device and entities that go with it.
-  // Opened from the cog on a battery card.
+  // The sheet for one battery: HomePower's settings, the live readings, the settings the battery lets you change (checked and sent by
+  // the backend), what the battery itself reports (Anker's named registers, EcoFlow's values) and the Home Assistant device and its
+  // controls. Opened from the cog on a battery card.
   async _batteryDetails(id) {
     const d = this.data.devices.find((x) => x.device_id === id);
     if (!d) return;
+    this._settingMsg = {}; this._haMsg = {};
+    this._detail = { d, dg: null, det: null };
     this._openModal(this._detailsHtml(d, null, null));
     const [dg, det] = await Promise.all([
       this._hass.callWS({ type: "homepower/diagnostics" }).then((r) => (r.devices || {})[id] || false).catch(() => false),
       this._hass.callWS({ type: "homepower/device/details", device_id: id }).catch((e) => ({ error: e.message || String(e) })),
     ]);
-    if (this._modal && this.shadowRoot.getElementById("bd-" + id)) this.shadowRoot.getElementById("modal").innerHTML = this._detailsHtml(d, dg, det);
+    this._detail = { d, dg, det };
+    this._paintDetails();
+  },
+
+  // Draws the sheet again from what it already has, keeping the scroll position and which groups were open.
+  _paintDetails() {
+    const x = this._detail, box = this.shadowRoot.getElementById("modal");
+    if (!x || !this._modal || !box || !this.shadowRoot.getElementById("bd-" + x.d.device_id)) return;
+    const open = new Map([...box.querySelectorAll("details")].map((e) => [(e.querySelector("summary") || {}).textContent, e.open]));
+    const top = (box.querySelector(".modal") || {}).scrollTop || 0;
+    box.innerHTML = this._detailsHtml(x.d, x.dg, x.det);
+    for (const e of box.querySelectorAll("details")) { const k = (e.querySelector("summary") || {}).textContent; if (open.has(k)) e.open = open.get(k); }
+    const m = box.querySelector(".modal"); if (m) m.scrollTop = top;
+  },
+
+  // The battery's own settings, as editors: a number, a choice or a switch each, with the vendor's limits; one that cannot be changed
+  // right now shows why.
+  _settingsHtml(d, det) {
+    const list = (det && det.settings) || [];
+    if (!list.length) return "";
+    const id = esc(d.device_id), flash = this._settingMsg || {};
+    const shown = (x) => (x.kind === "select" ? ((x.options.find((o) => o.value === x.value) || {}).label ?? x.value) : x.kind === "switch" ? (x.value ? "On" : "Off") : `${x.value}${x.unit ? " " + x.unit : ""}`);
+    const row = (x) => {
+      const k = esc(x.key), msg = flash[x.key] ? `<div class="${flash[x.key].err ? "err" : "sub"}" style="font-size:12px">${esc(flash[x.key].text)}</div>` : "";
+      let ctl;
+      if (x.kind === "info") ctl = esc(String(x.value));
+      else if (x.locked) ctl = `${esc(shown(x))} <span class="chip warn">locked</span><div class="sub" style="font-size:12px;color:var(--secondary-text-color)">${esc(x.locked)}</div>`;
+      else if (x.kind === "number") ctl = `<input type="number" id="bs-${k}" value="${esc(x.value)}" min="${x.min}" max="${x.max}" step="${x.step || 1}" style="width:96px"> ${esc(x.unit)} <button class="btn sm pri" data-act="setting-set" data-id="${id}" data-key="${k}">Set</button> <span class="sub" style="font-size:12px;color:var(--secondary-text-color)">${x.min} to ${x.max}</span>`;
+      else if (x.kind === "select") ctl = `<select id="bs-${k}">${x.options.map((o) => `<option value="${esc(o.value)}" ${o.value === x.value ? "selected" : ""}>${esc(o.label)}</option>`).join("")}</select> <button class="btn sm pri" data-act="setting-set" data-id="${id}" data-key="${k}">Set</button>`;
+      else ctl = `${x.value ? "On" : "Off"} <button class="btn sm" data-act="setting-set" data-id="${id}" data-key="${k}" data-value="${x.value ? 0 : 1}">Turn ${x.value ? "off" : "on"}</button>`;
+      return `<tr><th>${esc(x.label)}</th><td>${ctl}${x.hint && !x.locked && x.kind !== "info" ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color)">${esc(x.hint)}</div>` : ""}${msg}</td></tr>`;
+    };
+    return ["Controls", "Configuration"].map((g) => { const l = list.filter((x) => x.group === g); return l.length ? `<div style="margin-top:6px;font-weight:600">${g}</div><div><table class="tbl">${l.map(row).join("")}</table></div>` : ""; }).join("");
+  },
+
+  // Sends one change to the battery (the backend checks it against the vendor's own limits and rules first).
+  async _applySetting(id, key, given) {
+    const x = this._detail, s = ((x && x.det && x.det.settings) || []).find((q) => q.key === key);
+    if (!s) return;
+    const msg = (this._settingMsg ||= {});
+    let value = given !== undefined ? given : (this.shadowRoot.getElementById("bs-" + key) || {}).value;
+    if (s.kind === "switch") value = String(value) === "1";
+    else { value = Number(value); if (!Number.isFinite(value)) { msg[key] = { err: true, text: "Enter a number." }; return this._paintDetails(); } }
+    const what = s.kind === "select" ? ((s.options.find((o) => o.value === value) || {}).label ?? value) : s.kind === "switch" ? (value ? "on" : "off") : `${value}${s.unit ? " " + s.unit : ""}`;
+    if (!confirm(`Change "${s.label}" on ${x.d.name} to ${what}?
+This is sent to the battery now.`)) return;
+    msg[key] = { text: "Sending…" }; this._paintDetails();
+    try {
+      const r = await this._hass.callWS({ type: "homepower/device/setting", device_id: id, key, value });
+      if ((r.settings || []).length) x.det.settings = x.det.settings.map((o) => r.settings.find((n) => n.key === o.key) || o);      // the new values, keeping any control the reply did not mention
+      msg[key] = { text: r.pending ? "Sent. EcoFlow's cloud applies it within a few seconds: press Refresh to see it." : "Saved. The battery now reports this value." };
+    } catch (e) { msg[key] = { err: true, text: e.message || String(e) }; }
+    this._paintDetails();
+  },
+
+  // A control of the matching Home Assistant device, changed the way Home Assistant itself does it (its own services).
+  async _haSet(eid, op) {
+    const dom = eid.split(".")[0], el = this.shadowRoot.getElementById("ha-" + eid), msg = (this._haMsg ||= {});
+    let service, data = { entity_id: eid };
+    if (op === "number") { service = "set_value"; data.value = Number(el && el.value); if (!el || el.value === "" || !Number.isFinite(data.value)) { msg[eid] = { err: true, text: "Enter a number." }; return this._paintDetails(); } }
+    else if (op === "text") { service = "set_value"; data.value = el ? el.value : ""; }
+    else if (op === "select") { service = "select_option"; data.option = el ? el.value : ""; }
+    else if (op === "on" || op === "off") service = op === "on" ? "turn_on" : "turn_off";
+    else if (op === "press") service = "press";
+    else return;
+    msg[eid] = { text: "Sending…" }; this._paintDetails();
+    try { await this._hass.callService(dom, service, data); msg[eid] = { text: "Sent." }; }
+    catch (e) { msg[eid] = { err: true, text: e.message || String(e) }; }
+    this._paintDetails();
+    setTimeout(() => this._paintDetails(), 1500);      // Home Assistant has the new state by then
   },
 
   // The Home Assistant device(s) that belong to this battery: the one its mapped entities sit on, else one whose serial
@@ -63,7 +134,15 @@ export default (U) => {
       if (a.unit_of_measurement && !["unavailable", "unknown"].includes(v)) v += " " + a.unit_of_measurement;
       const dom = e.entity_id.split(".")[0];
       const extra = [dom === "number" && a.min != null ? `${a.min} to ${a.max}${a.step ? ", step " + a.step : ""}` : "", dom === "select" && (a.options || []).length ? `options: ${a.options.join(", ")}` : ""].filter(Boolean).join(" · ");
-      return `<tr><th title="${esc(e.entity_id)}">${esc(label(e))}</th><td>${esc(v)}${extra ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color)">${esc(extra)}</div>` : ""}</td></tr>`;
+      const unavailable = !s || ["unavailable", "unknown"].includes(s.state), id = esc(e.entity_id), m = (this._haMsg || {})[e.entity_id];
+      let edit = "";
+      if (!unavailable && ["number", "input_number"].includes(dom)) edit = `<input type="number" id="ha-${id}" value="${esc(s.state)}" ${a.min != null ? `min="${a.min}"` : ""} ${a.max != null ? `max="${a.max}"` : ""} step="${a.step || "any"}" style="width:96px"> <button class="btn sm pri" data-act="ha-set" data-op="number" data-eid="${id}">Set</button>`;
+      else if (!unavailable && ["select", "input_select"].includes(dom)) edit = `<select id="ha-${id}">${(a.options || []).map((o) => `<option ${o === s.state ? "selected" : ""}>${esc(o)}</option>`).join("")}</select> <button class="btn sm pri" data-act="ha-set" data-op="select" data-eid="${id}">Set</button>`;
+      else if (!unavailable && ["switch", "input_boolean"].includes(dom)) edit = `<button class="btn sm" data-act="ha-set" data-op="${s.state === "on" ? "off" : "on"}" data-eid="${id}">Turn ${s.state === "on" ? "off" : "on"}</button>`;
+      else if (!unavailable && dom === "button") edit = `<button class="btn sm" data-act="ha-set" data-op="press" data-eid="${id}">Press</button>`;
+      else if (!unavailable && ["text", "input_text"].includes(dom)) edit = `<input type="text" id="ha-${id}" value="${esc(s.state)}" style="width:160px"> <button class="btn sm pri" data-act="ha-set" data-op="text" data-eid="${id}">Set</button>`;
+      const shownValue = edit && ["number", "input_number", "select", "input_select", "text", "input_text"].includes(dom) ? "" : esc(v);
+      return `<tr><th title="${esc(e.entity_id)}">${esc(label(e))}</th><td>${shownValue}${shownValue && edit ? " " : ""}${edit}${a.unit_of_measurement && edit && ["number", "input_number"].includes(dom) ? " " + esc(a.unit_of_measurement) : ""}${extra ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color)">${esc(extra)}</div>` : ""}${m ? `<div class="${m.err ? "err" : "sub"}" style="font-size:12px">${esc(m.text)}</div>` : ""}</td></tr>`;
     };
     const ctl = en.filter((e) => control.has(e.entity_id.split(".")[0]) || ["config", "1"].includes(cat(e)));
     const diag = en.filter((e) => !ctl.includes(e) && ["diagnostic", "2"].includes(cat(e)));
@@ -81,7 +160,7 @@ export default (U) => {
     const rows = (list) => `<table class="tbl">${list.filter(([, v]) => v != null && v !== "").map(([k, v]) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`).join("")}</table>`;
     const t = (v) => (v == null ? null : esc(String(v)));
     const w = (v) => (v == null ? null : fmtW(v));
-    const p = r.power, A = (det && det.actual) || {};
+    const p = r.power, A = (det && det.actual) || {}, settingsHtml = this._settingsHtml(d, det);
     const regv = (re) => { const x = ((det && det.registers) || []).find((q) => re.test(q.name)); return x ? x.value : null; };
     const info = [regv(/^model( name)?$/i), (regv(/^software version$/i) || lv.firmware) ? "Software " + (regv(/^software version$/i) || lv.firmware) : null, det && det.serial ? "Serial " + det.serial : null].filter(Boolean);
     const settings = rows([
@@ -172,6 +251,7 @@ export default (U) => {
       <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px">${this._ring(r.soc, 80)}<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">${esc(prof.label)}${info.length ? `<br>${info.map(esc).join(" · ")}` : ""}</div></div>
       <h3>Readings now</h3>${live}
       <h3>HomePower's settings for it</h3>${settings}
+      ${settingsHtml ? `<h3>Settings you can change</h3>${settingsHtml}` : ""}${det && det.settings_error ? `<div class="err">${esc(det.settings_error)}</div>` : ""}
       <h3>On the battery itself</h3>${onBattery}
       <h3>Home Assistant device</h3>${ha}
       <h3>Connection</h3>${tech}

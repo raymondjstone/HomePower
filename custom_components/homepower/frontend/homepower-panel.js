@@ -363,6 +363,8 @@ class HomePowerPanel extends HTMLElement {
         return;
       }
       case "battery-details": return this._batteryDetails(id);
+      case "setting-set": return this._applySetting(id, t.dataset.key, t.dataset.value);
+      case "ha-set": return this._haSet(t.dataset.eid, t.dataset.op);
       case "edit-battery": this._editingId = id; return this._batteryModal(dev(), false);
       case "save-battery": {
         const d = this._collectBattery(t.dataset.id);

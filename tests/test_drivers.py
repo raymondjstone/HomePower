@@ -1142,3 +1142,106 @@ def test_ecoflow_solar_screen_needs_every_mark_and_never_invents_a_reading():
         assert d._screen_pv(_eco_reading(pv, grid, bat)).pv_w == pv, (pv, grid, bat)
     d = _eco_screen_driver()
     assert d._screen_pv(_eco_reading(None, 0)).pv_w is None                       # no solar figure stays none
+
+
+def _run_settings(coro):
+    return asyncio.run(coro)
+
+
+def test_settings_solarbank_are_changed_within_the_vendors_ranges_and_rules():
+    from core.device_settings import apply_change, read_settings
+
+    async def go():
+        async with fake_anker() as dev:
+            dev.hold.update({10064: 0, 60000: 100, 60001: 10, 60002: 20, 60003: 1})
+            dev.inp[32774], dev.inp[32775] = 0b1111011, 0b1111           # no custom mode; all four settings supported
+            d = AnkerModbusDriver(cfg(dev.port))
+            await d.read()
+            fam, st, _ = await read_settings(d, False)
+            by = {s["key"]: s for s in st}
+            assert fam == "anker" and [o["label"] for o in by["work_mode"]["options"]] == ["Self-consumption", "Time-of-use", "Smart / AI mode", "Socket overlay mode", "Dynamic pricing", ]
+            assert (by["charge_limit"]["value"], by["discharge_limit"]["value"], by["backup_reserve"]["value"]) == (100, 10, 20) and by["backup_enabled"]["kind"] == "info"
+            await apply_change(d, "charge_limit", 90, False)
+            await apply_change(d, "work_mode", 1, False)
+            assert dev.hold[60000] == 90 and dev.hold[10064] == 1
+            for key, val, why in (("charge_limit", 70, "between 80 and 100"), ("discharge_limit", 25, "between 0 and 20"), ("charge_limit", 85, None),
+                                  ("backup_reserve", 5, "at least the discharge limit"), ("backup_reserve", 12, None), ("discharge_limit", 15, "not be above the backup reserve"), ("backup_reserve", 20, None),
+                                  ("work_mode", 4, "not one of the choices"), ("work_mode", 3, "not one of the choices"), ("work_mode", "abc", "whole number"),
+                                  ("backup_enabled", 0, "does not have that setting"), ("charge_limit", 20.5, "whole number")):
+                if why is None:
+                    await apply_change(d, key, val, False)
+                    continue
+                with pytest.raises(ValueError, match=why):
+                    await apply_change(d, key, val, False)
+            assert dev.hold[60000] == 85 and dev.hold[60001] == 10 and dev.hold[60002] == 20       # nothing refused was written
+            with pytest.raises(ValueError, match="managing this battery"):       # HomePower drives the mode: locked while it controls the battery
+                await apply_change(d, "work_mode", 0, True)
+            await apply_change(d, "charge_limit", 100, True)                       # the limits are not HomePower's: still allowed
+            dev.hold[60003] = 0
+            with pytest.raises(ValueError, match="backup reserve on in the Anker app"):
+                await apply_change(d, "backup_reserve", 30, False)
+            await d.close()
+    _run_settings(go())
+
+
+def test_settings_x1_limits_are_written_in_the_batterys_own_word_order():
+    from core.device_settings import apply_change, read_settings
+
+    async def go():
+        for order in ("big", "little"):
+            async with fake_anker(order) as dev:
+                dev.hold.update({10064: 20, 10074: 2, 10077: 0, 10080: 1800})
+                dev.hold[10075], dev.hold[10076] = from_i32(3600, order)
+                d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+                await d.read()
+                _, st, _ = await read_settings(d, False)
+                by = {s["key"]: s for s in st}
+                assert by["export_limit"]["value"] == 3600 and by["export_limit"]["unit"] == "W" and by["import_limit_mode"]["value"] == 0 and by["watchdog"]["value"] == 1800
+                await apply_change(d, "export_limit", 2500, False)
+                assert [dev.hold[10075], dev.hold[10076]] == from_i32(2500, order)
+                await apply_change(d, "import_limit_mode", 1, False)
+                await apply_change(d, "import_limit", 50, False)
+                await apply_change(d, "watchdog", 600, False)
+                await apply_change(d, "work_mode", 0, False)
+                assert (dev.hold[10077], dev.hold[10080], dev.hold[10064]) == (1, 600, 0) and [dev.hold[10078], dev.hold[10079]] == from_i32(50, order)
+                for key, val, why in (("import_limit", 101, "between 0 and 100"), ("watchdog", 25, "between 30 and 3600"), ("work_mode", 3, "not one of the choices"),
+                                      ("export_limit_mode", 5, "not one of the choices"), ("export_limit", 40000, None)):
+                    if why is None:                                                 # 40000 W is over the X1 integration's own 30000 W range only in fixed mode
+                        with pytest.raises(ValueError, match="between 0 and 30000"):
+                            await apply_change(d, key, val, False)
+                    else:
+                        with pytest.raises(ValueError, match=why):
+                            await apply_change(d, key, val, False)
+                await d.close()
+    _run_settings(go())
+
+
+def test_settings_ecoflow_stream_commands_match_the_vendors_integration():
+    from core.device_settings import apply_change, read_settings
+
+    async def go():
+        q = {"soc": 71, "powGetBpCms": 0.0, "backupReverseSoc": 10, "cmsMinDsgSoc": 5, "cmsMaxChgSoc": 100, "relay2Onoff": True, "relay3Onoff": False,
+             "feedGridMode": 1, "operateSelfPoweredOpen": True, "operateIntelligentScheduleModeOpen": False}
+        d = eco(q)
+        await d.read()
+        fam, st, _ = await read_settings(d, False)
+        by = {s["key"]: s for s in st}
+        assert fam == "ecoflow" and by["ac1"]["value"] is True and by["feed_in"]["value"] is False and (by["backup_reserve"]["min"], by["backup_reserve"]["max"]) == (8, 95)
+        for key, val in (("ac1", False), ("ac2", "on"), ("feed_in", True), ("self_powered", False), ("ai_mode", True), ("backup_reserve", 50)):
+            await apply_change(d, key, val, False)
+        assert d.api.sent == [{"cfgRelay2Onoff": False}, {"cfgRelay3Onoff": True}, {"cfgFeedGridMode": 2},
+                              {"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": False}},
+                              {"cfgEnergyStrategyOperateMode": {"operateIntelligentScheduleModeOpen": True}}, {"cfgBackupReverseSoc": 50}]
+        d.api.sent.clear()
+        for key, val, why in (("backup_reserve", 7, "between 8 and 95"), ("backup_reserve", 96, "between 8 and 95"), ("ac1", "maybe", "on or off"), ("nope", 1, "does not have")):
+            with pytest.raises(ValueError, match=why):
+                await apply_change(d, key, val, False)
+        for key in ("backup_reserve", "self_powered", "ai_mode"):                  # what HomePower drives is locked while it controls the battery
+            with pytest.raises(ValueError, match="managing this battery"):
+                await apply_change(d, key, 30 if key == "backup_reserve" else True, True)
+        await apply_change(d, "ac2", False, True)                                  # the AC outputs are not HomePower's
+        assert d.api.sent == [{"cfgRelay3Onoff": False}]
+        e = eco({"backupSocOnOff": True, "backupSoc": 20, "soc": 50})              # STREAM 5000 series: a different command set, not offered
+        await e.read()
+        assert (await read_settings(e, False))[1] == []
+    _run_settings(go())

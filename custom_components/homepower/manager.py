@@ -403,6 +403,38 @@ class HomePowerManager:
         except Exception as err:  # noqa: BLE001 - shown to the user
             raise ValidationError(f"could not read: {err}") from err
 
+    def _controlled(self, driver) -> bool:
+        """HomePower is currently driving this battery (so the settings it drives are locked in the panel)."""
+        return bool(driver.config.extra.get("control_enabled", True)) and not (self.paused or self.safe)
+
+    async def set_device_setting(self, device_id: str, key: str, value) -> dict:
+        """Change one setting of a battery from the panel (admin only). Checked against the vendor's own ranges and rules first."""
+        from .core.device_settings import apply_change, read_settings
+
+        cached = self._adapters.get(device_id)
+        if device_id not in self.devices or cached is None:
+            raise ValidationError("unknown battery")
+        driver = getattr(cached[1], "driver", None)
+        if driver is None:
+            raise ValidationError("this battery has no settings that can be changed here")
+        controlled = self._controlled(driver)
+        try:
+            family = await apply_change(driver, key, value, controlled)
+        except ValueError as err:
+            raise ValidationError(str(err)) from err
+        except Exception as err:  # noqa: BLE001 - the battery or its cloud said no
+            raise ValidationError(f"the battery did not accept it: {err}") from err
+        _LOGGER.info("%s: setting %s changed to %r from the panel", device_id, key, value)
+        if family == "ecoflow":
+            driver._cache, driver._pushed = None, 0.0           # the next read comes from the cloud and shows the change
+        if self.coordinator:
+            await self.coordinator.async_request_refresh()
+        try:
+            _, settings, _ = await read_settings(driver, controlled)
+        except Exception:  # noqa: BLE001 - the change itself went through
+            settings = []
+        return {"settings": settings, "pending": family == "ecoflow"}
+
     async def device_details(self, device_id: str) -> dict:
         """Everything one battery reports, for the panel's details sheet (read-only): the last reading, plus the named
         registers of an Anker battery (read now), or every value an EcoFlow battery has sent."""
@@ -433,6 +465,12 @@ class HomePowerManager:
             else:
                 out["registers"] = anker_rows(entries, values, driver._order, x1)
                 out["serial"] = next((r["value"] for r in out["registers"] if r["name"] == "Serial number"), None)
+        try:
+            from .core.device_settings import read_settings
+
+            _, out["settings"], _ = await read_settings(driver, self._controlled(driver))
+        except Exception as err:  # noqa: BLE001 - the sheet still shows everything else
+            out["settings"], out["settings_error"] = [], f"could not read the settings: {err}"
         quota = getattr(driver, "last_quota", None)
         if isinstance(quota, dict) and quota:
             out["raw"] = {k: v for k, v in quota.items() if not _PRIVATE_KEY.search(k)}

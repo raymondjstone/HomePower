@@ -33,6 +33,7 @@ const replies = (m) => {
     case "homepower/device/scan": return { holding: { 10001: 5 }, input: { 10002: 7 }, order: "big", names: {} };
     case "homepower/device/read_registers": return { values: { 10001: 5 }, order: "big", names: {} };
     case "homepower/device/details": return globalThis.__details || {};
+    case "homepower/device/setting": return globalThis.__settingReply || { settings: [] };
     case "homepower/whatif": if (payload.whatif_error) throw new Error(payload.whatif_error); return payload.whatif;
     case "homepower/schedule/save": case "homepower/goal/save": return { ...(m.schedule || m.goal), warnings: ["a warning"] };
     default: return {};
@@ -40,7 +41,8 @@ const replies = (m) => {
 };
 const hass = {
   states: {}, language: "en",
-  callWS: async (m) => { calls.push(m); return JSON.parse(JSON.stringify(replies(m))); },
+  callWS: async (m) => { calls.push(m); const r = replies(m); if (r && r.__error) throw new Error(r.__error); return JSON.parse(JSON.stringify(r)); },
+  callService: async (domain, service, data) => { calls.push({ type: `(service) ${domain}.${service}`, ...data }); if (globalThis.__serviceError) throw new Error(globalThis.__serviceError); },
   connection: { subscribeMessage: (cb) => { setTimeout(() => cb(payload.get.live), 10); return Promise.resolve(() => {}); } },
 };
 
@@ -92,6 +94,13 @@ for (const tab of ["overview", "plan", "schedules", "batteries", "insights", "di
       { addr: "backupReverseSoc", name: "Backup reserve level", access: "", kind: "setting", value: "10", unit: "%" },
       { addr: "<b>x</b>", name: "<b>x</b>", access: "", kind: "other", value: "{\"a\":1}", unit: "" },
     ],
+    settings: [
+      { key: "work_mode", label: "Operating mode", kind: "select", group: "Controls", value: 0, unit: "", min: null, max: null, step: null, options: [{ value: 0, label: "Self-consumption" }, { value: 1, label: "Time-of-use" }], hint: "", locked: "HomePower is managing this battery's mode." },
+      { key: "charge_limit", label: "Charging limit", kind: "number", group: "Controls", value: 100, unit: "%", min: 80, max: 100, step: 1, options: [], hint: "Must be above the discharge limit.", locked: "" },
+      { key: "ac1", label: "AC 1 output", kind: "switch", group: "Controls", value: true, unit: "", min: null, max: null, step: null, options: [], hint: "", locked: "" },
+      { key: "export_limit_mode", label: "Export limit mode", kind: "select", group: "Configuration", value: 2, unit: "", min: null, max: null, step: null, options: [{ value: 0, label: "Disabled" }, { value: 2, label: "Fixed power" }], hint: "", locked: "" },
+      { key: "backup_enabled", label: "Backup reserve switch", kind: "info", group: "Controls", value: "On", unit: "", min: null, max: null, step: null, options: [], hint: "", locked: "" },
+    ],
     raw: { backupReverseSoc: 20, "<b>x</b>": { a: 1 } }, changes: [{ at: "2026-11-19 10:00:00", key: "workMode", from: 1, to: 2 }],
   };
   hass.devices = { hd1: { id: "hd1", name: "Garage Anker", manufacturer: "Anker", model: "X1", serial_number: "sn123", sw_version: "1.2" } };
@@ -106,6 +115,47 @@ for (const tab of ["overview", "plan", "schedules", "batteries", "insights", "di
   must("details sheet finds the Home Assistant device by serial and lists its entities", /found by its serial number/.test(txt) && /Export limit/.test(txt) && /0 to 5000, step 100/.test(txt) && /Diagnostic \(1\)/.test(txt));
   must("details sheet shows EcoFlow-style values and setting changes, escaped", /Backup reserve level/.test(txt) && /Other values the battery sent/.test(txt) && /workMode: 1 → 2/.test(txt) && !m.querySelector("b"));
   must("details sheet is clean", !bad(txt), (txt.match(/.{0,40}(undefined|NaN|\[object Object\]).{0,40}/) || [""])[0]);
+  // the settings that can be changed: editors, with the locked and read-only ones left alone
+  const btn = (sel) => m.querySelector(sel);
+  must("settings that can be changed show editors; a locked one and a read-only one do not",
+    /Settings you can change/.test(txt) && !!btn('[data-act="setting-set"][data-key="charge_limit"]') && !!btn('[data-act="setting-set"][data-key="ac1"]') && !!btn('[data-act="setting-set"][data-key="export_limit_mode"]')
+    && !btn('[data-act="setting-set"][data-key="work_mode"]') && !btn('[data-act="setting-set"][data-key="backup_enabled"]') && /HomePower is managing this battery/.test(txt) && /80 to 100/.test(txt));
+  const press = async (b) => { b.dispatchEvent(new w.MouseEvent("click", { bubbles: true, composed: true })); await wait(40); };
+  const sent = () => calls.filter((c) => c.type === "homepower/device/setting");
+  globalThis.__settingReply = { settings: [{ key: "charge_limit", label: "Charging limit", kind: "number", group: "Controls", value: 90, unit: "%", min: 80, max: 100, step: 1, options: [], hint: "", locked: "" }], pending: false };
+  root.getElementById("bs-charge_limit").value = "90";
+  await press(btn('[data-act="setting-set"][data-key="charge_limit"]'));
+  must("a number setting is sent to the backend as a number", sent().length === 1 && sent()[0].key === "charge_limit" && sent()[0].value === 90 && sent()[0].device_id === id, JSON.stringify(sent()));
+  must("the sheet shows the new value and says it was saved", root.getElementById("bs-charge_limit").value === "90" && /Saved/.test(root.getElementById("modal").textContent));
+  await press(root.getElementById("modal").querySelector('[data-act="setting-set"][data-key="ac1"]'));
+  must("a switch is sent as true or false", sent().at(-1).key === "ac1" && sent().at(-1).value === false, JSON.stringify(sent().at(-1)));
+  root.getElementById("bs-export_limit_mode").value = "0";
+  await press(root.getElementById("modal").querySelector('[data-act="setting-set"][data-key="export_limit_mode"]'));
+  must("a choice is sent as its number", sent().at(-1).key === "export_limit_mode" && sent().at(-1).value === 0, JSON.stringify(sent().at(-1)));
+  const before = sent().length;
+  globalThis.confirm = () => false;
+  await press(root.getElementById("modal").querySelector('[data-act="setting-set"][data-key="charge_limit"]'));
+  must("nothing is sent when the change is not confirmed", sent().length === before);
+  globalThis.confirm = () => true;
+  globalThis.__settingReply = { __error: "Charging limit must be between 80 and 100 %" };
+  root.getElementById("bs-charge_limit").value = "70";
+  await press(root.getElementById("modal").querySelector('[data-act="setting-set"][data-key="charge_limit"]'));
+  must("a refusal from the backend is shown next to the setting", /must be between 80 and 100/.test(root.getElementById("modal").textContent) && !bad(root.getElementById("modal").textContent));
+  globalThis.__settingReply = null;
+  // the controls of the matching Home Assistant device go through Home Assistant's own services
+  const service = () => calls.filter((c) => String(c.type).startsWith("(service)"));
+  root.getElementById("ha-number.garage_export_limit").value = "2500";
+  await press(root.getElementById("modal").querySelector('[data-act="ha-set"][data-eid="number.garage_export_limit"]'));
+  must("a Home Assistant number is set with number.set_value", service().length === 1 && service()[0].type === "(service) number.set_value" && service()[0].entity_id === "number.garage_export_limit" && service()[0].value === 2500, JSON.stringify(service()));
+  globalThis.__serviceError = "Not allowed";
+  root.getElementById("ha-number.garage_export_limit").value = "abc";
+  await press(root.getElementById("modal").querySelector('[data-act="ha-set"][data-eid="number.garage_export_limit"]'));
+  must("a number that is not a number is not sent", service().length === 1);
+  root.getElementById("ha-number.garage_export_limit").value = "100";
+  await press(root.getElementById("modal").querySelector('[data-act="ha-set"][data-eid="number.garage_export_limit"]'));
+  must("a refusal from Home Assistant is shown", /Not allowed/.test(root.getElementById("modal").textContent));
+  globalThis.__serviceError = null;
+  must("read-only entities have no controls", !root.getElementById("modal").querySelector('[data-eid="sensor.garage_soc"]'));
   el._closeModal();
   globalThis.__details = null; hass.devices = {}; hass.entities = {}; hass.states = {};
   await el._batteryDetails(id);

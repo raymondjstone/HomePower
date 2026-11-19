@@ -189,6 +189,10 @@ def anker_rows(entries, values: dict[str, int], order: str | None, x1: bool) -> 
 # kind: "setting" = a control or configuration value, "live" = a reading, "info" = identity / diagnostic.
 _EF: dict[str, tuple[str, str, str]] = {
     "relay2Onoff": ("AC 1 output", "", "setting"), "relay3Onoff": ("AC 2 output", "", "setting"),
+    "operateSelfPoweredOpen": ("Operating mode: self-powered", "", "setting"),
+    "operateIntelligentScheduleModeOpen": ("Operating mode: AI mode", "", "setting"),
+    "operateScheduledOpen": ("Operating mode: scheduled", "", "setting"),
+    "operateTouModeOpen": ("Operating mode: time-of-use", "", "setting"),
     "energyStrategyOperateMode.operateSelfPoweredOpen": ("Operating mode: self-powered", "", "setting"),
     "energyStrategyOperateMode.operateIntelligentScheduleModeOpen": ("Operating mode: AI mode", "", "setting"),
     "energyStrategyOperateMode.operateScheduledOpen": ("Operating mode: scheduled", "", "setting"),
