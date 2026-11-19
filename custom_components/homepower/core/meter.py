@@ -22,6 +22,8 @@ class MeterReader:
     def read(self, key: str, state: str | None, unit: str | None, now_s: float) -> float | None:
         try:
             v = float(state)  # type: ignore[arg-type]
+            if v != v or abs(v) == float("inf"):
+                raise ValueError("not a finite number")          # a sensor saying "nan" / "inf" is no reading at all
         except (TypeError, ValueError):
             self._c.pop(key, None)
             return None

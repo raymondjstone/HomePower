@@ -25,7 +25,11 @@ class HomePowerCard extends HTMLElement {
     const states = (this._hass && this._hass.states) || {};
     const id = this._config && this._config.entity;
     if (id) return states[id];
-    return Object.values(states).find((s) => s.entity_id.startsWith("sensor.") && s.attributes && s.attributes.homepower === true && Array.isArray(s.attributes.batteries));
+    const known = this._autoId && states[this._autoId];       // found once, then looked up directly (the scan covers every entity)
+    if (known && known.attributes && known.attributes.homepower === true) return known;
+    const found = Object.values(states).find((s) => s.entity_id.startsWith("sensor.") && s.attributes && s.attributes.homepower === true && Array.isArray(s.attributes.batteries));
+    this._autoId = found ? found.entity_id : null;
+    return found;
   }
 
   _ring(soc) {
@@ -40,6 +44,9 @@ class HomePowerCard extends HTMLElement {
   _render() {
     if (!this.shadowRoot || !this._config) return;
     const st = this._entity(), title = this._config.title || "Home battery";
+    const stamp = st ? `${st.last_updated}|${st.state}` : "";
+    if (this._drawn && this._drawn.st === st && this._drawn.stamp === stamp && this._drawn.cfg === this._config) return;   // Home Assistant calls hass for every state change anywhere: only redraw when ours changed
+    this._drawn = { st, stamp, cfg: this._config };
     let body;
     if (!st) {
       body = `<div class="empty">No HomePower battery sensor found. Set <code>entity:</code> to the “Home battery” sensor.</div>`;
@@ -50,7 +57,7 @@ class HomePowerCard extends HTMLElement {
           <span>${esc(b.name)}</span><div class="bar"><i style="width:${b.soc == null ? 0 : Math.max(0, Math.min(100, b.soc))}%"></i></div>
           <span>${b.soc == null ? "–" : Math.round(b.soc) + "%"}${b.power_w == null ? "" : " · " + fmtW(b.power_w)}</span></div>`).join("")}</div>`;
       body = `<div class="top">${this._ring(a.soc)}<div class="nums">
-          ${n(`${(a.stored_kwh ?? 0).toFixed(1)} kWh`, `stored of ${(a.capacity_kwh ?? 0).toFixed(1)}`)}
+          ${a.stored_kwh == null ? n("–", "stored (no battery online)") : n(`${a.stored_kwh.toFixed(1)} kWh`, `stored of ${(a.capacity_kwh ?? 0).toFixed(1)}`)}
           ${n(`${kind} ${fmtW(Math.abs(flow))}`, "now")}
           ${a.runtime_h != null ? n(hours(a.runtime_h), "will last") : ""}
           ${a.full_in_h != null ? n(hours(a.full_in_h), "until full") : ""}</div></div>${bats}`;

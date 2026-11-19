@@ -35,8 +35,18 @@ class HomePowerPanel extends HTMLElement {
   set route(v) {}
 
   disconnectedCallback() {
+    if (this._watchStop) this._watchStop();         // a register watch must not keep reading the battery while the panel is not shown
     if (this._unsub) { this._unsub.then?.((u) => u()); this._unsub = null; }
     clearInterval(this._timer);
+    this._timer = null;
+  }
+
+  // Home Assistant may detach the panel (a hidden tab) and attach the same element again later: pick the live feed up again.
+  connectedCallback() {
+    if (!this._loaded || this._unsub || this._timer || !this._hass) return;
+    this._subscribe();
+    this._timer = setInterval(() => this._tick(false), 2000);
+    this._reload().then(() => this._render());
   }
 
   async _init() {
@@ -59,6 +69,7 @@ class HomePowerPanel extends HTMLElement {
       this.data = await this._hass.callWS({ type: "homepower/get" });
       this.live = this.data.live || this.live;
       this._loaded = true;
+      this._loadError = null;                       // a later success clears an earlier failure
     } catch (e) {
       this._loadError = e.message || String(e);
     }
@@ -117,11 +128,19 @@ class HomePowerPanel extends HTMLElement {
   }
 
   _tick(force) {
-    if (this._modal || !this._loaded) return;
+    if (!this._loaded) {                            // the first load failed (Home Assistant still starting, a reload): keep trying
+      if (!this._retrying && Date.now() - (this._lastTry || 0) > 8000) {
+        this._retrying = true; this._lastTry = Date.now();
+        this._reload().then(() => this._subscribeIfNeeded?.()).finally(() => { this._retrying = false; });
+      }
+      return;
+    }
+    if (this._modal) return;
     const now = Date.now();
+    const busy = this.tab === "diagnostics" && !!this.shadowRoot.querySelector('[id^="reg-t-"]');   // a register list is open: a refresh would wipe its filter
     if (!force && now - this._lastRender < 1900) return;
     if (this.tab === "overview") this._render();
-    else if (["plan", "insights", "diagnostics"].includes(this.tab) && now - (this._lastTabLoad || 0) > 30000 && !(this._watch && this._watch.timer)) this._tabLoad();
+    else if (["plan", "insights", "diagnostics"].includes(this.tab) && now - (this._lastTabLoad || 0) > 30000 && !(this._watch && this._watch.timer) && !busy) this._tabLoad();
   }
 
   async _tabLoad() {
@@ -164,7 +183,10 @@ class HomePowerPanel extends HTMLElement {
       <main>${body}</main>`;
     if (html === this._lastHtml) return;
     this._lastHtml = html;
+    // A header button (Pause, Backup, Away, Safe) redraws the page: keep what was typed into Settings and not yet saved.
+    const typed = this._keepForm && this.tab === "settings" ? [...app.querySelectorAll('[id^="st-"]')].filter((e) => "value" in e || "checked" in e).map((e) => [e.id, e.type === "checkbox" ? e.checked : e.value]) : null;
     app.innerHTML = html;
+    if (typed) { const now = [...app.querySelectorAll('[id^="st-"]')]; for (const [id, v] of typed) { const e = now.find((x) => x.id === id); if (e) { if (e.type === "checkbox") e.checked = v; else e.value = v; } } }
     const mb = app.querySelector("ha-menu-button");
     if (mb) { mb.hass = this._hass; mb.narrow = this._narrow; }
   }
@@ -215,14 +237,15 @@ class HomePowerPanel extends HTMLElement {
         const ids = [...r.querySelectorAll('input[name="o-dev"]:checked')].map((x) => x.value);
         if (!ids.length) return this._err("Pick at least one battery.");
         const charging = mode === "charge", moving = charging || mode === "discharge";
-        if (!(await this._call({ type: "homepower/override", device_ids: ids, mode, power_w: moving ? +r.getElementById("o-pw").value : null,
-              target_soc: charging ? +r.getElementById("o-soc").value : null, minutes: +r.getElementById("o-min").value }))) return;
+        const num = (id) => { const v = r.getElementById(id).value.trim(); return v === "" ? null : +v; };     // a cleared box means "not set", not 0
+        if (!(await this._call({ type: "homepower/override", device_ids: ids, mode, power_w: moving ? num("o-pw") : null,
+              target_soc: charging ? num("o-soc") : null, minutes: +r.getElementById("o-min").value }))) return;
         return this._closeModal();
       }
       case "safe": {
         const next = !this.data.safe;
         if (next && !confirm("Safe mode hands every battery back to its own control and stops HomePower sending any commands until you switch it off. Continue?")) return;
-        if (await this._call({ type: "homepower/safe", enabled: next }, (m) => alert(m))) { await this._reload(); }
+        if (await this._call({ type: "homepower/safe", enabled: next }, (m) => alert(m))) { this._keepForm = true; await this._reload(); this._keepForm = false; }
         return;
       }
       case "download-debug": {
@@ -237,7 +260,7 @@ class HomePowerPanel extends HTMLElement {
       case "pause": {
         const next = !this.data.paused;
         if (next && !confirm("Pause HomePower? It will stop sending commands. Batteries stay in whatever mode they were last put in.")) return;
-        if (await this._call({ type: "homepower/pause", paused: next }, (m) => alert(m))) { this.data.paused = next; this._render(); }
+        if (await this._call({ type: "homepower/pause", paused: next }, (m) => alert(m))) { this.data.paused = next; this._keepForm = true; this._render(); this._keepForm = false; }
         return;
       }
       case "add-schedule": return this._scheduleModal(this._blankSchedule(t.dataset.tpl), true);
@@ -245,7 +268,7 @@ class HomePowerPanel extends HTMLElement {
       case "save-schedule": {
         const s = this._collectSchedule(), orig = t.dataset.orig;
         if (!s.id) return this._err("Give the schedule a name.");
-        if (!orig && this.data.schedules.some((x) => x.id === s.id)) return this._err("A schedule with that name already exists.");
+        if (orig !== s.id && this.data.schedules.some((x) => x.id === s.id)) return this._err("A schedule with that name already exists.");
         if (orig) s.enabled = (this.data.schedules.find((x) => x.id === orig) || {}).enabled !== false;
         const saved = await this._call({ type: "homepower/schedule/save", schedule: s }, undefined, true);
         if (!saved) return;
@@ -256,9 +279,10 @@ class HomePowerPanel extends HTMLElement {
       }
       case "del-schedule":
         if (!confirm(`Delete schedule "${id}"?`)) return;
-        await this._call({ type: "homepower/schedule/delete", schedule_id: id });
+        if (!(await this._call({ type: "homepower/schedule/delete", schedule_id: id }))) return;      // an error stays on screen (the dialog stays open)
         await this._reload(); return this._closeModal();
       case "add-battery": {
+        this._editingId = null;                    // a cancelled edit must not leak its id into a new battery's test
         const first = (this._cat.profiles[0] || {}).id || "custom";
         return this._batteryModal({ kind: first, name: "", capacity_wh: null, max_charge_w: null, max_discharge_w: null, min_soc: 10, priority: 0, entities: {}, mode_map: {}, connection: {}, control_enabled: false }, true);
       }
@@ -338,18 +362,21 @@ class HomePowerPanel extends HTMLElement {
         if (await this._call({ type: "homepower/device/reorder", device_ids: ids }, (m) => alert(m))) await this._reload();
         return;
       }
+      case "battery-details": return this._batteryDetails(id);
+      case "setting-set": return this._applySetting(id, t.dataset.key, t.dataset.value);
+      case "ha-set": return this._haSet(t.dataset.eid, t.dataset.op);
       case "edit-battery": this._editingId = id; return this._batteryModal(dev(), false);
       case "save-battery": {
         const d = this._collectBattery(t.dataset.id);
         if (!d.name) return this._err("Give the battery a name.");
-        this._editingId = null;
         if (!t.dataset.id && this.data.devices.some((x) => x.device_id === d.device_id)) return this._err("A battery with that name already exists.");
-        if (!(await this._call({ type: "homepower/device/save", device: d }))) return;
+        if (!(await this._call({ type: "homepower/device/save", device: d }))) return;     // the dialog stays open: Test still tests this battery
+        this._editingId = null;
         await this._reload(); return this._closeModal();
       }
       case "del-battery":
         if (!confirm("Remove this battery from HomePower? (The device itself is untouched.)")) return;
-        await this._call({ type: "homepower/device/delete", device_id: id });
+        if (!(await this._call({ type: "homepower/device/delete", device_id: id }))) return;          // e.g. "could not be handed back": say so, do not close
         await this._reload(); return this._closeModal();
       case "save-settings": {
         const msg = this.shadowRoot.getElementById("g-msg");
@@ -357,7 +384,7 @@ class HomePowerPanel extends HTMLElement {
         if (ok) {
           this._savedNote = true;   // survives the re-render that follows
           await this._reload();
-          setTimeout(() => { this._savedNote = false; if (this.tab === "settings" && !this._modal) this._render(); }, 3000);
+          setTimeout(() => { this._savedNote = false; if (this.tab === "settings" && !this._modal && !this.shadowRoot.activeElement) this._render(); }, 3000);   // not while the user is typing
         }
         return;
       }
@@ -366,14 +393,14 @@ class HomePowerPanel extends HTMLElement {
       case "add-rule": { this.shadowRoot.getElementById("st-rules").insertAdjacentHTML("beforeend", this._ruleRow({ block: "discharge" })); return; }
       case "del-rule": { t.closest(".rule").remove(); return; }
       case "flag":
-        if (await this._call({ type: "homepower/flag", flag: t.dataset.flag, enabled: t.dataset.on === "1" }, (m) => alert(m))) { this.live[t.dataset.flag] = t.dataset.on === "1"; this._render(); }
+        if (await this._call({ type: "homepower/flag", flag: t.dataset.flag, enabled: t.dataset.on === "1" }, (m) => alert(m))) { this.live[t.dataset.flag] = t.dataset.on === "1"; this._keepForm = true; this._render(); this._keepForm = false; }
         return;
       case "add-goal": return this._goalModal({ id: "", device_ids: [], target_soc: 90, by: "07:00", days: [0, 1, 2, 3, 4, 5, 6], use_forecast: false, auto_target: false, max_power_w: null, enabled: true }, true);
       case "edit-goal": return this._goalModal((this.data.goals || []).find((x) => x.id === id), false);
       case "save-goal": {
         const g = this._collectGoal(), orig = t.dataset.orig;
         if (!g.id) return this._err("Give the goal a name.");
-        if (!orig && (this.data.goals || []).some((x) => x.id === g.id)) return this._err("A goal with that name already exists.");
+        if (orig !== g.id && (this.data.goals || []).some((x) => x.id === g.id)) return this._err("A goal with that name already exists.");
         if (orig) g.enabled = ((this.data.goals || []).find((x) => x.id === orig) || {}).enabled !== false;
         const saved = await this._call({ type: "homepower/goal/save", goal: g }, undefined, true);
         if (!saved) return;
@@ -384,7 +411,7 @@ class HomePowerPanel extends HTMLElement {
       }
       case "del-goal":
         if (!confirm(`Delete goal "${id}"?`)) return;
-        await this._call({ type: "homepower/goal/delete", goal_id: id });
+        if (!(await this._call({ type: "homepower/goal/delete", goal_id: id }))) return;
         await this._reload(); this._closeModal(); return this._tabLoad();
       case "range": this._range = t.dataset.r; return this._tabLoad();
       case "setup-test": this.tab = "diagnostics"; this._render(); await this._tabLoad(); return this._runTest(id);
@@ -404,14 +431,14 @@ class HomePowerPanel extends HTMLElement {
       case "save-scene": {
         const sc = this._collectScene(), orig = t.dataset.orig;
         if (!sc.name) return this._err("Give the scene a name.");
-        if (!orig && (this.data.scenes || []).some((x) => x.name === sc.name)) return this._err("A scene with that name already exists.");
+        if (orig !== sc.name && (this.data.scenes || []).some((x) => x.name === sc.name)) return this._err("A scene with that name already exists.");
         if (!(await this._call({ type: "homepower/scene/save", scene: sc }, (m) => this._err(m)))) return;
         if (orig && orig !== sc.name) await this._call({ type: "homepower/scene/delete", name: orig });
         await this._reload(); return this._closeModal();
       }
       case "del-scene":
         if (!confirm(`Delete scene "${id}"?`)) return;
-        await this._call({ type: "homepower/scene/delete", name: id });
+        if (!(await this._call({ type: "homepower/scene/delete", name: id }))) return;
         await this._reload(); return this._closeModal();
       case "do-export": {
         const keys = this.shadowRoot.getElementById("bk-secrets").checked, msg = this.shadowRoot.getElementById("bk-msg");
@@ -464,7 +491,7 @@ class HomePowerPanel extends HTMLElement {
       if (s) { await this._call({ type: "homepower/schedule/save", schedule: { ...s, enabled: t.checked } }, (m) => alert(m)); await this._reload(); }
       return;
     }
-    if (t.name === "s-mode" || t.id === "s-allday") this._syncSchedForm();
+    if (t.name === "s-mode" || t.id === "s-allday" || t.id === "s-source") this._syncSchedForm();     // the source changes the help and which batteries can do it
     if (t.id === "b-kind") this._renderProfile(t.value, {}, false);
     if (t.id === "b-devsel" && t.value) this._autofill(t.value);
     if (t.id === "b-control" && t.checked && !confirm("Allow HomePower to send charge/discharge commands to this battery?")) t.checked = false;
@@ -474,6 +501,7 @@ class HomePowerPanel extends HTMLElement {
 
   _input(e) {
     if (e.target.id === "s-pw") this._syncSchedForm();
+    if (e.target.id === "ps-host") this._ports = { ...(this._ports || {}), host: e.target.value };   // kept across the tab's refresh
     const m = /^wi-(br|bc|ar|ac)$/.exec(e.target.id || "");
     if (m) this._whatif = { ...(this._whatif || {}), in: { br: 10, bc: 0, ar: 10, ac: 80, ...((this._whatif || {}).in || {}), [m[1]]: +e.target.value } };   // kept across the tab's periodic reload
   }

@@ -51,7 +51,7 @@ export default (U) => {
     const st = x.settings || {}, num = (k, l) => `<div class="f"><label>${l}</label><input type="number" id="sc-${k}" min="0" step="100" value="${st[k] ?? ""}" placeholder="unchanged"></div>`;
     this._openModal(`<div class="overlay" data-close-bg><div class="modal" role="dialog" aria-label="Scene">
       <h2>${isNew ? "New scene" : "Edit scene"}</h2>
-      <div class="f"><label>Name</label><input type="text" id="sc-name" value="${esc(x.name || "")}" placeholder="e.g. EV charging night"></div>
+      <div class="f"><label>Name</label><input type="text" id="sc-name" maxlength="40" value="${esc(x.name || "")}" placeholder="e.g. EV charging night"></div>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="sc-backup" ${x.backup ? "checked" : ""}>Backup mode on</label>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="sc-away" ${x.away ? "checked" : ""}>Away mode on</label>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="sc-paused" ${x.paused ? "checked" : ""}>Pause control (only read, send no commands)</label>
@@ -95,8 +95,8 @@ export default (U) => {
       ${tile("Stored energy", fmtKwh(stored), `${cap ? Math.round((stored / cap) * 100) : 0}% of ${fmtKwh(cap)}`)}
       ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid sensor set (Settings)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? "#dc2626" : grid < -20 ? MODES.charge.color : "")}
       ${tile("Batteries online", `${online} / ${ds.length}`, "Reading directly from the batteries")}
-      ${this.live.savings ? tile("Saved today", `${this.live.currency || "£"}${(this.live.savings.today).toFixed(2)}`, `This month ${this.live.currency || "£"}${this.live.savings.month.toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? MODES.charge.color : "#dc2626") : ""}
-      ${this.live.price_now != null ? tile("Price now", `${this.live.currency || "£"}${this.live.price_now.toFixed(3)}/kWh`, "From your rates") : ""}
+      ${this.live.savings ? tile("Saved today", `${esc(this.live.currency || "£")}${(this.live.savings.today).toFixed(2)}`, `This month ${esc(this.live.currency || "£")}${this.live.savings.month.toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? MODES.charge.color : "#dc2626") : ""}
+      ${this.live.price_now != null ? tile("Price now", `${esc(this.live.currency || "£")}${this.live.price_now.toFixed(3)}/kWh`, "From your rates") : ""}
     </div>`;
     const cards = ds.map((d, i) => this._batCard(d, rd[i], i)).join("");
     return `${this._alertsBanner()}${this._setupCard(false)}${this._tariffBanner()}${this._homeBattery()}${this._readinessCard()}${tiles}
@@ -138,7 +138,7 @@ export default (U) => {
     if (lv.temp_c != null) chips.push(`<span class="chip" title="Inverter internal temperature">${lv.temp_c.toFixed(0)}°C</span>`);
     for (const al of lv.alarms || []) chips.push(`<span class="chip warn" title="The device itself reports this">${esc(al)}</span>`);
     if (lv.reason) chips.push(`<span class="chip" title="Why HomePower is doing this">${esc(lv.reason)}</span>`);
-    if (lv.override) chips.push(`<span class="chip m" style="background:#7c3aed">Manual: ${(MODES[lv.override.mode] || {}).label} until ${new Date(lv.override.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>`);
+    if (lv.override) chips.push(`<span class="chip m" style="background:#7c3aed">Manual: ${(MODES[lv.override.mode] || {}).label} until ${new Date(lv.override.until).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}</span>`);
     if (d.control_enabled === false) chips.push(`<span class="chip warn" title="HomePower reads this battery but never sends it commands">Monitor only</span>`);
     if (lv.guard_held) chips.push(`<span class="chip" title="Held by the SOC limit">SOC limit reached</span>`);
     if (lv.last_error) chips.push(`<span class="chip bad" title="${esc(lv.last_error)}">Last write failed</span>`);
@@ -151,8 +151,9 @@ export default (U) => {
     if (this.data.settings.zero_import_device === d.device_id) chips.push(`<span class="chip"><ha-icon icon="mdi:scale-balance" style="--mdc-icon-size:14px"></ha-icon>Zero-import</span>`);
     for (const sid of lv.active_schedules || []) chips.push(`<span class="chip"><ha-icon icon="mdi:calendar-clock" style="--mdc-icon-size:14px"></ha-icon>${esc(sid)}</span>`);
     return `<div class="card"><div class="bat">${this._ring(r.soc)}
-      <div class="info"><div class="nm"><span class="dot" style="background:${this._color(i)}"></span>${esc(d.name)}</div>
+      <div class="info"><div class="nm"><span class="dot" style="background:${this._color(i)}"></span>${esc(d.name)}<button class="btn sm" style="margin-left:auto;padding:2px 6px" title="All settings and readings" aria-label="Battery details" data-act="battery-details" data-id="${esc(d.device_id)}"><ha-icon icon="mdi:cog" style="--mdc-icon-size:16px"></ha-icon></button></div>
       <div class="pw" style="color:${col}">${state}${r.online && p != null && Math.abs(p) >= 20 ? " · " + fmtW(Math.abs(p)) : ""}</div>
+      ${!r.online && (lv.last_read_ok || lv.offline_hint || lv.offline_reason) ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:4px">${lv.last_read_ok ? "Last read " + esc(new Date(lv.last_read_ok).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))) + ". " : ""}${lv.offline_reason ? esc(lv.offline_reason.charAt(0).toUpperCase() + lv.offline_reason.slice(1)) + ". " : ""}${esc(lv.offline_hint || "")}</div>` : ""}
       <div class="sub" style="font-size:12px;color:var(--secondary-text-color)">${r.soc != null ? fmtKwh((r.soc / 100) * d.capacity_wh) + " of " : ""}${fmtKwh(d.capacity_wh)} · max ${fmtW(d.max_charge_w)} in / ${fmtW(d.max_discharge_w)} out</div>
       <div class="chips">${chips.join("")}</div></div></div>${this._spark(this._hist[d.device_id] || [], this._color(i))}
       <div style="display:flex;gap:8px;margin-top:10px"><button class="btn sm" data-act="override" data-id="${esc(d.device_id)}"><ha-icon icon="mdi:hand-back-right" style="--mdc-icon-size:16px"></ha-icon>Override</button>${lv.override ? `<button class="btn sm" data-act="clear-override" data-id="${esc(d.device_id)}">Clear override</button>` : ""}</div></div>`;

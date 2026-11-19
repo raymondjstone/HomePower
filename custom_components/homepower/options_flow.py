@@ -406,7 +406,13 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
     async def async_step_remove_battery(self, user_input=None):
         mgr = self._mgr()
         if user_input is not None:
-            await mgr.delete_device(user_input["device"])
+            try:
+                await mgr.delete_device(user_input["device"])
+            except ValidationError as err:               # e.g. it is being held and could not be handed back just now
+                opts = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
+                return self.async_show_form(step_id="remove_battery", errors={"base": "remove_failed"},
+                                            data_schema=vol.Schema({vol.Required("device"): _dropdown(opts)}),
+                                            description_placeholders={"error": str(err)})
             return self._done()
         opts = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
         return self.async_show_form(step_id="remove_battery", data_schema=vol.Schema({vol.Required("device"): _dropdown(opts)}))

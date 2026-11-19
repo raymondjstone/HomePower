@@ -102,3 +102,24 @@ def test_grace_for_a_slow_battery_follows_how_long_it_has_really_taken():
         t.observe("e", s, 40, 0, "hold")
     assert t.grace("e", 120) == 3                                        # up to 5.5 min to react: wait three retries
     assert t.grace("e", 0) == 1
+
+
+def test_a_discharge_down_to_the_minimum_is_not_warned_about():
+    a = [{"device_id": "a", "name": "A", "supported_modes": ["auto", "charge", "discharge"], "min_soc": 10}]
+    assert schedule_warnings({"device_ids": ["a"], "mode": "discharge", "target_soc": 10}, a) == []
+    w = schedule_warnings({"device_ids": ["a"], "mode": "discharge", "target_soc": 5}, a)
+    assert len(w) == 1 and "stops at 10%" in w[0] and "charge past" not in w[0]
+
+
+def test_a_charge_with_no_effect_when_nearly_full_is_not_counted_against_the_battery():
+    from hp.core.traces import CommandTrace
+    t = CommandTrace()
+    for i in range(4):                                       # the battery stops at its own 90% limit
+        t.start("e", "charge", i * 1000.0, "x", 90, 0)
+        rec = t.observe("e", i * 1000.0 + 700, 90, 0, "hold")
+        assert rec["ok"] is False and rec["inconclusive"] is True
+    assert t.verdict("e") == "unknown" and t.results.get("e", []) == []
+    for i in range(3):                                       # real failures, with room to charge, still count
+        t.start("e", "charge", 9000.0 + i * 1000, "x", 40, 0)
+        t.observe("e", 9700.0 + i * 1000, 40, 0, "hold")
+    assert t.verdict("e") == "unreliable"

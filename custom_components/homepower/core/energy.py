@@ -4,16 +4,25 @@ from __future__ import annotations
 MAX_GAP_S = 300  # don't integrate across gaps longer than this (restart, outage)
 
 
+def finite(v, default: float = 0.0) -> float:
+    """A saved or measured number as a float; junk, null, NaN and infinity become `default` (they would poison totals for good)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return f if f == f and f not in (float("inf"), float("-inf")) else default
+
+
 class EnergyMeter:
     """Integrates power into lifetime kWh totals. Positive watts -> `<key>_in`, negative -> `<key>_out`."""
 
     def __init__(self, totals: dict | None = None) -> None:
-        self.totals: dict[str, float] = {k: float(v) for k, v in (totals or {}).items()}
+        self.totals: dict[str, float] = {k: finite(v) for k, v in (totals or {}).items() if isinstance(k, str)}
         self._last: dict[str, tuple[float, float]] = {}
 
     def add(self, key: str, now_s: float, watts: float | None) -> tuple[float, float]:
         """Record a reading; returns the (in, out) kWh added by this step."""
-        if watts is None:
+        if watts is None or watts != watts or abs(watts) == float("inf"):      # no reading, or NaN / infinity: skipped, never integrated
             self._last.pop(key, None)
             return 0.0, 0.0
         last = self._last.get(key)
@@ -46,9 +55,9 @@ class Ledger:
     KEEP_DAYS = 400
 
     def __init__(self, data: dict | None = None, stores: dict | None = None) -> None:
-        self.days: dict[str, dict[str, float]] = {k: dict(v) for k, v in (data or {}).items()}
+        self.days: dict[str, dict[str, float]] = {k: {kk: finite(vv) for kk, vv in v.items()} for k, v in (data or {}).items() if isinstance(v, dict)}
         # battery -> [kWh stored, cost per stored kWh]
-        self.stores: dict[str, list[float]] = {k: [float(v[0]), float(v[1])] for k, v in (stores or {}).items()}
+        self.stores: dict[str, list[float]] = {k: [finite(v[0]), finite(v[1])] for k, v in (stores or {}).items() if isinstance(v, (list, tuple)) and len(v) == 2}
 
     def add(self, day: str, device_id: str, charged_kwh: float, grid_share: float, discharged_kwh: float,
             export_share: float, price: float | None, export_price: float, stored_kwh: float | None,
@@ -70,7 +79,9 @@ class Ledger:
         new_kwh = stored_kwh if stored_kwh is not None else max(0.0, kwh + charged_kwh - discharged_kwh)
         if new_kwh > 0.05:
             # bounded: a blend of the old average and today's price, raised at most by charging/discharging losses
-            st[1] = min(max(0.0, pool) / new_kwh, max(avg, price * share) / 0.75)
+            ceiling = max(avg, price * share)
+            # (a negative cost is real: charging while paid to take the energy lowers the average, and is not clamped away)
+            st[1] = min(pool / new_kwh, ceiling / 0.75 if ceiling > 0 else ceiling)
         elif charged_kwh > 0 and new_kwh <= 0.05:
             st[1] = price * share              # empty battery: the next energy in sets the cost
         st[0] = new_kwh
@@ -94,7 +105,7 @@ class Ledger:
         return None if st is None else st[1]
 
     def _sum(self, prefix: str, key: str) -> float:
-        return sum(v[key] for k, v in self.days.items() if k.startswith(prefix))
+        return sum(v.get(key, 0.0) for k, v in self.days.items() if k.startswith(prefix))     # a damaged saved day may lack a figure
 
     def saved(self, prefix: str) -> float:
         """Savings for a day ("2026-11-10") or a month ("2026-11")."""

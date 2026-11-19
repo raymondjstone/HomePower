@@ -25,7 +25,12 @@ class AlertTracker:
     def active(self) -> set[str]:
         return set(self._raised)
 
-    def forget(self, prefix: str) -> None:
-        for k in [k for k in list(self._since) + list(self._raised) if k.startswith(prefix)]:
+    def forget(self, key: str) -> list[str]:
+        """Drop one alert (an exact key), or every alert under a prefix that ends in ":". Returns the raised ones dropped, so the
+        caller can dismiss their notifications. (An exact match matters: "offline:garage" must not also drop "offline:garage_2".)"""
+        hit = [k for k in set(self._since) | self._raised if k == key or (key.endswith(":") and k.startswith(key))]
+        dropped = [k for k in hit if k in self._raised]
+        for k in hit:
             self._since.pop(k, None)
             self._raised.discard(k)
+        return dropped

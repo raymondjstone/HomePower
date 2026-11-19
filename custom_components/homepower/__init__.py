@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import json
+import os
 from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
@@ -93,6 +94,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("could not write the HomePower backup copy", exc_info=True)
 
     entry.async_on_unload(async_track_time_interval(hass, _backup, timedelta(days=1)))
+    # A restart more often than daily would otherwise mean no copy is ever written: make today's now if it is missing.
+    hass.async_create_task(_backup_if_missing(hass, manager, entry))
 
     await _async_register_panel(hass)
     return True
@@ -101,15 +104,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 BACKUPS_KEPT = 7
 
 
+async def _backup_if_missing(hass, manager, entry) -> None:
+    from datetime import date
+
+    folder = Path(hass.config.path("homepower_backups"))
+    try:
+        if (folder / f"homepower-{date.today().isoformat()}.json").exists():
+            return
+        await hass.async_add_executor_job(_write_backup, str(folder), manager.export_all(dict(entry.options)))
+    except Exception:  # noqa: BLE001 - a failed safety copy must never affect control
+        _LOGGER.warning("could not write the HomePower backup copy", exc_info=True)
+
+
 def _write_backup(folder: str, data: dict) -> None:
     """Write today's copy and delete the oldest beyond the newest BACKUPS_KEPT."""
     from datetime import date
 
     d = Path(folder)
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"homepower-{date.today().isoformat()}.json").write_text(json.dumps(data, indent=1), encoding="utf8")
-    for old in sorted(d.glob("homepower-*.json"))[:-BACKUPS_KEPT]:
+    # written to a temporary file and then swapped in, so a crash mid-write never leaves today's copy cut short
+    target = d / f"homepower-{date.today().isoformat()}.json"
+    tmp = target.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, indent=1), encoding="utf8")
+    os.replace(tmp, target)
+    for old in sorted(backup_files(d))[:-BACKUPS_KEPT]:      # only HomePower's own dated copies: a file put there by hand is never deleted
         old.unlink(missing_ok=True)
+
+
+def backup_files(folder: Path) -> list[Path]:
+    """HomePower's own daily copies (homepower-YYYY-MM-DD.json) in the backup folder: the ones it lists, keeps and restores."""
+    import re
+
+    return [p for p in folder.glob("homepower-*.json") if re.fullmatch(r"homepower-\d{4}-\d\d-\d\d\.json", p.name)]
 
 
 def _notify(hass: HomeAssistant, key: str, message: str) -> None:

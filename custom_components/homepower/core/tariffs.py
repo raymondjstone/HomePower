@@ -6,6 +6,7 @@ Tariffs are typed one per line in Settings, in main currency units per kWh:
 from __future__ import annotations
 
 from datetime import time
+from math import isfinite
 
 MAX_TARIFFS = 8
 
@@ -24,6 +25,8 @@ def parse_tariffs(text: str) -> list[dict]:
         name, *parts = [p.strip() for p in line.split(";")]
         if not name or "=" in name:
             raise ValueError(f"'{line}': start the line with the tariff's name")
+        if any(t["name"].lower() == name.lower() for t in out):
+            raise ValueError(f"'{name}' is listed twice: give each tariff its own name")     # results are kept by name
         kv: dict[str, str] = {}
         for p in parts:
             if "=" not in p:
@@ -46,6 +49,8 @@ def parse_tariffs(text: str) -> list[dict]:
             export, standing = float(kv.get("export", 0)), float(kv.get("standing", 0))
         except (ValueError, TypeError) as err:
             raise ValueError(f"'{name}': a number or a time (HH:MM-HH:MM) is not valid") from err
+        if not all(isfinite(x) for x in (peak, export, standing) + ((cheap,) if cheap is not None else ())):
+            raise ValueError(f"'{name}': a price must be a number")       # 'nan' or 'inf' parse as floats
         if (cheap is None) != (not windows):
             raise ValueError(f"'{name}': give both cheap=... and window=..., or neither")
         out.append({"name": name, "peak": peak, "cheap": cheap, "windows": windows, "export": export, "standing": standing})
@@ -85,6 +90,10 @@ def monthly(usage: dict[str, dict[str, list[float]]], tariffs: list[dict]) -> di
     for k in sorted(usage):
         months.setdefault(k[:7], []).append(k)
     names = sorted(months)
+    try:
+        lowest = 0 if not names or int(months[names[0]][0][8:10]) <= 3 else 1       # recording began part way through the first month
+    except ValueError:
+        lowest = 0
     totals: dict[str, list[float]] = {}
     for t in tariffs:
         row = []
@@ -102,7 +111,8 @@ def monthly(usage: dict[str, dict[str, list[float]]], tariffs: list[dict]) -> di
         cur = tariffs[0]["name"]
         for t in tariffs[1:]:
             run, saved = 0, 0.0
-            for i in range(len(names) - 2, -1, -1):     # the newest month is still in progress: leave it out
+            # the newest month is still in progress: leave it out; so is the first one when recording began part way through it
+            for i in range(len(names) - 2, lowest - 1, -1):
                 gain = totals[cur][i] - totals[t["name"]][i]
                 if gain <= 0:
                     break

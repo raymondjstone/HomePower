@@ -203,7 +203,7 @@ async def main():
     sent.clear()
     coord.apply_settings({"daily_summary_time": hhmm(dt_util.now() - dtm.timedelta(minutes=2))})
     await coord._async_update_data(); await coord._async_update_data(); await asyncio.sleep(0.2)
-    summ = [x for x in sent if x[1].startswith("homepower_alert_event_summary_")]
+    summ = [x for x in sent if x[1] == "homepower_alert_event_summary"]      # one id for every day's summary: each replaces the last (no date in the id)
     print("summary  :", summ, "|", coord._daily_summary(dt_util.now(), coord._combined(acts))[:60])
     assert len(summ) == 1
     await coord.async_close()

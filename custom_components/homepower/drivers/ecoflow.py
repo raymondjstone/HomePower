@@ -26,6 +26,8 @@ HOSTS = {"eu": "api-e.ecoflow.com", "america": "api-a.ecoflow.com", "global": "a
 SIGN_ERRORS = ("8521", "7000")
 QUOTAS = ("backupReverseSoc", "f32ShowSoc", "soc", "cmsBattSoc", "powGetBpCms", "powGetSysGrid", "gridConnectionPower",
           "powGetPvSum", "powGetSysLoad", "cmsBattFullEnergy", "productName")
+RAISED_RESERVE = 85   # a reserve at or above this, with no saved original, is taken to be one HomePower raised (lower ones are the user's own)
+HANDBACK_QUIET_S = 600  # after a hand-back the cloud may still show the raised reserve for a while: no second hand-back in that time
 HOLD_RESERVE = 95  # STREAM accepts a backup reserve of 3-95 %; Hold raises the reserve to the current charge level
 SELF_MODE = "SELF_CONSUMPTION"   # STREAM 5000 series operating modes: SELF_CONSUMPTION, AI_MODE, TIMER_TASK, POU_MODE
 
@@ -34,6 +36,10 @@ class EcoFlowError(Exception):
     pass
 
 
+PV_SPIKE_MIN_W = 500        # a solar reading below this is never second-guessed (see _screen_pv)
+PV_LIKE_CHARGE = 0.2        # "equal to the charge power" means within 20 %
+PV_JUMP = 0.5               # and at least double the previous reading
+PV_MEMORY_S = 120           # the previous reading counts if it is no older than this
 BACKOFF_S = 300            # after a rate limit or a refusal, leave EcoFlow alone for this long
 REFUSED_CODES = ("1006",)  # the model does not accept these commands through the developer API
 _SETTINGISH = re.compile(r"backup|reserve|cfg|mode|onoff|switch|limit|timer|task|enable|strateg|schedul|feed", re.I)
@@ -194,6 +200,11 @@ class EcoFlowStreamDriver:
     _blocked_until = 0.0     # class defaults so a driver built without __init__ (tests) still works
     _orig_val = None
     _on_orig = None
+    _handed_at = -1e9
+    _pv_prev = None           # (time, pv_w) of the last solar reading accepted; see _screen_pv
+    _pv_run = 0
+    pv_ignored = 0            # solar readings held back because they looked like grid charging
+
 
     def __init__(self, config: DeviceConfig, session, hub=None, orig: dict | None = None, on_orig=None) -> None:
         self.config = config
@@ -224,6 +235,9 @@ class EcoFlowStreamDriver:
                 self._on_orig(value)
             except Exception:  # noqa: BLE001 - failing to save must never stop a command
                 _LOGGER.debug("could not save the EcoFlow originals", exc_info=True)
+
+    def _just_handed_back(self) -> bool:
+        return time.monotonic() - self._handed_at < HANDBACK_QUIET_S
 
     def _note_changes(self, before: dict, after: dict) -> None:
         found = setting_changes(before, after) if before else []
@@ -291,12 +305,32 @@ class EcoFlowStreamDriver:
             return replace(actual, mode=Mode.HOLD)
         return actual
 
+    def _screen_pv(self, a: Actual) -> Actual:
+        """EcoFlow's cloud sometimes reports the grid-charge power as solar ("powGetPvSum") with the grid reading at exactly 0, then
+        the true values on the next sample, over and over while the battery charges from the grid (tolwi/hassio-ecoflow-cloud
+        issues 786 and 679: the wrong values arrive from EcoFlow already). Taken at face value that makes bought charge look like
+        free solar. A single reading cannot prove it (real sun charging looks the same), so a reading is only held back when it
+        has every one of the reported marks: large, equal to the battery's own charge power, the grid at exactly 0, and a jump from
+        a much lower reading seen in the last two minutes. The last good value stands in, for at most two readings in a row, so
+        real solar that really did jump is believed from the third reading on."""
+        now, pv, bat, grid, prev = time.monotonic(), a.pv_w, a.power_w, a.grid_w, self._pv_prev
+        if (pv is not None and pv >= PV_SPIKE_MIN_W and bat is not None and bat > 0 and abs(pv - bat) <= PV_LIKE_CHARGE * bat
+                and grid is not None and grid == 0 and prev is not None and now - prev[0] <= PV_MEMORY_S and prev[1] < PV_JUMP * pv
+                and self._pv_run < 2):
+            self._pv_run += 1
+            self.pv_ignored += 1
+            return replace(a, pv_w=prev[1])
+        self._pv_run = 0
+        if pv is not None:
+            self._pv_prev = (now, pv)
+        return a
+
     async def read(self) -> Actual:
         now = time.monotonic()
         if self.hub is not None:
             self.hub.register(self.sn, self.merge_push)   # no-op once registered; retries a failed connection later
         if self._pushed and now - self._pushed < 120 and now - self._polled < 300 and self._state:
-            return self._held_at_floor(self._decode(self._state, self.config.caps.min_soc))   # live data is flowing: no need to poll
+            return self._held_at_floor(self._screen_pv(self._decode(self._state, self.config.caps.min_soc)))   # live data is flowing: no need to poll
         if self._cache and now - self._cache[0] < 30:
             return self._cache[1]
         if now < self._blocked_until:
@@ -306,7 +340,7 @@ class EcoFlowStreamDriver:
             self._note_changes(self._state, q)
             self._state, self._polled, self._pushed = dict(q), time.monotonic(), 0.0
             self.last_quota, self.last_error = q, None
-            actual = self._held_at_floor(self._decode(q, self.config.caps.min_soc))
+            actual = self._held_at_floor(self._screen_pv(self._decode(q, self.config.caps.min_soc)))
             if actual.soc is None and q:
                 _LOGGER.warning("%s: EcoFlow returned no charge level; readings it did return: %s",
                                 self.config.device_id, ", ".join(sorted(q)[:60]))
@@ -343,14 +377,18 @@ class EcoFlowStreamDriver:
         soc = self._decode(q).soc
         if desired.mode is Mode.AUTO:
             if self._orig is None:
-                if q.get("backupSocOnOff") and self._decode(q, self.config.caps.min_soc).mode in (Mode.HOLD, Mode.CHARGE):
-                    await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, cmd_id=38)  # restarted while held
-                return
-            o, self._orig = self._orig, None
+                level = q.get("backupSoc")
+                if (q.get("backupSocOnOff") and isinstance(level, (int, float)) and level >= RAISED_RESERVE and not self._just_handed_back()
+                        and self._decode(q, self.config.caps.min_soc).mode in (Mode.HOLD, Mode.CHARGE)):
+                    await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, cmd_id=38)  # restarted while held, originals lost
+                return                          # otherwise it is the user's own reserve (or a stale reading): never touched
+            o = self._orig                      # forgotten only once every command below has succeeded: a failed hand-back is retried with the same originals
             reserve = {"backupSocOnOff": True, "backupSoc": o["level"]} if o["on"] and o["level"] is not None else {"backupSocOnOff": False, "backupSoc": 0}
             await self.api.command(self.sn, {"bpBackupConfig": reserve}, cmd_id=38)
             if o["mode"] and o["mode"] != SELF_MODE:
                 await self.api.command(self.sn, {"workMode": o["mode"]}, cmd_id=38)
+            self._orig = None
+            self._handed_at = time.monotonic()
             return
         if desired.mode not in (Mode.HOLD, Mode.CHARGE):
             raise ValueError(f"EcoFlow STREAM cannot {desired.mode.value} through the API")
@@ -380,8 +418,15 @@ class EcoFlowStreamDriver:
 
     async def _apply(self, desired: Desired) -> None:
         self._cache, self._pushed = None, 0.0   # next read must come from the cloud and show the effect of this command
-        if self._is5000:
+        o = self._orig
+        if self._is5000 or (not self.last_quota and isinstance(o, dict) and "on" in o):
+            # (not read yet since a restart, but the remembered originals are a STREAM 5000's: hand back the 5000 way)
             return await self._apply_5000(desired)
+        if not self.last_quota and not (isinstance(o, dict) and "reserve" in o):
+            # Not read yet, so the model (and its command set) is unknown: never guess. Nothing of ours to hand back either.
+            if desired.mode is Mode.AUTO:
+                return
+            raise ValueError("the battery has not been read yet: its model is not known, so no command was sent")
         if self.last_quota and "backupReverseSoc" not in self.last_quota:
             # A model that reports different settings (e.g. AC 5000): its command format is not known, so never guess.
             if desired.mode is Mode.AUTO:
@@ -400,12 +445,17 @@ class EcoFlowStreamDriver:
                 raise ValueError("cannot hold: the battery's charge level is not known yet")
             await self.api.command(self.sn, {"cfgBackupReverseSoc": int(max(3, min(HOLD_RESERVE, soc)))})
         elif desired.mode is Mode.AUTO:
-            o, self._orig = self._orig, None
-            if o is None and self._decode(self._state or self.last_quota, self.config.caps.min_soc).mode is Mode.AUTO:
-                return                            # nothing of ours to hand back: leave the user's own reserve alone
+            o = self._orig                        # forgotten only after both commands succeed (a failed hand-back is retried with the same originals)
+            if o is None:
+                cur = _first(self._state or self.last_quota, "backupReverseSoc")
+                if (cur is None or cur < RAISED_RESERVE or self._just_handed_back()
+                        or self._decode(self._state or self.last_quota, self.config.caps.min_soc).mode is Mode.AUTO):
+                    return                        # nothing of ours to hand back: the user's own reserve (or a stale reading) is left alone
             saved = o.get("reserve") if o else None
             await self.api.command(self.sn, {"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}})
             await self.api.command(self.sn, {"cfgBackupReverseSoc": int(saved) if saved is not None else max(3, self.config.caps.min_soc)})
+            self._orig = None
+            self._handed_at = time.monotonic()
         elif desired.mode is Mode.CHARGE:
             # A reserve above the charge level makes the battery top itself up from the grid, at its own rate (the power
             # cannot be set). It stops when it reaches the reserve, so the reserve is the target (95 % at most).

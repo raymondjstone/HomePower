@@ -263,7 +263,9 @@ class Efficiency(_BatteryBase):
 
 
 class Cycles(_BatteryBase):
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    # TOTAL, not TOTAL_INCREASING: the count follows edits to the capacity, so it can step down, and Home Assistant would read
+    # a step down as a meter reset and add the whole count to its statistics again.
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_icon = "mdi:battery-sync"
     _attr_native_unit_of_measurement = "cycles"
 

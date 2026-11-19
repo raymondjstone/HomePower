@@ -97,9 +97,10 @@ X1_REGISTERS: tuple[tuple[int, int, str, str, str], ...] = (
     (10235, 2, "Backup reactive power", "RO", "live"),
     (10237, 1, "Backup power factor", "RO", "live"),
     (10238, 1, "Backup frequency", "RO", "live"),
-    (10249, 1, "Battery status (1 charging, 2 discharging, 3 standby, 4 sleep, 5 SOC/SOH correction)", "RO", "live"),
+    (10249, 1, "Number of battery packs", "RO", "info"),
     (10250, 2, "Battery rated capacity", "RO", "info"),
-    (10252, 1, "Battery voltage", "RO", "live"),
+    (10252, 1, "Battery status (1 charging, 2 discharging, 3 standby, 4 sleep, 5 SOC/SOH correction)", "RO", "live"),
+    (10253, 1, "Battery voltage", "RO", "live"),
     (10254, 2, "Battery pack power (+ discharging, - charging)", "RO", "live"),
     (10256, 1, "Battery SOC", "RO", "live"),
     (10257, 1, "Battery SOH", "RO", "live"),
@@ -137,15 +138,27 @@ SOLARBANK_REGISTERS: tuple[tuple[int, int, str, str, str], ...] = (
     (10001, 1, "Battery status (0 standby, 1 charging, 2 discharging, 3 sleep)", "RO", "live"),
     (10002, 2, "PV power", "RO", "live"),
     (10004, 2, "3rd-party PV power", "RO", "live"),
+    (10006, 2, "Active power (+ output, - absorbed)", "RO", "live"),
     (10008, 2, "Battery power", "RO", "live"),
     (10010, 2, "Load power", "RO", "live"),
     (10012, 2, "Grid power", "RO", "live"),
     (10014, 1, "SOC", "RO", "live"),
-    (10018, 2, "PV generation, lifetime", "RO", "live"),
-    (10036, 2, "Maximum charge power", "RO", "live"),
-    (10038, 2, "Maximum discharge power", "RO", "live"),
-    (10064, 1, "Work mode (0 self-consumption, 1 time-of-use, 3 third-party control, 4 custom, 5 socket overlay, 6 smart, 7 dynamic pricing)", "RW", "setting"),
+    (10015, 1, "SOH", "RO", "live"),
+    (10018, 2, "Total PV generation", "RO", "live"),
+    (10022, 2, "Total battery charge energy", "RO", "live"),
+    (10024, 2, "Total battery discharge energy", "RO", "live"),
+    (10026, 2, "Total load consumption", "RO", "live"),
+    (10030, 2, "Total purchased energy", "RO", "live"),
+    (10034, 2, "Total feed-in energy", "RO", "live"),
+    (10036, 2, "Rechargeable power", "RO", "live"),
+    (10038, 2, "Dischargeable power", "RO", "live"),
+    (10040, 1, "Number of PCS", "RO", "info"),
+    (10041, 1, "Number of available PCS", "RO", "info"),
+    (10064, 1, "Work mode (0 self-consumption, 1 time-of-use, 3 third-party control, 4 custom mode, 5 socket overlay mode, 6 smart / AI mode, 7 dynamic pricing)", "RW", "setting"),
     (10071, 2, "Battery charge/discharge setpoint (+ discharge, - charge; third-party mode only)", "RW", "setting"),
+    (10074, 1, "Export power limit (0 off, 1 on)", "RW", "setting"),
+    (10075, 2, "Export power limit value", "RW", "setting"),
+    (10156, 1, "Internal temperature (not in Anker's document; users report it on the Max AC and Solarbank 4)", "RO", "live"),
     (10100, 12, "Serial number", "RO", "info"),
     (10112, 6, "Software version", "RO", "info"),
     (10208, 2, "AC grid-side output power", "RO", "live"),
@@ -153,23 +166,34 @@ SOLARBANK_REGISTERS: tuple[tuple[int, int, str, str, str], ...] = (
     (10262, 2, "Cumulative charge energy", "RO", "live"),
     (10264, 2, "Cumulative discharge energy", "RO", "live"),
     (32768, 5, "Model", "RO", "info"),
-    (32774, 1, "Work-mode capability mask", "RO", "info"),
-    (32775, 1, "Capability mask (bit0 charge limit, bit1 discharge limit, bit2 backup reserve, bit3 backup enable)", "RO", "info"),
+    (32774, 1, "Work modes this battery supports", "RO", "info"),
+    (32775, 1, "Settings this battery supports", "RO", "info"),
     (60000, 1, "Charge limit SOC (%, 80-100)", "RW", "setting"),
     (60001, 1, "Discharge limit SOC (%, 0-20)", "RW", "setting"),
     (60002, 1, "Backup reserve SOC (%)", "RW", "setting"),
     (60003, 1, "Backup reserve enabled (0 off, 1 on)", "RO", "setting"),
 )
 
-# Alarm bits worth telling the user about (System Alarm 1 = register 10042, bit numbers as in the document).
-X1_ALARMS: dict[int, str] = {
-    0: "EEPROM read/write error",
-    1: "flash read/write error",
-    4: "inverter (DC/AC) communication failure",
-    5: "battery (BMS) communication failure",
-    6: "meter 1 communication failure",
-    7: "meter 2 communication failure",
+# Alarm bits worth telling the user about: (register, bit) -> text, from the document's "ALARM INFO" table (System Alarm
+# 1-8 = registers 10042-10049, bits counted from 0). The app shows them counted from 1, so its "A6" is bit 5 of 10042.
+# (Read the table in the PDF's own text order: a layout view of it slips the labels one row, which once put every
+# communication alarm here one bit too high, so a meter fault was reported as a BMS fault.)
+X1_ALARMS: dict[tuple[int, int], str] = {
+    (10042, 0): "EEPROM read/write error",
+    (10042, 1): "flash read/write error",
+    (10042, 3): "inverter (DC/AC) communication failure",
+    (10042, 4): "battery (BMS) communication failure",
+    (10042, 5): "meter 1 communication failure",
+    (10042, 6): "meter 2 communication failure",
+    (10043, 5): "incorrect meter communication address",
+    (10045, 11): "grid CT failure",
+    (10045, 12): "self-check failure",
+    (10046, 0): "grid L1 CT connection fault",
+    (10046, 1): "grid L2 CT connection fault",
+    (10046, 2): "grid L3 CT connection fault",
+    (10048, 4): "Modbus communication timeout",
 }
+X1_ALARM_FIRST = 10042
 
 
 def describe_all(x1: bool = True) -> dict[str, list[str]]:
@@ -181,5 +205,8 @@ def describe_all(x1: bool = True) -> dict[str, list[str]]:
     return out
 
 
-def alarm_texts(register_value: int) -> list[str]:
-    return [text for bit, text in X1_ALARMS.items() if register_value & (1 << bit)]
+def alarm_texts(registers: list[int] | int) -> list[str]:
+    """The alarms set in System Alarm 1-8 (registers 10042 onwards, in order; a single number is System Alarm 1 alone)."""
+    regs = [registers] if isinstance(registers, int) else list(registers)
+    return [text for (reg, bit), text in X1_ALARMS.items()
+            if 0 <= reg - X1_ALARM_FIRST < len(regs) and regs[reg - X1_ALARM_FIRST] & (1 << bit)]

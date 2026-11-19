@@ -10,6 +10,8 @@ WINDOW_S = 600          # how long a command is watched
 CHARGING_W = 500        # this much power counts as "it is charging"
 KEEP = 30               # finished traces kept per battery
 UNRELIABLE_AFTER = 3    # this many Charge commands in a row with no effect = it does not work on this battery
+NEAR_FULL = 85          # a Charge that had no effect from this charge level up proves nothing (tapering, or the battery's own
+                        # charge limit set in its app): it is not counted against the battery
 
 
 class CommandTrace:
@@ -41,6 +43,8 @@ class CommandTrace:
         del self._open[did]
         rec = {"at": t["at"], "mode": t["mode"], "ok": bool(reacted), "reaction_s": round(elapsed) if reacted else None,
                "peak_w": round(t["peak_w"]), "soc_before": t["soc0"], "soc_after": t["soc"]}
+        if not reacted and t["mode"] == "charge" and t["soc0"] is not None and t["soc0"] >= NEAR_FULL:
+            return {**rec, "inconclusive": True}          # reported, not kept: it must not count towards "Charge not working"
         self.results.setdefault(did, []).append(rec)
         del self.results[did][:-KEEP]
         return rec

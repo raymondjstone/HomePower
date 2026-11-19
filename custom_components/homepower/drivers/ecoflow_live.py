@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from typing import Any, Callable
 
@@ -41,6 +42,15 @@ def parse_topic(topic: str) -> tuple[str, str] | None:
     return None
 
 
+def _close(client) -> None:
+    """Disconnect first, while the network loop can still send it, then stop the loop. Blocking: call off the event loop."""
+    try:
+        client.disconnect()
+        client.loop_stop()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class EcoFlowLive:
     """One MQTT connection per EcoFlow account, shared by that account's batteries."""
 
@@ -48,6 +58,9 @@ class EcoFlowLive:
         self.api, self.loop = api, loop
         self._devs: dict[str, Callable[[dict], None]] = {}
         self._client = None
+        self._account = ""
+        self._gen = 0                   # bumped by stop(): a connection that finishes after a stop is closed at once, not kept
+        self._lock = threading.Lock()
         self._task: asyncio.Task | None = None
         self._next_try = 0.0
         self.error: str | None = None
@@ -56,8 +69,16 @@ class EcoFlowLive:
         self.enabled = False            # opt-in: a second connection on the same account could disturb other EcoFlow integrations
 
     def register(self, sn: str, callback: Callable[[dict], None]) -> None:
+        new = sn not in self._devs
         self._devs[sn] = callback
         self.ensure()
+        if new and self._client is not None and self.connected:      # a battery added while the connection is up: subscribe now, not at the next reconnect
+            try:
+                acct = self._account
+                if acct:
+                    self._client.subscribe([(f"/open/{acct}/{sn}/quota", 1), (f"/open/{acct}/{sn}/status", 1)])
+            except Exception:  # noqa: BLE001 - it is subscribed at the next reconnect anyway
+                _LOGGER.debug("could not subscribe %s now", sn, exc_info=True)
 
     def unregister(self, sn: str, callback: Callable[[dict], None] | None = None) -> None:
         if callback is not None and self._devs.get(sn) != callback:
@@ -79,15 +100,17 @@ class EcoFlowLive:
             self.error, self._next_try = "paho-mqtt is not installed: using polling only", time.monotonic() + 10**9
             return
         try:
+            gen = self._gen
             cert = await self.api.certification()
-            await self.loop.run_in_executor(None, self._connect, mqtt, cert)
+            await self.loop.run_in_executor(None, self._connect, mqtt, cert, gen)
             self.error = None
         except Exception as err:  # noqa: BLE001 - live updates are optional
             self.error, self._next_try = f"live updates unavailable: {err}", time.monotonic() + RETRY_AFTER_S
             _LOGGER.debug("EcoFlow live connection failed", exc_info=True)
 
-    def _connect(self, mqtt, cert: dict) -> None:
+    def _connect(self, mqtt, cert: dict, gen: int) -> None:
         account = str(cert["certificateAccount"])
+        self._account = account
         client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=f"HomePower-{account}-{int(time.time()) % 100000}")
         client.username_pw_set(account, str(cert["certificatePassword"]))
         client.tls_set()
@@ -108,7 +131,11 @@ class EcoFlowLive:
         client.reconnect_delay_set(min_delay=5, max_delay=120)
         client.connect_async(str(cert["url"]), int(cert["port"]), keepalive=60)
         client.loop_start()
-        self._client = client
+        with self._lock:
+            if gen == self._gen:
+                self._client = client
+                return
+        _close(client)                  # stopped (unload, live updates switched off, last battery gone) while connecting: do not leave it running
 
     def _dispatch(self, topic: str, payload: bytes) -> None:
         try:
@@ -124,10 +151,14 @@ class EcoFlowLive:
             _LOGGER.debug("ignored an EcoFlow live message", exc_info=True)
 
     def stop(self) -> None:
-        client, self._client, self.connected = self._client, None, False
+        with self._lock:
+            self._gen += 1
+            client, self._client, self.connected = self._client, None, False
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
         if client is not None:
-            try:
-                client.loop_stop()
-                client.disconnect()
-            except Exception:  # noqa: BLE001
-                pass
+            # loop_stop() waits for paho's network thread (it can be mid TLS handshake or reconnect wait): never on the event loop
+            if self.loop is None or self.loop.is_closed():
+                _close(client)            # no loop left to hand it to (shutdown): close it here
+            else:
+                self.loop.run_in_executor(None, _close, client)

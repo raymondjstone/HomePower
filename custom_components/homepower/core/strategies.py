@@ -18,9 +18,10 @@ def num(s: str | None) -> float | None:
     if s in BAD:
         return None
     try:
-        return float(s)  # type: ignore[arg-type]
+        v = float(s)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+    return v if v == v and abs(v) != float("inf") else None          # "nan" / "inf" are no reading
 
 
 def _int(s: str | None) -> int | None:
@@ -32,12 +33,17 @@ def _is_on(s: str | None) -> bool:
     return s == "on"
 
 
+def _domain(entity_id: str, own: str, helper: str) -> str:
+    """The service domain for an entity: a helper (input_number / input_select) takes its own domain's service."""
+    return helper if str(entity_id).startswith(helper + ".") else own
+
+
 def _number(ent: dict, key: str, value: int) -> list[Command]:
-    return [("number", "set_value", {"entity_id": ent[key], "value": value})] if ent.get(key) else []
+    return [(_domain(ent[key], "number", "input_number"), "set_value", {"entity_id": ent[key], "value": value})] if ent.get(key) else []
 
 
 def _select(ent: dict, key: str, option: str | None) -> list[Command]:
-    return [("select", "select_option", {"entity_id": ent[key], "option": option})] if ent.get(key) and option else []
+    return [(_domain(ent[key], "select", "input_select"), "select_option", {"entity_id": ent[key], "option": option})] if ent.get(key) and option else []
 
 
 def _switch(ent: dict, key: str, on: bool) -> list[Command]:
@@ -53,7 +59,10 @@ def _power(extra: dict, st: dict, key: str = "power") -> float | None:
 def _interpret_generic(extra, caps, st) -> Actual:
     if st.get("mode") in BAD:
         return Actual(online=False)
-    rev = {v: Mode(k) for k, v in extra["mode_map"].items()}
+    # One select option may stand for two of our modes (e.g. "Self-consumption" for both Auto and Hold). Read back, it says
+    # nothing certain: report the mode as unknown, else the battery would look wrong forever and be re-commanded every cycle.
+    opts = list(extra["mode_map"].values())
+    rev = {v: Mode(k) for k, v in extra["mode_map"].items() if opts.count(v) == 1}
     return Actual(
         online=True, soc=num(st.get("soc")), power_w=_power(extra, st), mode=rev.get(st["mode"]),
         set_power_w=_int(st.get("set_power")), target_soc=_int(st.get("target_soc")),

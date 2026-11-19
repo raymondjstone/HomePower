@@ -38,6 +38,7 @@ class DevIn:
     guard_held: bool = False
     controllable: bool = True   # False = monitor-only: shown, never used to satisfy a guard
     has_solar: bool | None = None   # panels attached to this battery? None = not known
+    commanded: Mode | None = None   # what HomePower last told it to do (None = nothing): not every battery reports its mode
 
 
 @dataclass
@@ -91,6 +92,9 @@ class Result:
     notes: list[str] = field(default_factory=list)
 
 
+GOAL_TOLERANCE_PTS = 1.5   # an idle battery this close to a goal's target is left alone (see the goal planning below)
+
+
 def _floor(caps: Capabilities, w: World) -> int:
     floor = max(caps.min_soc, w.reserve_floor_pct)
     return max(floor, w.settings.backup_pct) if w.backup_active else floor
@@ -100,7 +104,8 @@ def _zero_import(w: World, dev: DevIn) -> Desired:
     act, caps = dev.actual, dev.config.caps
     if w.grid_w is None or not act.online:
         return desired_for(None, caps, act.soc)  # fail safe: HOLD
-    other_charge = sum(max(0.0, o.actual.power_w or 0.0) for o in w.devices if o is not dev and o.actual.online)
+    # another battery charging from its own panels never passes the house meter, so only the rest of its charging is "other charge"
+    other_charge = sum(max(0.0, (o.actual.power_w or 0.0) - max(0.0, o.actual.pv_w or 0.0)) for o in w.devices if o is not dev and o.actual.online)
     cur = act.set_power_w or 0
     signed_cur = cur if act.mode is Mode.DISCHARGE else -cur if act.mode is Mode.CHARGE else 0
     sp = setpoint(
@@ -129,7 +134,7 @@ def _auto_target(w: World, g: Goal, devs: list[DevIn], deadline: datetime, res: 
     return target
 
 
-def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
+def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str, str]]:
     out: dict[str, tuple[Desired, str, str]] = {}      # device -> (instruction, reason, source: grid / solar / both)
     if not w.goals:
         return out
@@ -171,7 +176,15 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
                 res.notes.append(f"goal '{g.id}': {d.config.name} charges to {tgt(d)}% from the grid, leaving room for the solar forecast")
         allocs: list[Alloc] = []
         if g.source != "solar" and w.rates is not None:
-            needs = [Need(d.config.device_id, d.actual.soc, d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d),
+            def soc_for_plan(d: DevIn) -> float:
+                # A battery that is idle and within GOAL_TOLERANCE_PTS of its target counts as there: otherwise, while the house draws a
+                # little from it, it would be topped up again and again (one command each time), usually at the dearest rate.
+                # A battery we told to charge carries on to the target even if it does not report its mode.
+                short = tgt(d) - d.actual.soc
+                charging = d.actual.mode is Mode.CHARGE or d.commanded is Mode.CHARGE
+                return float(tgt(d)) if not charging and 0 < short < GOAL_TOLERANCE_PTS else d.actual.soc
+
+            needs = [Need(d.config.device_id, soc_for_plan(d), d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d),
                           not d.config.caps.power_control, w.efficiency.get(d.config.device_id)) for d in devs]
             slots = w.rates.slots_between(w.now, deadline)
             if not slots:
@@ -188,7 +201,8 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str]]:
         for d in devs:
             did = d.config.device_id
             p = power_now(allocs, did, w.now)
-            if p > 0 and (did not in out or p > (out[did][0].power_w or 0)):
+            # a grid slot always beats another goal's solar-only entry: that one may draw nothing at all, and the deadline would be missed
+            if p > 0 and (did not in out or out[did][2] == "solar" or p > (out[did][0].power_w or 0)):
                 out[did] = (Desired(Mode.CHARGE, p, target_soc=tgt(d)), f"goal '{g.id}'", "both" if g.source == "both" else "grid")
             elif (p <= 0 and g.source != "grid" and not w.export_better and did not in out and d.actual.soc < target
                   and d.config.caps.power_control):
@@ -261,8 +275,10 @@ def compute(w: World) -> Result:
     trackers = [did for did, s in src.items() if did in res.wants and res.wants[did].mode is Mode.CHARGE and s in ("solar", "both")
                 and by_id[did].config.caps.power_control]
     if trackers:
-        fixed = sum(max(0.0, o.actual.power_w or 0.0) for o in w.devices
-                    if o.actual.online and o.config.device_id not in trackers)   # deliberate charging elsewhere: not surplus
+        # Charging elsewhere that comes through the house meter is not surplus. What a battery charges from its own panels never
+        # reaches the meter, so its panels' power is taken off (otherwise it would look like surplus that is not there).
+        fixed = sum(max(0.0, (o.actual.power_w or 0.0) - max(0.0, o.actual.pv_w or 0.0)) for o in w.devices
+                    if o.actual.online and o.config.device_id not in trackers)
         for did in trackers:
             source, d, old = src[did], by_id[did], res.wants[did]
             caps = d.config.caps
@@ -385,7 +401,10 @@ def compute(w: World) -> Result:
             res.wants[did], res.reasons[did] = Desired(Mode.AUTO), "handing back to the battery"
 
     # ---- 6. overall caps across everything combined
-    online_net = sum(x.actual.power_w or 0.0 for x in w.devices if x.actual.online)
+    # Battery power that passes the house meter. Charging from a battery's own panels never does: counting it would make the house
+    # look like it imports less than it does, and the import-limit headroom would let the others charge past the limit.
+    online_net = sum((p - min(max(0.0, x.actual.pv_w or 0.0), p)) if (p := x.actual.power_w or 0.0) > 0 else p
+                     for x in w.devices if x.actual.online)
     res.wants.update(apply_totals(
         {k: (v, by_id[k].config.caps, by_id[k].config.priority) for k, v in res.wants.items()},
         charge_ceiling(S.charge_cap_w, S.import_limit_w, w.grid_w, online_net),

@@ -136,7 +136,9 @@ def test_load_rules_and_backup():
     assert apply_load_rules(Desired(Mode.CHARGE, 1000), {"discharge"}).mode is Mode.CHARGE
     caps = Capabilities(5000, 3000, 3000, 10)
     assert backup_desired(30, 50, caps).mode is Mode.CHARGE and backup_desired(60, 50, caps) is None
-    assert backup_desired(30, 50, Capabilities(5000, 0, 0, 10, frozenset({Mode.AUTO, Mode.HOLD}))) is None
+    hold_only = Capabilities(5000, 0, 0, 10, frozenset({Mode.AUTO, Mode.HOLD}))
+    assert backup_desired(30, 50, hold_only).mode is Mode.HOLD                     # below the reserve and cannot charge: kept from going lower
+    assert backup_desired(30, 50, Capabilities(5000, 0, 0, 10, frozenset({Mode.AUTO}))) is None
 
 
 # ------------------------------------------------------------------ engine
@@ -467,7 +469,7 @@ def test_tariff_months_flag_a_tariff_cheaper_for_three_complete_months():
     for m in ("2026-07", "2026-08", "2026-09", "2026-10", "2026-11"):
         imp = [0.0] * 48
         imp[2] = 2.0
-        usage[m + "-10"] = {"imp": imp, "exp": [0.0] * 48}
+        usage[m + "-01"] = {"imp": imp, "exp": [0.0] * 48}
     mo = compare(usage, ts)["monthly"]
     assert mo["months"][0] == "2026-07" and mo["totals"]["Now"][0] == 0.6 and mo["totals"]["Go"][0] == 0.14
     f = mo["cheaper_than_current"]
@@ -475,6 +477,9 @@ def test_tariff_months_flag_a_tariff_cheaper_for_three_complete_months():
     short = {k: v for k, v in usage.items() if k >= "2026-09"}
     assert compare(short, ts)["monthly"]["cheaper_than_current"] is None      # only two complete months: not enough
     assert compare(usage, parse_tariffs("Only; peak=0.3"))["monthly"]["cheaper_than_current"] is None
+    # recording began on 30 August: August is a partial month and must not count as a complete one
+    late = {("2026-08-30" if k == "2026-08-01" else k): v for k, v in usage.items() if k >= "2026-08"}
+    assert compare(late, ts)["monthly"]["cheaper_than_current"] is None        # Sep and Oct only (Nov is in progress)
 
 
 def test_forecast_reserve_settings_are_validated():
@@ -532,3 +537,19 @@ def test_charge_without_power_control_never_follows_solar_or_meter():
     assert r.wants["a"].mode is Mode.HOLD
     g = ScheduleEntry("g", frozenset(), time(21), time(23), Desired(Mode.CHARGE, 2000))
     assert compute(world([d], schedules=[g])).wants["a"].mode is Mode.CHARGE
+
+
+
+def test_solar_only_charging_does_not_count_another_batterys_own_panel_charging_as_surplus():
+    """Battery b charges from its own panels (never seen by the house meter) while the house imports 500 W: a solar-only
+    schedule on battery a has no surplus and must not import to charge."""
+    a = dev("a")
+    b = dev("b", soc=50, power=1500)
+    b = DevIn(b.config, Actual(online=True, soc=50, power_w=1500, mode=Mode.AUTO, pv_w=1500), controllable=True)
+    sc = sched(devs=("a",), power=3000, source="solar", start=time(0), end=time(23, 59))
+    r = compute(world([a, b], schedules=[sc], grid_w=500, grid_fresh=True, now=datetime(2026, 11, 10, 12, 0, tzinfo=UTC)))
+    assert r.wants["a"].mode is not Mode.CHARGE, r.wants["a"]
+    # the same charging seen at the meter (grid-fed, no panels) is deliberate and is not surplus either way, so a real surplus still works
+    b2 = DevIn(b.config, Actual(online=True, soc=50, power_w=1500, mode=Mode.AUTO, pv_w=0), controllable=True)
+    r2 = compute(world([a, b2], schedules=[sc], grid_w=-1000, grid_fresh=True, now=datetime(2026, 11, 10, 12, 0, tzinfo=UTC)))
+    assert r2.wants["a"].mode is Mode.CHARGE and r2.wants["a"].power_w >= 2000, r2.wants["a"]

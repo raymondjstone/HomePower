@@ -5,10 +5,17 @@ export default (U) => {
   // ---- alerts banner ------------------------------------------------------
   _alertsBanner() {
     const out = [];
-    const nameOf = (k) => { const id = k.split(":")[1]; return (this.data.devices.find((d) => d.device_id === id) || {}).name || id; };
+    const nameOf = (id) => (this.data.devices.find((d) => d.device_id === id) || {}).name || id;
+    const TEXT = { offline: "offline - HomePower cannot read it", error: "a command failed", unconfirmed: "is not following HomePower's commands",
+      protect: "manufacturer protection is active", grid: "reports the grid is down and is running the house itself",
+      stuck: "was told to charge but is not charging (check its own app for a mode or schedule overriding HomePower)",
+      gridsign: "its grid reading points the opposite way to your grid meter (one of them is reversed)",
+      health: "its round-trip efficiency has dropped (see Insights)", trend: "its temperature or voltage is drifting (see Insights)" };
     for (const a of this.live.alerts || []) {
-      const kind = a.split(":")[0];
-      out.push(`<div class="banner warn">${esc(nameOf(a))}: ${{ offline: "offline - HomePower cannot read it", error: "a command failed", unconfirmed: "is not following HomePower's commands", protect: "manufacturer protection is active" }[kind] || esc(kind)}</div>`);
+      const [kind, id, ...rest] = a.split(":");                      // alerts are "kind:device_id[:detail]", or a bare kind
+      if (kind === "tariffdrift") { out.push(`<div class="banner warn">Your cheap-rate hours no longer match the price history: check them in Settings.</div>`); continue; }
+      const what = kind === "alarm" ? `reports: ${rest.join(":")}` : TEXT[kind] || kind;   // an alarm key carries the battery's own alarm text
+      out.push(`<div class="banner warn">${id ? esc(nameOf(id)) + ": " : ""}${esc(what)}</div>`);
     }
     for (const n of this.live.notes || []) out.push(`<div class="banner info">${esc(n)}</div>`);
     if (this.live.backup) out.push(`<div class="banner info">Backup mode is on: batteries are topped up to the backup reserve and not discharged below it.</div>`);
@@ -21,7 +28,7 @@ export default (U) => {
   _priceChart() {
     const pv = this._preview, pr = (pv && pv.prices) || [];
     if (pr.length < 2) return "";
-    const cur = this.live.currency || "£", W = 800, H = 200;
+    const cur = esc(this.live.currency || "£"), W = 800, H = 200;
     const t0 = Date.parse(pr[0].start), t1 = Date.parse(pr[pr.length - 1].end), span = Math.max(1, t1 - t0);
     const nt = this._niceTicks(Math.min(0, ...pr.map((x) => x.price)), Math.max(...pr.map((x) => x.price), 0.01), 4);
     const X = (t) => ((t - t0) / span) * W, Y = (v) => H - ((v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo)) * H;
@@ -29,7 +36,7 @@ export default (U) => {
       || Object.values(pv.segments || {}).some((l) => l.some((g) => g.mode === "charge" && Date.parse(g.start) < b && Date.parse(g.end) > a));
     const bars = pr.map((x) => {
       const a = Date.parse(x.start), b = Date.parse(x.end), y = Y(Math.max(x.price, 0)), h = Math.abs(Y(x.price) - Y(0)), chg = planned(a, b);
-      return `<rect x="${(X(a) + 0.6).toFixed(1)}" y="${Math.min(y, Y(0)).toFixed(1)}" width="${Math.max(1, X(b) - X(a) - 1.2).toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" fill="${chg ? MODES.charge.color : x.cheap ? "#60a5fa" : "var(--disabled-text-color,#9ca3af)"}" opacity="${chg ? 1 : 0.75}"><title>${new Date(a).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}: ${cur}${x.price.toFixed(3)}/kWh${chg ? " · charging planned" : ""}</title></rect>`;
+      return `<rect x="${(X(a) + 0.6).toFixed(1)}" y="${Math.min(y, Y(0)).toFixed(1)}" width="${Math.max(1, X(b) - X(a) - 1.2).toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" fill="${chg ? MODES.charge.color : x.cheap ? "#60a5fa" : "var(--disabled-text-color,#9ca3af)"}" opacity="${chg ? 1 : 0.75}"><title>${new Date(a).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}: ${cur}${x.price.toFixed(3)}/kWh${chg ? " · charging planned" : ""}</title></rect>`;
     }).join("");
     const grid = nt.ticks.map((v) => `<line x1="0" x2="${W}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--divider-color)" stroke-opacity=".5" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>`).join("");
     const now = Date.now(), nowLine = now > t0 && now < t1 ? `<line x1="${X(now).toFixed(1)}" x2="${X(now).toFixed(1)}" y1="0" y2="${H}" stroke="var(--primary-color)" stroke-width="2" vector-effect="non-scaling-stroke"/>` : "";
@@ -71,9 +78,9 @@ export default (U) => {
         }).join("");
         return `<div class="row"><div class="nm">${esc(d.name)}</div><div class="bar">${segs}<div class="now" style="left:0"></div></div></div>`;
       }).join("");
-      const hrs = [0, 6, 12, 18, 24].map((h) => `<span>${new Date(t0 + h * 3600e3).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>`).join("");
-      const conflicts = pv.conflicts.map((c) => `<div class="banner warn">Schedules ${c.schedules.map((x) => `"${esc(x)}"`).join(" and ")} clash on ${esc((this.data.devices.find((d) => d.device_id === c.device_id) || {}).name || c.device_id)} from ${new Date(c.start).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })} to ${new Date(c.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. Give one a higher priority.</div>`).join("");
-      const plan = pv.plan.length ? `<details><summary>Planned cheap-rate charging (${pv.plan.length} slots)</summary><table class="tbl"><tr><th>Battery</th><th>From</th><th>To</th><th>Power</th><th>Price</th></tr>${pv.plan.map((x) => `<tr><td>${esc((this.data.devices.find((d) => d.device_id === x.device_id) || {}).name || x.device_id)}</td><td>${new Date(x.start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td><td>${new Date(x.end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td><td>${fmtW(x.power_w)}</td><td>${x.price}</td></tr>`).join("")}</table></details>` : "";
+      const hrs = [0, 6, 12, 18, 24].map((h) => `<span>${new Date(t0 + h * 3600e3).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}</span>`).join("");
+      const conflicts = pv.conflicts.map((c) => `<div class="banner warn">Schedules ${c.schedules.map((x) => `"${esc(x)}"`).join(" and ")} clash on ${esc((this.data.devices.find((d) => d.device_id === c.device_id) || {}).name || c.device_id)} from ${new Date(c.start).toLocaleString([], this._tzOpt({ weekday: "short", hour: "2-digit", minute: "2-digit" }))} to ${new Date(c.end).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}. Give one a higher priority.</div>`).join("");
+      const plan = pv.plan.length ? `<details><summary>Planned cheap-rate charging (${pv.plan.length} slots)</summary><table class="tbl"><tr><th>Battery</th><th>From</th><th>To</th><th>Power</th><th>Price</th></tr>${pv.plan.map((x) => `<tr><td>${esc((this.data.devices.find((d) => d.device_id === x.device_id) || {}).name || x.device_id)}</td><td>${new Date(x.start).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}</td><td>${new Date(x.end).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}</td><td>${fmtW(x.power_w)}</td><td>${x.price}</td></tr>`).join("")}</table></details>` : "";
       timeline = `${conflicts}<div class="tl">${rows}<div class="axis"><div></div><div>${hrs}</div></div></div>${plan}
         <div class="legend">${Object.entries(MODES).map(([k, m]) => `<span><i class="sw" style="background:${m.color}"></i>${m.label}</span>`).join("")}<span>Gaps = no instruction (the battery runs itself)</span></div>`;
     }

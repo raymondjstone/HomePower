@@ -99,6 +99,56 @@ async def main():
     t = await must("homepower/device/test", device_id="a")
     print("test     :", t["ok"], [x["name"] for x in t["steps"]])
     assert t["ok"]
+    # the battery details sheet and changing a setting, through the real websocket machinery
+    dev.hold.update({10064: 0, 60000: 100, 60001: 10, 60002: 20, 60003: 1}); dev.inp[32774], dev.inp[32775] = 0b1111011, 0b1111
+    det = await must("homepower/device/details", device_id="a")
+    assert det["actual"]["soc"] == 62 and any(r["name"] == "SOC" and r["value"] == "62" and r["unit"] == "%" for r in det["registers"]), det["actual"]
+    by = {s["key"]: s for s in det["settings"]}
+    assert {"work_mode", "charge_limit", "discharge_limit", "backup_reserve"} <= set(by), sorted(by)
+    assert by["work_mode"]["locked"] and not by["charge_limit"]["locked"], "HomePower drives the mode, not the limits"
+    # opening the sheet and changing a setting must reuse the battery's one connection (these batteries serve a single client), and leave it online
+    _opened = []
+    _real_open = asyncio.open_connection
+    async def _counting_open(*a, **k):
+        _opened.append(a); return await _real_open(*a, **k)
+    asyncio.open_connection = _counting_open
+    try:
+        await must("homepower/device/details", device_id="a"); await must("homepower/device/details", device_id="a")
+        await must("homepower/device/setting", device_id="a", key="charge_limit", value=95)
+        await must("homepower/device/setting", device_id="a", key="charge_limit", value=100)
+        await coord._async_update_data()
+    finally:
+        asyncio.open_connection = _real_open
+    assert not _opened, f"the sheet or a change opened {len(_opened)} new connection(s) to the battery"
+    assert coord.devices_view()["a"]["online"], "the battery went offline after the sheet was opened"
+    r = await call("homepower/device/details", device_id="nope"); assert r[0] == "err", r
+    r = await call("homepower/device/setting", device_id="a", key="work_mode", value=1)
+    assert r[0] == "err" and "managing" in r[2], r
+    r = await must("homepower/device/setting", device_id="a", key="charge_limit", value=90)
+    assert dev.hold[60000] == 90 and not r["pending"] and {s["key"]: s for s in r["settings"]}["charge_limit"]["value"] == 90, r
+    r = await call("homepower/device/setting", device_id="a", key="charge_limit", value=70)
+    assert r[0] == "err" and "between 80 and 100" in r[2] and dev.hold[60000] == 90, r
+    r = await call("homepower/device/setting", device_id="nope", key="charge_limit", value=90); assert r[0] == "err", r
+    try:
+        await call("homepower/device/setting", device_id="a", key="x" * 41, value=1)          # the schema refuses an over-long key before anything runs
+        raise AssertionError("an over-long key was accepted")
+    except Exception as err:
+        import voluptuous as _vol
+        assert isinstance(err, _vol.Invalid), err
+    await must("homepower/pause", paused=True)                  # paused: HomePower sends nothing, so the mode is the user's to change
+    await must("homepower/device/setting", device_id="a", key="work_mode", value=1)
+    assert dev.hold[10064] == 1
+    await must("homepower/pause", paused=False)
+    # a Solarbank 4 that has gone silent says why, and when it was last read
+    from custom_components.homepower.core.models import Actual
+    live_actual = coord._snap.devices["a"].actual
+    coord._snap.devices["a"].actual = Actual(online=False)
+    v = coord.devices_view()["a"]
+    assert v["offline_hint"] and "Anker's cloud" in v["why"] and v["last_read_ok"], v
+    coord._snap.devices["a"].actual = live_actual
+    assert coord.devices_view()["a"]["offline_hint"] is None
+    print("details/setting: ok")
+
     # Never scan the real network from a test: a real battery there accepts only one Modbus client.
     from custom_components.homepower.drivers import discovery as _disc
     _real_scan = _disc.scan

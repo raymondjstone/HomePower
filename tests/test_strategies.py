@@ -38,3 +38,14 @@ def test_generic_plan_clamps_power_to_the_battery_limit():
     c = generic()                                           # max charge 3000 / discharge 2500
     assert plan(c.extra, c.caps, Desired(Mode.CHARGE, 99999))[0][2]["value"] == 3000
     assert plan(c.extra, c.caps, Desired(Mode.DISCHARGE, 99999))[0][2]["value"] == 2500
+
+
+def test_an_option_shared_by_two_modes_reads_back_as_unknown_not_as_the_wrong_one():
+    from core.reconcile import diff
+    c = device_from_dict({**BASE, "device_id": "g", "kind": "custom",
+        "entities": {"soc": "sensor.a", "power": "sensor.b", "mode": "select.c", "set_power": "number.d"},
+        "mode_map": {"auto": "Self", "charge": "C", "discharge": "D", "hold": "Self"}})
+    a = interpret(c.extra, c.caps, {"soc": "50", "power": "0", "mode": "Self"})
+    assert a.mode is None                                       # could be Auto or Hold
+    assert not diff(Desired(Mode.AUTO), a)                      # handing back is not re-sent every cycle
+    assert interpret(c.extra, c.caps, {"soc": "50", "power": "0", "mode": "C"}).mode is Mode.CHARGE

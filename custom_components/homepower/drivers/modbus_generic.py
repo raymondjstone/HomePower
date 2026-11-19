@@ -57,7 +57,8 @@ class GenericModbusDriver:
 
     async def _control_state(self) -> tuple[Mode, int | None]:
         m = self.map
-        mode_raw = int(await self._value(m["mode"]) or 0)
+        # control_value / auto_value are the register's raw numbers (that is how they are written): compare unscaled
+        mode_raw = int(round((await self._value(m["mode"]) or 0) / m["mode"]["scale"]))
         if mode_raw != m["mode"]["control_value"]:
             return Mode.AUTO, None
         sp = await self._value(m["setpoint"]) or 0

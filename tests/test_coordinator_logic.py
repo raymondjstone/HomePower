@@ -243,13 +243,19 @@ def test_stuck_and_grid_sign_alerts_clear_when_the_battery_goes_offline():
         a = FakeAdapter(cfg, None)
         c.adapters = [a]
         st = coordinator.DeviceStatus(desired=Desired(Mode.CHARGE, 2000, target_soc=90), reason="schedule x",
-                                      actual=Actual(online=True, soc=40, power_w=0, grid_w=-800.0))
+                                      actual=Actual(online=True, soc=40, power_w=0, grid_w=-800.0), decision=coordinator.Decision.OK)
         c._snap.devices["e"] = st
+        c.manager.paused = True                                       # paused: nothing is sent, so nothing can be "stuck"
         await c._check_alerts(0, [a])
         await c._check_alerts(120, [a])
+        assert ("stuck:e", True) not in sent
+        c.manager.paused = False
+        c.charge_watch.forget("e")
+        await c._check_alerts(300, [a])
+        await c._check_alerts(420, [a])
         assert ("stuck:e", True) in sent                              # asked to charge, nothing happened for two minutes
         st.actual = Actual(online=False)
-        await c._check_alerts(240, [a])
+        await c._check_alerts(540, [a])
         assert ("stuck:e", False) in sent and "stuck:e" not in c.alerts.active()
     asyncio.run(go())
 
@@ -271,3 +277,21 @@ def test_scrub_removes_keys_always_and_addresses_and_serials_when_strict():
         assert s not in flat, s
     assert "v1.2.3.4x" in flat                                                                          # a version number is not an address
     assert c.scrub(5, strict=True) == 5 and c.scrub(None) is None
+
+
+def test_auto_price_unit_is_decided_by_the_whole_table():
+    from datetime import datetime, timedelta, timezone
+    from hp.core.rates import RateTable, Slot, to_main_units
+    t0 = datetime(2026, 11, 18, 0, 0, tzinfo=timezone.utc)
+    slots = [Slot(t0 + timedelta(minutes=30 * i), t0 + timedelta(minutes=30 * (i + 1)), p) for i, p in enumerate([3.5, 12.0, 30.0, 18.0])]   # pence, one slot under 5p
+    me = types.SimpleNamespace(settings=types.SimpleNamespace(rates_unit="auto", export_price=4.1))
+    unit = coordinator.HomePowerCoordinator._unit(me, RateTable(slots))
+    assert unit == "pence" and to_main_units(3.5, unit) == 0.035 and abs(to_main_units(4.1, unit) - 0.041) < 1e-9
+    pounds = [Slot(t0, t0 + timedelta(minutes=30), 0.035), Slot(t0 + timedelta(minutes=30), t0 + timedelta(minutes=60), 0.30)]
+    assert coordinator.HomePowerCoordinator._unit(types.SimpleNamespace(settings=types.SimpleNamespace(rates_unit="auto", export_price=0.04)), RateTable(pounds)) == "main"
+    assert coordinator.HomePowerCoordinator._unit(types.SimpleNamespace(settings=types.SimpleNamespace(rates_unit="pence", export_price=None)), None) == "pence"
+
+
+def test_a_device_reading_with_nan_is_cleaned_before_the_engine_sees_it():
+    a = coordinator.HomePowerCoordinator._finite(Actual(online=True, soc=50.0, power_w=float("inf"), grid_w=float("nan"), pv_w=100.0))
+    assert a.soc == 50.0 and a.power_w is None and a.grid_w is None and a.pv_w == 100.0

@@ -86,7 +86,12 @@ export default (U) => {
 
   _csvLink(file, rows) {
     const csv = rows.map((r) => r.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
-    return `<a class="btn sm" download="${esc(file)}" href="${URL.createObjectURL(new Blob([csv], { type: "text/csv" }))}">Download CSV</a>`;
+    const urls = (this._csvUrls ||= new Map());          // one blob per distinct content: not a new one (never freed) on every refresh
+    if (!urls.has(csv)) {
+      if (urls.size >= 12) { const [k, u] = urls.entries().next().value; URL.revokeObjectURL(u); urls.delete(k); }
+      urls.set(csv, URL.createObjectURL(new Blob([csv], { type: "text/csv" })));
+    }
+    return `<a class="btn sm" download="${esc(file)}" href="${urls.get(csv)}">Download CSV</a>`;
   },
 
   _tariffCsv(t) {
@@ -100,7 +105,7 @@ export default (U) => {
   },
 
   _whatifCard() {
-    const w = this._whatif || {}, cur = this.live.currency || "£", v = (k, d) => (w.in ? w.in[k] : d);
+    const w = this._whatif || {}, cur = esc(this.live.currency || "£"), v = (k, d) => (w.in ? w.in[k] : d);
     const box = (id, label, val) => `<div class="f"><label>${label}</label><input type="number" id="wi-${id}" min="0" max="100" value="${val}"></div>`;
     let res = "";
     if (w.error) res = `<div class="err">${esc(w.error)}</div>`;
@@ -142,7 +147,7 @@ export default (U) => {
     if (!ev.length) return "";
     const dur = (e) => { const m = Math.max(0, Math.round(((e.end ? Date.parse(e.end) : Date.now()) - Date.parse(e.start)) / 60000)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
     const pc = (v) => (v == null ? "–" : `${Math.round(v)}%`);
-    const rows = ev.map((e) => `<tr><td>${esc(new Date(e.start).toLocaleString())}</td><td>${esc(e.name)}</td><td>${e.end ? dur(e) : `<b>still down: ${dur(e)}</b>`}</td><td>${pc(e.soc_start)} → ${e.end ? pc(e.soc_end) : "…"}</td></tr>`).join("");
+    const rows = ev.map((e) => `<tr><td>${esc(new Date(e.start).toLocaleString([], this._tzOpt()))}</td><td>${esc(e.name)}</td><td>${e.end ? dur(e) : `<b>still down: ${dur(e)}</b>`}</td><td>${pc(e.soc_start)} → ${e.end ? pc(e.soc_end) : "…"}</td></tr>`).join("");
     return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:transmission-tower-off"></ha-icon>Grid outages</h2>
       <table class="tbl"><tr><th>Started</th><th>Battery</th><th>Lasted</th><th>Charge</th></tr>${rows}</table>
       <div style="margin:6px 0">${this._csvLink("grid-outages.csv", [["Started", "Ended", "Battery", "Lasted", "Charge at start (%)", "Charge at end (%)"], ...ev.map((e) => [e.start, e.end || "", e.name, dur(e), e.soc_start, e.soc_end])])}</div>
@@ -154,9 +159,9 @@ export default (U) => {
     if (months.length < 2 || !names.length) return "";
     const vals = names.flatMap((n) => m.totals[n]), hi = Math.max(1, ...vals), lo = Math.min(0, ...vals);
     const W = 640, H = 210, L = 52, B = 26, T = 8, pw = W - L - 8, ph = H - B - T, gw = pw / months.length, bw = Math.min(26, (gw - 8) / names.length);
-    const y = (v) => T + ph * (1 - (v - lo) / (hi - lo));
-    const nt = this._niceTicks(lo, hi, 4);
-    let g = (nt.ticks || []).map((tv) => `<line x1="${L}" x2="${W - 8}" y1="${y(tv).toFixed(1)}" y2="${y(tv).toFixed(1)}" stroke="currentColor" stroke-opacity=".15"/><text x="${L - 6}" y="${(y(tv) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="currentColor">${cur}${Math.round(tv)}</text>`).join("");
+    const nt = this._niceTicks(lo, hi, 4);                       // the scale runs to the rounded ticks, so the top line and label stay inside the chart
+    const y = (v) => T + ph * (1 - (v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo));
+    let g = (nt.ticks || []).map((tv) => `<line x1="${L}" x2="${W - 8}" y1="${y(tv).toFixed(1)}" y2="${y(tv).toFixed(1)}" stroke="currentColor" stroke-opacity=".15"/><text x="${L - 6}" y="${(y(tv) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="currentColor">${cur}${Number.isInteger(tv) ? tv : tv.toFixed(2)}</text>`).join("");
     months.forEach((mo, i) => {
       names.forEach((n, j) => {
         const v = m.totals[n][i], x = L + i * gw + (gw - bw * names.length) / 2 + j * bw;
@@ -186,7 +191,7 @@ export default (U) => {
   },
 
   _insightsView() {
-    const L = this.live, E = L.energy || {}, cur = L.currency || "£", ids = this.data.entity_ids || {}, H = this._hist2 || {};
+    const L = this.live, E = L.energy || {}, cur = esc(L.currency || "£"), ids = this.data.entity_ids || {}, H = this._hist2 || {};
     const pts = (eid) => (H[eid] || []).filter((r) => r.mean != null).map((r) => ({ t: typeof r.start === "number" ? r.start : Date.parse(r.start), v: r.mean }));
     const powerSeries = [];
     if (ids.battery_power) powerSeries.push({ name: "Battery power (+ charging)", color: SERIES[0], pts: pts(ids.battery_power) });

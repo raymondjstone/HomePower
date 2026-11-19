@@ -20,6 +20,9 @@ socket. They are not part of the normal `pytest` run because they need Home Assi
     python tests/ha_harness/e2e_ecoflow_scenario.py
     python tests/ha_harness/e2e_es5000_restart.py
     python tests/ha_harness/e2e_ecoflow_modbus.py   # an ES5000 over local Modbus: charge/discharge in watts, hand-back, restart, reversed-sign detection
+    python tests/ha_harness/e2e_multiday.py   # three days across the autumn clock change: cheap-window charging, a 90 % by 07:00 goal, command count
+    python tests/ha_harness/e2e_handback_retry.py   # a forced battery is always handed back, even after failures
+    python tests/ha_harness/e2e_restore_junk.py   # a damaged or hostile backup file restores safely
     python tests/ha_harness/e2e_soak.py        # a simulated day of cycles: speed and growth (SOAK_CYCLES=... to change)
 
 What they cover: every module imports and every Home Assistant function used has the signature HomePower calls;

@@ -32,11 +32,22 @@ export default (U) => {
     return out;
   },
 
+  // Date formatting options in Home Assistant's time zone (the home's clock), not the browser's; the browser's if the zone is unknown.
+  _tzOpt(o = {}) {
+    const tz = this._hass && this._hass.config && this._hass.config.time_zone;
+    if (!tz) return o;
+    if (this._tzOk === undefined || this._tzOk[0] !== tz) {
+      let ok = true; try { new Intl.DateTimeFormat("en-GB", { timeZone: tz }); } catch (e) { ok = false; }
+      this._tzOk = [tz, ok];
+    }
+    return this._tzOk[1] ? { ...o, timeZone: tz } : o;
+  },
+
   _fmtT(t, span) {
     const d = new Date(t);
-    if (span <= 36 * 3600e3) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    if (span <= 3 * 86400e3) return d.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+    if (span <= 36 * 3600e3) return d.toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }));
+    if (span <= 3 * 86400e3) return d.toLocaleString([], this._tzOpt({ weekday: "short", hour: "2-digit", minute: "2-digit" }));
+    return d.toLocaleDateString([], this._tzOpt({ month: "short", day: "numeric" }));
   },
 
   // series: [{pts:[{t,v}], color, width}]; o: {lo, hi, ticks, tmin, tmax, fmtY, height, ariaLabel}
@@ -107,8 +118,20 @@ export default (U) => {
       <span>Above 0 = charging, below = discharging${covered < mins - 2 ? ` · showing the last ${covered} min so far (the page records while open${mins > 30 ? "; older data comes from Home Assistant history" : ""})` : ""}</span></div>`;
   },
 
+  // "Now" on Home Assistant's clock (schedules run in its time zone), as a Date whose local fields show that time: a browser in another
+  // time zone would otherwise draw today's bars on the wrong day and the now-line at the wrong hour.
+  _haNow() {
+    const tz = this._hass && this._hass.config && this._hass.config.time_zone, d = new Date();
+    if (!tz) return d;
+    try {
+      const p = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" })
+        .formatToParts(d).map((x) => [x.type, x.value]));
+      return new Date(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+    } catch (e) { return d; }          // an unknown zone name: fall back to the browser's clock
+  },
+
   _segmentsToday(s) {
-    const now = new Date();
+    const now = this._haNow();
     const dayOk = (dt) => {
       if (s.on_date) return s.on_date === `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
       const wd = (dt.getDay() + 6) % 7;
@@ -133,7 +156,7 @@ export default (U) => {
   _timeline() {
     const ds = this.data.devices;
     if (!ds.length) return "";
-    const now = new Date(), nowH = now.getHours() + now.getMinutes() / 60;
+    const now = this._haNow(), nowH = now.getHours() + now.getMinutes() / 60;
     const rows = ds.map((d) => {
       const zi = this.data.settings.zero_import_device === d.device_id;
       const mine = this.data.schedules.filter((s) => s.enabled && (!s.device_ids.length || s.device_ids.includes(d.device_id))).sort((x, y) => x.priority - y.priority);

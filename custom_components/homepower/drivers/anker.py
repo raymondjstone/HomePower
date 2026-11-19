@@ -20,7 +20,7 @@ from ..core.models import Actual, Desired, DeviceConfig, Mode
 import time
 
 from ..core.anker_x1_map import alarm_texts
-from .modbus import ModbusError, ModbusTcpClient, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
+from .modbus import ModbusError, ModbusTcpClient, describe_failure, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,11 +35,12 @@ PAIRS = (10002, 10008, 10010, 10012, 10036, 10038)  # 32-bit power registers use
 
 
 class AnkerModbusDriver:
-    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None) -> None:
+    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None, orig: dict | None = None, on_orig=None) -> None:
         self.config = config
         c = config.extra["connection"]
         self.client = client or ModbusTcpClient(c["host"], int(c.get("port", 502)), int(c.get("unit_id", 1)))
-        self._restore: int | None = None  # mode the device was in before we took control
+        self._on_orig = on_orig                        # called when the remembered mode changes, so it survives a restart or an edit
+        self._restore_val: int | None = int(orig["restore"]) if isinstance(orig, dict) and isinstance(orig.get("restore"), int) else None
         self._order: str | None = None    # "big" / "little" once detected
         self._slow_at = 0.0               # X1: next time to refresh the slowly-changing extras (temperature)
         self._firmware: str | None = None
@@ -47,6 +48,24 @@ class AnkerModbusDriver:
         self._limits: tuple | None = None
         self._pack_v: tuple = ()
         self._packs_at = 0.0
+        self.last_error: str | None = None     # why the last read failed, in plain words (None while it answers)
+        self.outages: list[dict] = []          # the last few times it stopped answering: {"at": when it went quiet, "seconds": for how long}
+        self._down_since: float | None = None
+        self._down_wall = 0.0
+
+    @property
+    def _restore(self) -> int | None:
+        """The mode the device was in before we took control (saved, so a restart or an edit does not lose it)."""
+        return self._restore_val
+
+    @_restore.setter
+    def _restore(self, value: int | None) -> None:
+        self._restore_val = value
+        if self._on_orig is not None:
+            try:
+                self._on_orig({"restore": value} if value is not None else None)
+            except Exception:  # noqa: BLE001 - failing to save must never stop a command
+                _LOGGER.debug("could not save the original mode", exc_info=True)
 
     async def close(self) -> None:
         await self.client.close()
@@ -79,7 +98,7 @@ class AnkerModbusDriver:
         # X1: plant status 1 = on-grid, 2 = off-grid. While the grid is lost the inverter runs the house
         # itself, so HomePower must not fight it (protected makes the engine leave it alone).
         x1 = bool(self.config.extra.get("house_meter"))
-        alarms = tuple(alarm_texts(inp[42])) if x1 else ()
+        alarms = tuple(alarm_texts(inp[42:50])) if x1 else ()      # System Alarm 1-8 (10042-10049), all inside the block read
         plant = inp[0] if x1 else None
         off_grid = (plant == 2) if plant in (1, 2) else None
         return Actual(
@@ -107,8 +126,9 @@ class AnkerModbusDriver:
         try:
             t = (await self.client.read_input(10156, 1))[0]
             self._temp = round((t - 0x10000 if t & 0x8000 else t) / 10, 1)
-        except ModbusError:
-            pass
+        except ModbusError as err:
+            if err.code is None:
+                return          # it is not answering at all: the other extras would only wait as long again
         if now >= self._packs_at:      # battery pack voltages every 5 minutes (pack n voltage = 10321 + 56 (n-1))
             self._packs_at = now + 300
             volts = []
@@ -127,13 +147,30 @@ class AnkerModbusDriver:
             except ModbusError:
                 pass
 
+    def _note_down(self, err: ModbusError) -> None:
+        self.last_error = describe_failure(err)
+        if self._down_since is None:
+            self._down_since, self._down_wall = time.monotonic(), time.time()
+            _LOGGER.warning("%s: the battery stopped answering: %s", self.config.device_id, self.last_error)
+
+    def _note_up(self) -> None:
+        if self._down_since is not None:
+            seconds = round(time.monotonic() - self._down_since)
+            self.outages = (self.outages + [{"at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._down_wall)), "seconds": seconds}])[-10:]
+            _LOGGER.info("%s: the battery answers again after %d s", self.config.device_id, seconds)
+            self._down_since = None
+        self.last_error = None
+
     async def read(self) -> Actual:
         try:
             await self._refresh_extras()
-            return self._decode(*await self._blocks())
+            actual = self._decode(*await self._blocks())
         except ModbusError as err:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
+            self._note_down(err)
             return Actual(online=False)
+        self._note_up()
+        return actual
 
     async def probe(self) -> dict:
         """Everything useful for setup, read from the battery itself: live values, model, capacity,
@@ -170,26 +207,37 @@ class AnkerModbusDriver:
             pass
         return info
 
-    async def set_grid_limits(self, import_w: int | None, export_w: int | None) -> list[str]:
+    async def set_grid_limits(self, import_w: int | None, export_w: int | None, mine: dict[str, int] | None = None) -> list[str]:
         """X1 only: mirror HomePower's house import / export limit into the inverter's own limit registers
         (10074 export mode, 10075-76 value, 10077 import mode, 10078-79 value; mode 0 off, 2 fixed watts), so the
-        limit also holds if Home Assistant is down. Cautious by design: it only ever sets a limit that is lower than
-        one already active (an installer's grid-code limit is never raised or switched off) and writes nothing that
-        is already right. Returns what it changed."""
+        limit also holds if Home Assistant is down. Cautious by design: a limit HomePower did not write (an installer's
+        grid-code limit) is only ever tightened, never raised or switched off; nothing that is already right is written.
+        `mine` holds the limits HomePower itself wrote ({"export": W, "import": W}, kept across restarts by the caller and
+        updated here): one of those still in place follows HomePower's setting up as well as down, and is switched off
+        again when HomePower's limit is cleared. Returns what it changed."""
         if self._order is None:
             return []             # the 32-bit word order is not known yet: never write a number that could be misread
+        mine = mine if mine is not None else {}
         hold = await self.client.read_holding(10074, 6)
         order, changed = self._order, []
         for label, base, want in (("export", 0, export_w), ("import", 3, import_w)):
-            if not want or want <= 0:
-                continue
             mode, cur = hold[base], to_u32(hold[base + 1], hold[base + 2], order)
+            ours = mode == 2 and mine.get(label) == cur          # still the value HomePower wrote: nobody has changed it since
+            if mode == 2 and mine.get(label) is not None and not ours:
+                mine.pop(label, None)                            # changed in the app or by an installer since: no longer ours
+            if not want or want <= 0:
+                if ours:                                         # HomePower's limit was cleared: take ours off again
+                    await self.client.write_register(10074 + base, 0)
+                    mine.pop(label, None)
+                    changed.append(f"{label} limit off")
+                continue
             if mode == 2 and cur == want:
                 continue
-            if mode != 0 and cur and cur < want:
-                continue          # the inverter already has a stricter limit: leave it alone
+            if mode != 0 and cur and cur < want and not ours:
+                continue          # the inverter already has a stricter limit someone else set: leave it alone
             await self.client.write_multiple(10074 + base + 1, from_i32(int(want), order))
             await self.client.write_register(10074 + base, 2)
+            mine[label] = int(want)
             changed.append(f"{label} limit {want} W")
         return changed
 
