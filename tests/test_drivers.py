@@ -1245,3 +1245,52 @@ def test_settings_ecoflow_stream_commands_match_the_vendors_integration():
         await e.read()
         assert (await read_settings(e, False))[1] == []
     _run_settings(go())
+
+
+def test_settings_odd_values_from_the_battery_do_not_break_the_sheet():
+    from core.device_settings import anker_settings, ecoflow_settings, ecoflow_write_params
+    st = {s["key"]: s for s in ecoflow_settings({"relay2Onoff": "false", "relay3Onoff": "true", "feedGridMode": "2", "operateSelfPoweredOpen": 0,
+                                                 "backupReverseSoc": 10, "cmsMinDsgSoc": "n/a", "cmsMaxChgSoc": None}, False)}
+    assert st["ac1"]["value"] is False and st["ac2"]["value"] is True and st["feed_in"]["value"] is True and st["self_powered"]["value"] is False
+    assert (st["backup_reserve"]["min"], st["backup_reserve"]["max"]) == (3, 95)
+    with pytest.raises(ValueError, match="whole number"):
+        ecoflow_write_params("backup_reserve", "abc", {"backupReverseSoc": 10}, False)
+    # a Solarbank that does not say whether its backup reserve is on: the reserve is left alone, with the right reason
+    by = {s["key"]: s for s in anker_settings(False, {10064: 0, 32774: 1, 32775: 0b0111, 60000: 100, 60001: 10, 60002: 20}, "big", False)}
+    assert "did not say" in by["backup_reserve"]["locked"] and "backup_enabled" not in by
+    # HomePower is driving an X1: its work mode is locked, its limits and watchdog are not
+    x = {s["key"]: s for s in anker_settings(True, {10064: 20, 10074: 2, 10075: 0, 10076: 3600, 10077: 0, 10078: 0, 10079: 0, 10080: 600}, "big", True)}
+    assert x["work_mode"]["locked"] and not x["export_limit"]["locked"] and not x["watchdog"]["locked"] and x["export_limit"]["value"] == 3600
+
+
+def test_details_and_settings_survive_garbage_from_a_battery():
+    """Whatever a battery (or a cloud) sends, the sheet is built and a change is either refused with a reason or checked: never an exception."""
+    import random
+    from core.device_details import anker_rows, ecoflow_rows, wanted
+    from core.device_settings import anker_settings, anker_write_plan, ecoflow_settings, ecoflow_write_params
+    rnd = random.Random(7)
+    junk = [0, 1, 2, 3, 255, 1000, 32767, 32768, 65535, None, "x", 1.5, True, [], {}]
+    for _ in range(300):
+        x1 = rnd.random() < .5
+        order = rnd.choice(["big", "little", None])
+        vals = {str(a + i): rnd.choice([rnd.randrange(65536), rnd.randrange(65536), 0, 65535]) for a, n, *_ in wanted(x1) for i in range(n) if rnd.random() < .9}
+        for r in anker_rows(wanted(x1), vals, order, x1):
+            assert isinstance(r["value"], str) and isinstance(r["name"], str)
+        regs = {a: rnd.randrange(65536) for a in (10064, 10074, 10075, 10076, 10077, 10078, 10079, 10080, 32774, 32775, 60000, 60001, 60002, 60003) if rnd.random() < .85}
+        controlled = rnd.random() < .5
+        anker_settings(x1, regs, order, controlled)
+        for key in ("work_mode", "export_limit_mode", "export_limit", "import_limit", "watchdog", "charge_limit", "discharge_limit", "backup_reserve", "nope"):
+            try:
+                plan = anker_write_plan(x1, key, rnd.choice(junk + [rnd.randrange(-5, 40000)]), regs, order, controlled)
+                assert plan and all(0 <= w <= 0xFFFF for _, words in plan for w in words)
+            except ValueError:
+                pass
+        q = {k: rnd.choice(junk + [rnd.randrange(0, 3000)]) for k in ("relay2Onoff", "relay3Onoff", "feedGridMode", "operateSelfPoweredOpen", "operateIntelligentScheduleModeOpen",
+                                                                       "backupReverseSoc", "cmsMinDsgSoc", "cmsMaxChgSoc", "soc", "temp") if rnd.random() < .8}
+        ecoflow_rows(q)
+        ecoflow_settings(q, controlled)
+        for key in ("ac1", "ac2", "feed_in", "self_powered", "ai_mode", "backup_reserve", "nope"):
+            try:
+                ecoflow_write_params(key, rnd.choice(junk + [rnd.randrange(-5, 200)]), q, controlled)
+            except ValueError:
+                pass

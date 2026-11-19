@@ -72,7 +72,11 @@ export default (U) => {
     const msg = (this._settingMsg ||= {});
     let value = given !== undefined ? given : (this.shadowRoot.getElementById("bs-" + key) || {}).value;
     if (s.kind === "switch") value = String(value) === "1";
-    else { value = Number(value); if (!Number.isFinite(value)) { msg[key] = { err: true, text: "Enter a number." }; return this._paintDetails(); } }
+    else {
+      const typed = String(value ?? "").trim();      // a blank box is not 0
+      value = typed === "" ? NaN : Number(typed);
+      if (!Number.isFinite(value)) { msg[key] = { err: true, text: "Enter a number." }; return this._paintDetails(); }
+    }
     const what = s.kind === "select" ? ((s.options.find((o) => o.value === value) || {}).label ?? value) : s.kind === "switch" ? (value ? "on" : "off") : `${value}${s.unit ? " " + s.unit : ""}`;
     if (!confirm(`Change "${s.label}" on ${x.d.name} to ${what}?
 This is sent to the battery now.`)) return;

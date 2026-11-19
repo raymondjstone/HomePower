@@ -37,6 +37,18 @@ def _s(key, label, kind, group, value, *, unit="", lo=None, hi=None, step=None, 
             "options": [{"value": v, "label": t} for v, t in (options or {}).items()], "hint": hint, "locked": locked}
 
 
+def _on(v) -> bool:
+    """A switch value as EcoFlow sends it: a real boolean, a number, or (rarely) text."""
+    return v.strip().lower() in ("true", "1", "on", "yes") if isinstance(v, str) else bool(v)
+
+
+def _int(v, default: int) -> int:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
 def _u32(regs: dict, addr: int, order: str | None) -> int | None:
     a, b = regs.get(addr), regs.get(addr + 1)
     if a is None or b is None or order is None:
@@ -64,7 +76,7 @@ def anker_settings(x1: bool, regs: dict[int, int], order: str | None, controlled
             if m not in opts:
                 opts[m] = f"{m} (not in Anker's list)"
             out.append(_s(key + "_mode", label + " mode", "select", "Configuration", m, options=opts,
-                          hint="HomePower sets this itself when you give it an import or export limit in Settings; a limit it did not set is only ever tightened."))
+                          hint="Changing the mode does not convert the limit value: set the value afterwards. HomePower sets this itself when you give it an import or export limit in Settings; a limit it did not set is only ever tightened."))
             v = _u32(regs, mreg + 1, order)
             if v is not None:
                 pct = m == 1
@@ -91,7 +103,8 @@ def anker_settings(x1: bool, regs: dict[int, int], order: str | None, controlled
             continue
         locked = ""
         if key == "backup_reserve" and not backup_on:
-            locked = "Switch the backup reserve on in the Anker app first."
+            locked = ("Switch the backup reserve on in the Anker app first." if regs.get(60003) is not None
+                      else "This battery did not say whether its backup reserve is on, so it is not changed from here.")
         out.append(_s(key, label, "number", "Controls", v, unit="%", lo=lo, hi=hi, step=1, locked=locked,
                       hint="While the backup reserve is on, the discharge limit must not be above the reserve, and the reserve must be below the charging limit." if key != "charge_limit" else
                       "While the backup reserve is on, this must be above the discharge limit and the reserve."))
@@ -158,16 +171,16 @@ def ecoflow_settings(quota: dict, controlled: bool) -> list[dict]:
     out: list[dict] = []
     for key, (qk, _cfg, label) in _AC_KEYS.items():
         if qk in quota:
-            out.append(_s(key, label, "switch", "Controls", bool(quota[qk])))
+            out.append(_s(key, label, "switch", "Controls", _on(quota[qk])))
     if "feedGridMode" in quota:
-        out.append(_s("feed_in", "Feed-in control", "switch", "Controls", quota["feedGridMode"] == 2, hint="Lets the battery feed power into the house grid connection."))
+        out.append(_s("feed_in", "Feed-in control", "switch", "Controls", _int(quota["feedGridMode"], 0) == 2, hint="Lets the battery feed power into the house grid connection."))
     lock = "HomePower is managing this battery. Turn on \"monitor only\" in Edit to change it yourself." if controlled else ""
     for key, (qk, _cfg, label) in _MODES.items():
         if qk in quota:
-            out.append(_s(key, label, "switch", "Controls", bool(quota[qk]), locked=lock))
+            out.append(_s(key, label, "switch", "Controls", _on(quota[qk]), locked=lock))
     if "backupReverseSoc" in quota and isinstance(quota["backupReverseSoc"], (int, float)):
-        lo = max(3, int(quota.get("cmsMinDsgSoc", 0) or 0) + 3)
-        hi = min(95, int(quota.get("cmsMaxChgSoc", 100) or 100))
+        lo = max(3, _int(quota.get("cmsMinDsgSoc"), 0) + 3)
+        hi = min(95, _int(quota.get("cmsMaxChgSoc"), 100) or 100)
         out.append(_s("backup_reserve", "Backup reserve level", "number", "Configuration", int(quota["backupReverseSoc"]), unit="%", lo=lo, hi=max(lo, hi), step=1, locked=lock,
                       hint="The battery keeps this much charge back for a power cut. HomePower raises it to hold or charge the battery."))
     return out

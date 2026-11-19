@@ -141,6 +141,10 @@ for (const tab of ["overview", "plan", "schedules", "batteries", "insights", "di
   root.getElementById("bs-charge_limit").value = "70";
   await press(root.getElementById("modal").querySelector('[data-act="setting-set"][data-key="charge_limit"]'));
   must("a refusal from the backend is shown next to the setting", /must be between 80 and 100/.test(root.getElementById("modal").textContent) && !bad(root.getElementById("modal").textContent));
+  const sentBefore = sent().length;
+  root.getElementById("bs-charge_limit").value = "";
+  await press(root.getElementById("modal").querySelector('[data-act="setting-set"][data-key="charge_limit"]'));
+  must("a blank number box is not sent as 0", sent().length === sentBefore && /Enter a number/.test(root.getElementById("modal").textContent));
   globalThis.__settingReply = null;
   // the controls of the matching Home Assistant device go through Home Assistant's own services
   const service = () => calls.filter((c) => String(c.type).startsWith("(service)"));
