@@ -45,7 +45,7 @@ def _on(v) -> bool:
 def _int(v, default: int) -> int:
     try:
         return int(float(v))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
@@ -126,7 +126,7 @@ def anker_write_plan(x1: bool, key: str, value, regs: dict[int, int], order: str
         n = int(value)
         if isinstance(value, bool) or (isinstance(value, float) and value != n) or (isinstance(value, str) and str(n) != value.strip()):
             raise ValueError
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError(f"{s['label']} needs a whole number") from None
     if s["kind"] == "select":
         if key == "work_mode":
@@ -207,7 +207,7 @@ def ecoflow_write_params(key: str, value, quota: dict, controlled: bool) -> dict
         n = int(value)
         if isinstance(value, bool) or (isinstance(value, float) and value != n):
             raise ValueError
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValueError(f"{s['label']} needs a whole number") from None
     if not s["min"] <= n <= s["max"]:
         raise ValueError(f"{s['label']} must be between {s['min']} and {s['max']} %")

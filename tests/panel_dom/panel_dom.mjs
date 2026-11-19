@@ -127,7 +127,9 @@ for (const tab of ["overview", "plan", "schedules", "batteries", "insights", "di
   await press(btn('[data-act="setting-set"][data-key="charge_limit"]'));
   must("a number setting is sent to the backend as a number", sent().length === 1 && sent()[0].key === "charge_limit" && sent()[0].value === 90 && sent()[0].device_id === id, JSON.stringify(sent()));
   must("the sheet shows the new value and says it was saved", root.getElementById("bs-charge_limit").value === "90" && /Saved/.test(root.getElementById("modal").textContent));
+  root.getElementById("bs-export_limit_mode").value = "2";
   await press(root.getElementById("modal").querySelector('[data-act="setting-set"][data-key="ac1"]'));
+  must("what was chosen in another box survives sending a different setting", root.getElementById("bs-export_limit_mode").value === "2");
   must("a switch is sent as true or false", sent().at(-1).key === "ac1" && sent().at(-1).value === false, JSON.stringify(sent().at(-1)));
   root.getElementById("bs-export_limit_mode").value = "0";
   await press(root.getElementById("modal").querySelector('[data-act="setting-set"][data-key="export_limit_mode"]'));

@@ -24,12 +24,13 @@ export default (U) => {
     const d = this.data.devices.find((x) => x.device_id === id);
     if (!d) return;
     this._settingMsg = {}; this._haMsg = {};
-    this._detail = { d, dg: null, det: null };
+    const mine = (this._detail = { d, dg: null, det: null });
     this._openModal(this._detailsHtml(d, null, null));
     const [dg, det] = await Promise.all([
       this._hass.callWS({ type: "homepower/diagnostics" }).then((r) => (r.devices || {})[id] || false).catch(() => false),
       this._hass.callWS({ type: "homepower/device/details", device_id: id }).catch((e) => ({ error: e.message || String(e) })),
     ]);
+    if (this._detail !== mine) return;      // another battery's sheet was opened while this one was loading
     this._detail = { d, dg, det };
     this._paintDetails();
   },
@@ -40,8 +41,10 @@ export default (U) => {
     if (!x || !this._modal || !box || !this.shadowRoot.getElementById("bd-" + x.d.device_id)) return;
     const open = new Map([...box.querySelectorAll("details")].map((e) => [(e.querySelector("summary") || {}).textContent, e.open]));
     const top = (box.querySelector(".modal") || {}).scrollTop || 0;
+    const typed = new Map([...box.querySelectorAll('input[id^="bs-"], select[id^="bs-"], input[id^="ha-"], select[id^="ha-"]')].map((e) => [e.id, e.value]));      // what was typed or chosen in the other boxes
     box.innerHTML = this._detailsHtml(x.d, x.dg, x.det);
     for (const e of box.querySelectorAll("details")) { const k = (e.querySelector("summary") || {}).textContent; if (open.has(k)) e.open = open.get(k); }
+    for (const [id, v] of typed) { const e = box.querySelector('[id="' + id + '"]'); if (e && e.value !== v) e.value = v; }
     const m = box.querySelector(".modal"); if (m) m.scrollTop = top;
   },
 

@@ -1405,3 +1405,15 @@ def test_settings_read_the_capability_mask_0x8007_on_its_own():
             assert {"charge_limit", "discharge_limit", "backup_reserve"} <= {s["key"] for s in st}      # no 0x8007: every limit is still offered
             await d.close()
     asyncio.run(go())
+
+
+def test_infinite_or_huge_values_are_refused_not_crashed():
+    from core.device_settings import anker_write_plan, ecoflow_write_params, ecoflow_settings
+    regs = {10064: 0, 32774: 0xFF, 32775: 0xFF, 60000: 100, 60001: 10, 60002: 20, 60003: 0}
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        with pytest.raises(ValueError):
+            anker_write_plan(False, "charge_limit", bad, regs, "big", False)
+        with pytest.raises(ValueError):
+            ecoflow_write_params("backup_reserve", bad, {"backupReverseSoc": 20}, False)
+    # a cloud value that is infinity must not break reading the settings
+    assert ecoflow_settings({"backupReverseSoc": 20, "cmsMinDsgSoc": "1e999"}, False)
