@@ -36,6 +36,10 @@ class EcoFlowError(Exception):
     pass
 
 
+PV_SPIKE_MIN_W = 500        # a solar reading below this is never second-guessed (see _screen_pv)
+PV_LIKE_CHARGE = 0.2        # "equal to the charge power" means within 20 %
+PV_JUMP = 0.5               # and at least double the previous reading
+PV_MEMORY_S = 120           # the previous reading counts if it is no older than this
 BACKOFF_S = 300            # after a rate limit or a refusal, leave EcoFlow alone for this long
 REFUSED_CODES = ("1006",)  # the model does not accept these commands through the developer API
 _SETTINGISH = re.compile(r"backup|reserve|cfg|mode|onoff|switch|limit|timer|task|enable|strateg|schedul|feed", re.I)
@@ -197,6 +201,9 @@ class EcoFlowStreamDriver:
     _orig_val = None
     _on_orig = None
     _handed_at = -1e9
+    _pv_prev = None           # (time, pv_w) of the last solar reading accepted; see _screen_pv
+    _pv_run = 0
+    pv_ignored = 0            # solar readings held back because they looked like grid charging
 
 
     def __init__(self, config: DeviceConfig, session, hub=None, orig: dict | None = None, on_orig=None) -> None:
@@ -298,12 +305,32 @@ class EcoFlowStreamDriver:
             return replace(actual, mode=Mode.HOLD)
         return actual
 
+    def _screen_pv(self, a: Actual) -> Actual:
+        """EcoFlow's cloud sometimes reports the grid-charge power as solar ("powGetPvSum") with the grid reading at exactly 0, then
+        the true values on the next sample, over and over while the battery charges from the grid (tolwi/hassio-ecoflow-cloud
+        issues 786 and 679: the wrong values arrive from EcoFlow already). Taken at face value that makes bought charge look like
+        free solar. A single reading cannot prove it (real sun charging looks the same), so a reading is only held back when it
+        has every one of the reported marks: large, equal to the battery's own charge power, the grid at exactly 0, and a jump from
+        a much lower reading seen in the last two minutes. The last good value stands in, for at most two readings in a row, so
+        real solar that really did jump is believed from the third reading on."""
+        now, pv, bat, grid, prev = time.monotonic(), a.pv_w, a.power_w, a.grid_w, self._pv_prev
+        if (pv is not None and pv >= PV_SPIKE_MIN_W and bat is not None and bat > 0 and abs(pv - bat) <= PV_LIKE_CHARGE * bat
+                and grid is not None and grid == 0 and prev is not None and now - prev[0] <= PV_MEMORY_S and prev[1] < PV_JUMP * pv
+                and self._pv_run < 2):
+            self._pv_run += 1
+            self.pv_ignored += 1
+            return replace(a, pv_w=prev[1])
+        self._pv_run = 0
+        if pv is not None:
+            self._pv_prev = (now, pv)
+        return a
+
     async def read(self) -> Actual:
         now = time.monotonic()
         if self.hub is not None:
             self.hub.register(self.sn, self.merge_push)   # no-op once registered; retries a failed connection later
         if self._pushed and now - self._pushed < 120 and now - self._polled < 300 and self._state:
-            return self._held_at_floor(self._decode(self._state, self.config.caps.min_soc))   # live data is flowing: no need to poll
+            return self._held_at_floor(self._screen_pv(self._decode(self._state, self.config.caps.min_soc)))   # live data is flowing: no need to poll
         if self._cache and now - self._cache[0] < 30:
             return self._cache[1]
         if now < self._blocked_until:
@@ -313,7 +340,7 @@ class EcoFlowStreamDriver:
             self._note_changes(self._state, q)
             self._state, self._polled, self._pushed = dict(q), time.monotonic(), 0.0
             self.last_quota, self.last_error = q, None
-            actual = self._held_at_floor(self._decode(q, self.config.caps.min_soc))
+            actual = self._held_at_floor(self._screen_pv(self._decode(q, self.config.caps.min_soc)))
             if actual.soc is None and q:
                 _LOGGER.warning("%s: EcoFlow returned no charge level; readings it did return: %s",
                                 self.config.device_id, ", ".join(sorted(q)[:60]))

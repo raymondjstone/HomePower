@@ -130,6 +130,7 @@ export default (U) => {
       tech = rows([
         ["Connection", conn ? esc(conn) : null], ["Last good read", when(dg.last_read_ok) || "never"],
         ["32-bit word order", t(dg.word_order)], ["Driver error", t(dg.driver_error)],
+        ["Solar readings held back", dg.pv_readings_ignored ? `${dg.pv_readings_ignored} (EcoFlow sometimes reports grid charging as solar; those readings were replaced by the last good one)` : null],
         ["Last command", lc ? `${esc(lc.mode)}${lc.power_w ? " " + fmtW(lc.power_w) : ""} at ${esc(new Date(lc.at).toLocaleTimeString([], this._tzOpt()))} - ${esc(lc.result)}` : "none yet"],
         ["Unconfirmed commands", dg.unconfirmed ? dg.unconfirmed : null], ["Holding control", dg.release_pending ? "Yes" : null],
       ]);

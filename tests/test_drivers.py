@@ -1097,3 +1097,48 @@ def test_details_solarbank_capability_masks_and_ecoflow_5000_keys():
     assert rows["Settings this battery supports"]["value"] == "charge limit, discharge limit, backup reserve switch"
     r = {x["name"]: x for x in ecoflow_rows({"chgPowLimit": 1200, "feedGridModePowLimit": 800, "upsEnabled": True, "meterPhaseAVol": 231.5, "cycleSoh": 99})}
     assert r["Net power in limit"]["kind"] == "setting" and r["UPS mode"]["value"] == "On" and r["Grid voltage L1 (meter)"]["unit"] == "V"
+
+
+def _eco_screen_driver():
+    from hp.drivers.ecoflow import EcoFlowStreamDriver
+    d = EcoFlowStreamDriver.__new__(EcoFlowStreamDriver)
+    return d
+
+
+def _eco_reading(pv, grid, bat=3800.0):
+    from core.models import Actual
+    return Actual(online=True, soc=50.0, power_w=bat, pv_w=pv, grid_w=grid)
+
+
+def test_ecoflow_grid_charge_reported_as_solar_is_held_back_but_real_solar_is_not():
+    """EcoFlow's cloud alternates real readings with ones that call the grid charge 'solar' (tolwi/hassio-ecoflow-cloud #786)."""
+    d = _eco_screen_driver()
+    seen = [d._screen_pv(_eco_reading(*r)).pv_w for r in (
+        (350.0, 3837.0),      # a good reading: grid charging, a little real solar
+        (3792.8, 0),          # the bad one from the report: charge power called solar, grid at exactly 0
+        (349.0, 3835.0),      # good again
+        (3794.1, 0),          # bad again
+    )]
+    assert seen == [350.0, 350.0, 349.0, 349.0] and d.pv_ignored == 2
+    # sun really did come out: charge power equals solar, but the grid is a real (non-zero) reading, so it is believed at once
+    d = _eco_screen_driver()
+    assert [d._screen_pv(_eco_reading(*r)).pv_w for r in ((300.0, 40.5), (3500.0, -12.3))] == [300.0, 3500.0] and d.pv_ignored == 0
+    # even with the grid at exactly 0, solar that stays high is believed from the third reading on
+    d = _eco_screen_driver()
+    d._screen_pv(_eco_reading(300.0, 20.0))
+    assert [d._screen_pv(_eco_reading(3600.0, 0)).pv_w for _ in range(4)] == [300.0, 300.0, 3600.0, 3600.0]
+
+
+def test_ecoflow_solar_screen_needs_every_mark_and_never_invents_a_reading():
+    d = _eco_screen_driver()
+    # the very first reading has nothing to compare with: taken as it is
+    assert d._screen_pv(_eco_reading(3800.0, 0)).pv_w == 3800.0
+    for pv, grid, bat in ((3800.0, 0, -3800.0),        # discharging: solar cannot be the charge power
+                          (2000.0, 0, 3800.0),         # not equal to the charge power
+                          (400.0, 0, 380.0),           # small readings are never second-guessed
+                          (3800.0, None, 3800.0)):     # no grid reading: no evidence
+        d = _eco_screen_driver()
+        d._screen_pv(_eco_reading(100.0, 50.0, bat))
+        assert d._screen_pv(_eco_reading(pv, grid, bat)).pv_w == pv, (pv, grid, bat)
+    d = _eco_screen_driver()
+    assert d._screen_pv(_eco_reading(None, 0)).pv_w is None                       # no solar figure stays none
