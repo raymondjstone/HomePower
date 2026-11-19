@@ -1417,3 +1417,17 @@ def test_infinite_or_huge_values_are_refused_not_crashed():
             ecoflow_write_params("backup_reserve", bad, {"backupReverseSoc": 20}, False)
     # a cloud value that is infinity must not break reading the settings
     assert ecoflow_settings({"backupReverseSoc": 20, "cmsMinDsgSoc": "1e999"}, False)
+
+
+def test_a_battery_that_answers_nothing_is_not_told_it_lacks_the_setting():
+    import asyncio
+    from core.device_settings import apply_change
+
+    class Mute:
+        config = type("C", (), {"extra": {}})()
+        _order = "big"
+        async def read_registers(self, addrs): return {}
+        async def scan(self): return {}
+
+    with pytest.raises(ValueError, match="did not answer"):
+        asyncio.run(apply_change(Mute(), "charge_limit", 90, False))

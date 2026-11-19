@@ -224,6 +224,8 @@ async def read_settings(driver, controlled: bool) -> tuple[str, list[dict], dict
         if 32775 in wanted:        # read on its own: in a batch with 32774 a battery without it answers a silent 0, which would hide every limit
             raw.update(await driver.read_registers([32775]))
         regs = {int(k): v for k, v in raw.items()}
+        if not regs:
+            raise ValueError("The battery did not answer for its settings, so nothing was changed. Try again in a moment.")
         return "anker", anker_settings(x1, regs, driver._order, controlled), regs
     quota = getattr(driver, "last_quota", None)
     if hasattr(driver, "api") and hasattr(driver, "sn") and isinstance(quota, dict) and quota:        # an EcoFlow STREAM over the developer API
