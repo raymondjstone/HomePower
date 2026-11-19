@@ -362,6 +362,7 @@ class HomePowerPanel extends HTMLElement {
         if (await this._call({ type: "homepower/device/reorder", device_ids: ids }, (m) => alert(m))) await this._reload();
         return;
       }
+      case "battery-details": return this._batteryDetails(id);
       case "edit-battery": this._editingId = id; return this._batteryModal(dev(), false);
       case "save-battery": {
         const d = this._collectBattery(t.dataset.id);

@@ -11,10 +11,82 @@ export default (U) => {
       return `<div class="card"><div class="bat">${this._ring(r.soc, 80)}<div class="info">
         <div class="nm"><span class="dot" style="background:${this._color(i)}"></span>${esc(d.name)} <span class="chip ${r.online ? "" : "bad"}">${r.online ? "Online" : "Offline"}</span></div>
         <div class="sub" style="font-size:13px;color:var(--secondary-text-color);margin-top:4px">${esc(this._profile(d.kind).label)}<br>Modes: ${(d.supported_modes || []).map((m) => (MODES[m] || {}).label).join(", ")}<br>${fmtKwh(d.capacity_wh)} · ${fmtW(d.max_charge_w)} in / ${fmtW(d.max_discharge_w)} out · min SOC ${d.min_soc}%</div></div></div>
-        <div style="margin-top:12px;display:flex;gap:8px;align-items:center"><button class="btn sm" title="Move earlier" data-act="move-battery" data-dir="-1" data-id="${esc(d.device_id)}" ${i === 0 ? "disabled" : ""}><ha-icon icon="mdi:arrow-left" style="--mdc-icon-size:16px"></ha-icon></button><button class="btn sm" title="Move later" data-act="move-battery" data-dir="1" data-id="${esc(d.device_id)}" ${i === this.data.devices.length - 1 ? "disabled" : ""}><ha-icon icon="mdi:arrow-right" style="--mdc-icon-size:16px"></ha-icon></button><button class="btn sm" data-act="edit-battery" data-id="${esc(d.device_id)}"><ha-icon icon="mdi:pencil" style="--mdc-icon-size:16px"></ha-icon>Edit</button>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center"><button class="btn sm" title="Move earlier" data-act="move-battery" data-dir="-1" data-id="${esc(d.device_id)}" ${i === 0 ? "disabled" : ""}><ha-icon icon="mdi:arrow-left" style="--mdc-icon-size:16px"></ha-icon></button><button class="btn sm" title="Move later" data-act="move-battery" data-dir="1" data-id="${esc(d.device_id)}" ${i === this.data.devices.length - 1 ? "disabled" : ""}><ha-icon icon="mdi:arrow-right" style="--mdc-icon-size:16px"></ha-icon></button><button class="btn sm" title="All settings and readings" data-act="battery-details" data-id="${esc(d.device_id)}"><ha-icon icon="mdi:cog" style="--mdc-icon-size:16px"></ha-icon>Details</button><button class="btn sm" data-act="edit-battery" data-id="${esc(d.device_id)}"><ha-icon icon="mdi:pencil" style="--mdc-icon-size:16px"></ha-icon>Edit</button>
           <button class="btn sm" data-act="toggle-control" data-id="${esc(d.device_id)}" data-on="${d.control_enabled === false ? 1 : 0}">${d.control_enabled === false ? "Allow control" : "Stop control (monitor only)"}</button></div></div>`;
     }).join("");
     return head + `<div class="grid g-cards">${cards}</div>`;
+  },
+
+  // A read-only sheet of everything HomePower knows about one battery: its settings, its live readings and (once fetched) the
+  // driver's diagnostics and raw readings. Opened from the cog on a battery card.
+  async _batteryDetails(id) {
+    const d = this.data.devices.find((x) => x.device_id === id);
+    if (!d) return;
+    this._openModal(this._detailsHtml(d, null));
+    let dg = null;
+    try { dg = ((await this._hass.callWS({ type: "homepower/diagnostics" })).devices || {})[id] || null; } catch (e) { /* the sheet still shows settings and live readings */ }
+    if (this._modal && this.shadowRoot.getElementById("bd-" + id)) this.shadowRoot.getElementById("modal").innerHTML = this._detailsHtml(d, dg || false);
+  },
+
+  _detailsHtml(d, dg) {
+    const id = d.device_id, r = this._reading(d), lv = r.lv || {}, prof = this._profile(d.kind);
+    const when = (s) => (s ? new Date(s).toLocaleString([], this._tzOpt()) : null);
+    const yn = (v) => (v ? "Yes" : "No");
+    const L = (lv.limits || null);
+    const rows = (list) => `<table class="tbl">${list.filter(([, v]) => v != null && v !== "").map(([k, v]) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`).join("")}</table>`;
+    const t = (v) => (v == null ? null : esc(String(v)));
+    const p = r.power;
+    const settings = rows([
+      ["Model", esc(prof.label)], ["Connects through", t(prof.driver)],
+      ["Capacity", d.capacity_wh ? fmtKwh(d.capacity_wh) : null], ["Max charge", d.max_charge_w ? fmtW(d.max_charge_w) : null], ["Max discharge", d.max_discharge_w ? fmtW(d.max_discharge_w) : null],
+      ["Minimum charge", d.min_soc != null ? d.min_soc + "%" : null], ["Priority", t(d.priority)], ["Role", d.role === "reserve" ? "Reserve" : "Everyday"],
+      ["Solar panels attached", t(d.solar || "auto")], ["Meter measures whole house", t(d.grid_meter || "auto")],
+      ["Modes", (d.supported_modes || []).map((m) => (MODES[m] || {}).label || m).join(", ")],
+      ["HomePower may send commands", yn(d.control_enabled !== false)],
+      ["Zero-import battery", this.data.settings.zero_import_device === id ? "Yes" : null],
+      ...Object.entries(d.entities || {}).filter(([, v]) => v).map(([k, v]) => [`Entity: ${k}`, esc(v)]),
+      ...(d.invert_power ? [["Power sign flipped", "Yes"]] : []),
+    ]);
+    const live = rows([
+      ["Status", r.online ? "Online" : "Offline"], ["Charge", r.soc != null ? Math.round(r.soc) + "%" : null],
+      ["Stored energy", r.soc != null && d.capacity_wh ? fmtKwh((r.soc / 100) * d.capacity_wh) : null],
+      ["Power", p == null ? null : Math.abs(p) < 20 ? "Idle" : (p > 0 ? "Charging " : "Discharging ") + fmtW(Math.abs(p))],
+      ["Solar input", lv.pv_w != null ? fmtW(lv.pv_w) : null], ["Temperature", lv.temp_c != null ? lv.temp_c.toFixed(1) + " °C" : null],
+      ["Software version", t(lv.firmware)], ["Mode it reports", t((MODES[lv.mode] || {}).label || lv.mode)],
+      ["HomePower wants", lv.desired_mode ? esc((MODES[lv.desired_mode] || {}).label || lv.desired_mode) + (lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : "") : "Nothing (the battery runs itself)"],
+      ["Because", t(lv.reason)], ["Why idle", lv.why && !lv.last_error ? esc(lv.why) : null],
+      ["Battery's own limits", L ? `charges to ${L[0]}%, stops discharging at ${L[1]}%${L[3] ? `, backup reserve ${L[2]}%` : ""}` : null],
+      ["Charges at (measured)", lv.measured_charge_w ? fmtW(lv.measured_charge_w) : null],
+      ["Grid down", lv.off_grid ? "Yes" : null], ["Protection active", lv.protected ? "Yes" : null], ["SOC limit reached", lv.guard_held ? "Yes" : null],
+      ["Alarms", (lv.alarms || []).length ? esc(lv.alarms.join(", ")) : null],
+      ["Active schedules", (lv.active_schedules || []).length ? esc(lv.active_schedules.join(", ")) : null],
+      ["Manual override", lv.override ? `${esc((MODES[lv.override.mode] || {}).label || lv.override.mode)} until ${when(lv.override.until)}` : null],
+      ["Last write failed", t(lv.last_error)],
+      ["Charge command", lv.charge_verdict === "unreliable" ? "Not working (no effect)" : null],
+      ["Command results", (lv.traces || []).length ? (lv.traces || []).map((x) => esc(`${(x.at || "").slice(5, 16).replace("T", " ")} ${x.mode}: ${x.ok ? "reacted after " + x.reaction_s + " s" : "no effect"}, peak ${x.peak_w} W`)).join("<br>") : null],
+      ["Settings changed", (lv.setting_changes || []).length ? lv.setting_changes.map((c) => esc(`${c.at} ${c.key}: ${c.from} → ${c.to}`)).join("<br>") : null],
+    ]);
+    let tech = `<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">${dg === null ? "Loading…" : "Not available."}</div>`;
+    if (dg) {
+      const conn = Object.entries(dg.connection || {}).filter(([k]) => k !== "map").map(([k, v]) => `${k}=${v}`).join("  ");
+      const lc = dg.last_command;
+      tech = rows([
+        ["Connection", conn ? esc(conn) : null], ["Last good read", when(dg.last_read_ok) || "never"],
+        ["32-bit word order", t(dg.word_order)], ["Driver error", t(dg.driver_error)],
+        ["Last command", lc ? `${esc(lc.mode)}${lc.power_w ? " " + fmtW(lc.power_w) : ""} at ${esc(new Date(lc.at).toLocaleTimeString([], this._tzOpt()))} - ${esc(lc.result)}` : "none yet"],
+        ["Unconfirmed commands", dg.unconfirmed ? dg.unconfirmed : null], ["Holding control", dg.release_pending ? "Yes" : null],
+      ]);
+      const raw = Object.entries(dg.raw_readings || {});
+      if (raw.length) tech += `<details style="margin-top:8px"><summary>Raw readings from the battery (${raw.length})</summary><table class="tbl">${raw.sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</td></tr>`).join("")}</table></details>`;
+    }
+    return `<div class="overlay" data-close-bg><div class="modal" role="dialog" aria-label="Battery details" id="bd-${esc(id)}">
+      <h2>${esc(d.name)} <span class="chip ${r.online ? "" : "bad"}">${r.online ? "Online" : "Offline"}</span></h2>
+      <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px">${this._ring(r.soc, 80)}<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">${esc(prof.label)}</div></div>
+      <h3>Readings now</h3>${live}
+      <h3>Settings</h3>${settings}
+      <h3>Connection &amp; diagnostics</h3>${tech}
+      <div class="foot"><span></span><div class="r"><button class="btn" data-act="battery-details" data-id="${esc(id)}"><ha-icon icon="mdi:refresh" style="--mdc-icon-size:16px"></ha-icon>Refresh</button><button class="btn" data-act="edit-battery" data-id="${esc(id)}"><ha-icon icon="mdi:pencil" style="--mdc-icon-size:16px"></ha-icon>Edit</button><button class="btn pri" data-act="close">Close</button></div></div>
+    </div></div>`;
   },
 
   get _cat() { return this.data.catalogue || { profiles: [], drivers: {}, vendors: {} }; },

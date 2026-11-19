@@ -151,7 +151,7 @@ export default (U) => {
     if (this.data.settings.zero_import_device === d.device_id) chips.push(`<span class="chip"><ha-icon icon="mdi:scale-balance" style="--mdc-icon-size:14px"></ha-icon>Zero-import</span>`);
     for (const sid of lv.active_schedules || []) chips.push(`<span class="chip"><ha-icon icon="mdi:calendar-clock" style="--mdc-icon-size:14px"></ha-icon>${esc(sid)}</span>`);
     return `<div class="card"><div class="bat">${this._ring(r.soc)}
-      <div class="info"><div class="nm"><span class="dot" style="background:${this._color(i)}"></span>${esc(d.name)}</div>
+      <div class="info"><div class="nm"><span class="dot" style="background:${this._color(i)}"></span>${esc(d.name)}<button class="btn sm" style="margin-left:auto;padding:2px 6px" title="All settings and readings" aria-label="Battery details" data-act="battery-details" data-id="${esc(d.device_id)}"><ha-icon icon="mdi:cog" style="--mdc-icon-size:16px"></ha-icon></button></div>
       <div class="pw" style="color:${col}">${state}${r.online && p != null && Math.abs(p) >= 20 ? " · " + fmtW(Math.abs(p)) : ""}</div>
       <div class="sub" style="font-size:12px;color:var(--secondary-text-color)">${r.soc != null ? fmtKwh((r.soc / 100) * d.capacity_wh) + " of " : ""}${fmtKwh(d.capacity_wh)} · max ${fmtW(d.max_charge_w)} in / ${fmtW(d.max_discharge_w)} out</div>
       <div class="chips">${chips.join("")}</div></div></div>${this._spark(this._hist[d.device_id] || [], this._color(i))}
