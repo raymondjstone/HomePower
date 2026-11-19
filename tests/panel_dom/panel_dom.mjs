@@ -32,6 +32,7 @@ const replies = (m) => {
     case "homepower/device/test": return { ok: true, steps: [{ name: "sent hold", ok: true, detail: "d" }, { name: "battery actually charged", ok: false, info: true, detail: "d" }] };
     case "homepower/device/scan": return { holding: { 10001: 5 }, input: { 10002: 7 }, order: "big", names: {} };
     case "homepower/device/read_registers": return { values: { 10001: 5 }, order: "big", names: {} };
+    case "homepower/device/details": return globalThis.__details || {};
     case "homepower/whatif": if (payload.whatif_error) throw new Error(payload.whatif_error); return payload.whatif;
     case "homepower/schedule/save": case "homepower/goal/save": return { ...(m.schedule || m.goal), warnings: ["a warning"] };
     default: return {};
@@ -76,6 +77,40 @@ for (const tab of ["overview", "plan", "schedules", "batteries", "insights", "di
     if (el._modal) { const m = root.getElementById("modal").innerHTML; if (bad(root.getElementById("modal").textContent)) must(`tab ${tab}: modal from ${act} clean`, false, (root.getElementById("modal").textContent.match(/.{0,40}(undefined|NaN).{0,40}/) || [""])[0]); el._closeModal(); }
   }
   console.log("   ", tab, "buttons pressed:", acts.length);
+}
+// The battery's details sheet with what a real battery sends: named registers, a matched Home Assistant device and its entities.
+{
+  const dev0 = el.data.devices[0], id = dev0.device_id;
+  globalThis.__details = {
+    actual: { soc: 62, grid_w: 300, load_w: 450, pv_w: 0, set_power_w: 1200, pack_v: [512, 513] }, serial: "SN123",
+    registers: [
+      { addr: 10064, name: "Work mode", access: "RW", kind: "setting", value: "third-party control", unit: "" },
+      { addr: 10074, name: "Export power limit mode", access: "RW", kind: "setting", value: "off", unit: "" },
+      { addr: 10014, name: "SOC", access: "RO", kind: "live", value: "62", unit: "%" },
+      { addr: 10100, name: "Serial number", access: "RO", kind: "info", value: "SN123", unit: "" },
+      { addr: 10284, name: "Pack 1 model name", access: "RO", kind: "info", value: "A1790", unit: "" },
+      { addr: "backupReverseSoc", name: "Backup reserve level", access: "", kind: "setting", value: "10", unit: "%" },
+      { addr: "<b>x</b>", name: "<b>x</b>", access: "", kind: "other", value: "{\"a\":1}", unit: "" },
+    ],
+    raw: { backupReverseSoc: 20, "<b>x</b>": { a: 1 } }, changes: [{ at: "2026-11-19 10:00:00", key: "workMode", from: 1, to: 2 }],
+  };
+  hass.devices = { hd1: { id: "hd1", name: "Garage Anker", manufacturer: "Anker", model: "X1", serial_number: "sn123", sw_version: "1.2" } };
+  hass.entities = { "number.garage_export_limit": { entity_id: "number.garage_export_limit", device_id: "hd1" }, "sensor.garage_temp": { entity_id: "sensor.garage_temp", device_id: "hd1", entity_category: "diagnostic" }, "sensor.garage_soc": { entity_id: "sensor.garage_soc", device_id: "hd1" } };
+  hass.states = { "number.garage_export_limit": { state: "3000", attributes: { friendly_name: "Garage Anker Export limit", min: 0, max: 5000, step: 100, unit_of_measurement: "W" } }, "sensor.garage_temp": { state: "31", attributes: { friendly_name: "Garage Anker Temperature", unit_of_measurement: "°C" } }, "sensor.garage_soc": { state: "62", attributes: { friendly_name: "Garage Anker State of charge", unit_of_measurement: "%" } } };
+  el.tab = "batteries"; el._modal = null; el._render();
+  await el._batteryDetails(id);
+  const m = root.getElementById("modal"), txt = m.textContent;
+  must("details sheet shows the battery's named settings", /Work mode/.test(txt) && /third-party control/.test(txt) && /Export power limit mode/.test(txt));
+  must("details sheet shows units, serial and pack registers", /62 %/.test(txt) && /SN123/.test(txt) && /Battery pack 1/.test(txt));
+  must("details sheet shows extra readings from the battery", /House load/.test(txt) && /Set point on the battery/.test(txt));
+  must("details sheet finds the Home Assistant device by serial and lists its entities", /found by its serial number/.test(txt) && /Export limit/.test(txt) && /0 to 5000, step 100/.test(txt) && /Diagnostic \(1\)/.test(txt));
+  must("details sheet shows EcoFlow-style values and setting changes, escaped", /Backup reserve level/.test(txt) && /Other values the battery sent/.test(txt) && /workMode: 1 → 2/.test(txt) && !m.querySelector("b"));
+  must("details sheet is clean", !bad(txt), (txt.match(/.{0,40}(undefined|NaN|\[object Object\]).{0,40}/) || [""])[0]);
+  el._closeModal();
+  globalThis.__details = null; hass.devices = {}; hass.entities = {}; hass.states = {};
+  await el._batteryDetails(id);
+  must("details sheet copes with no registers and no Home Assistant device", /No Home Assistant device was found/.test(root.getElementById("modal").textContent) && !bad(root.getElementById("modal").textContent));
+  el._closeModal();
 }
 must("no unhandled errors from any button", rejections.length === 0, rejections.map((e) => String(e && e.stack || e).split("\n")[0]).join(" || "));
 const sent = new Set(calls.map((c) => c.type));

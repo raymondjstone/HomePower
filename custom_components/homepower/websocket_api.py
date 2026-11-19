@@ -56,7 +56,7 @@ def async_register(hass: HomeAssistant) -> None:
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
                 ws_override, ws_clear_override,
                 ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control, ws_confirm, ws_safe, ws_debug, ws_scan_ports,
-                ws_save_goal, ws_delete_goal, ws_flag, ws_preview, ws_diagnostics, ws_test,
+                ws_save_goal, ws_delete_goal, ws_flag, ws_preview, ws_diagnostics, ws_test, ws_device_details,
                 ws_save_scene, ws_delete_scene, ws_apply_scene, ws_export, ws_import):
         websocket_api.async_register_command(hass, cmd)
 
@@ -138,6 +138,14 @@ async def ws_scan_registers(hass, msg):
 @_guard
 async def ws_read_registers(hass, msg):
     return await _mgr(hass).read_registers(msg["device_id"], msg["addresses"], msg["names"])
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/device/details", vol.Required("device_id"): str})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_device_details(hass, msg):
+    return await _mgr(hass).device_details(msg["device_id"])
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/device/register_notes", vol.Required("device_id"): str,

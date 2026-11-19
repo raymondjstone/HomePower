@@ -968,3 +968,132 @@ def test_ecoflow_before_its_first_reading_never_guesses_the_model():
             await d2.apply(Desired(Mode.HOLD))
         assert d2.api.sent == []
     asyncio.run(go())
+
+
+def test_details_sheet_names_and_decodes_the_registers():
+    """The battery's sheet: Anker's named registers, read for real, with enums spelled out, units only where known and text decoded."""
+    from core.device_details import addresses, anker_rows, wanted
+
+    async def go():
+        async with fake_anker() as dev:
+            dev.hold[10064] = 3                                # work mode: third-party control
+            dev.inp[10000] = 1                                 # plant status: on grid
+            d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            await d.read()                                     # learns the word order
+            entries = wanted(True, 0)
+            values = {}
+            addrs = addresses(entries)
+            for i in range(0, len(addrs), 64):
+                values.update(await d.read_registers(addrs[i:i + 64]))
+            rows = {r["name"]: r for r in anker_rows(entries, values, d._order, True)}
+            await d.close()
+            return rows
+    rows = asyncio.run(go())
+    assert rows["Work mode"]["value"] == "third-party control" and rows["Work mode"]["kind"] == "setting"
+    assert rows["Plant status"]["value"] == "on-grid"
+    assert rows["SOC"]["value"] == "62" and rows["SOC"]["unit"] == "%"
+    assert rows["Battery power"]["value"] == "-1500" and rows["Battery power"]["unit"] == "W"      # the register's own sign
+    assert rows["Grid power"]["value"] == "300"
+    assert rows["Battery rated capacity"]["value"] == "10.0" and rows["Battery rated capacity"]["unit"] == "kWh"
+    assert not any(n.startswith("Pack ") for n in rows)                                         # no packs reported: none listed
+    assert "Switch on/off (write only)" not in rows
+
+
+def test_details_text_and_enum_helpers():
+    from core.device_details import _enum, _text, anker_rows
+    assert _enum("Export power limit mode (0 off, 1 percent, 2 fixed W)") == ("Export power limit mode", {0: "off", 1: "percent", 2: "fixed W"})
+    assert _enum("Charge limit SOC (%, 80-100)")[1] == {}                        # a range is not a list of meanings
+    assert _text([0x3141, 0x4243], low_first=True) == "A1CB" and _text([0x4131, 0x4342], low_first=False) == "A1CB"
+    rows = anker_rows([(10100, 2, "Serial number", "RO", "info"), (10042, 8, "System alarms 1-8", "RO", "alarm")],
+                      {"10100": 0x3141, "10101": 0x4243, **{str(10042 + i): 0 for i in range(8)}}, "big", True)
+    assert rows[0]["value"] == "A1CB" and rows[1]["value"] == "none"
+    assert anker_rows([(10014, 1, "SOC", "RO", "live")], {}, "big", True) == []     # an unanswered register is left out, not shown as 0
+
+
+def test_details_x1_values_read_like_the_vendors_own_page():
+    """An X1 on firmware 1.0.19.16: energies in 1/100 kWh, pack voltage in 0.1 V, limits in watts, the app's own work mode."""
+    from core.device_details import anker_rows, wanted
+
+    def put(vals, addr, v, order="big"):
+        hi, lo = from_i32(v, order)
+        vals[str(addr)], vals[str(addr + 1)] = hi & 0xFFFF, lo & 0xFFFF
+
+    fw = b"1.0.19.16".ljust(12, b"\x00")
+    vals = {str(10112 + i): fw[2 * i] | fw[2 * i + 1] << 8 for i in range(6)}        # the X1 holds text low byte first
+    vals.update({"10064": 20, "10074": 2, "10077": 0, "10132": 0, "10631": 1, "10253": 527, "10249": 5, "10080": 1800, "10156": 179})
+    put(vals, 10075, 3600); put(vals, 10078, 0); put(vals, 10262, 2783); put(vals, 10250, 250); put(vals, 10016, 0)
+    rows = {r["name"]: r for r in anker_rows(wanted(True, 5), vals, "big", True)}
+    assert rows["Battery total charge energy"]["value"] == "27.83" and rows["Battery total charge energy"]["unit"] == "kWh"
+    assert rows["Battery rated capacity"]["value"] == "25.0" and rows["Battery voltage"]["value"] == "52.7" and rows["Battery voltage"]["unit"] == "V"
+    assert rows["Export power limit value"]["value"] == "3600" and rows["Export power limit value"]["unit"] == "W"
+    assert rows["Export power limit mode"]["value"] == "fixed power" and rows["Import power limit mode"]["value"] == "disabled"
+    assert rows["Work mode"]["value"] == "app-managed"                      # 20: not in Anker's document, seen on real units
+    assert rows["Output mode"]["value"] == "L/N" and rows["Meter status"]["value"] == "offline"
+    assert rows["Comms-disconnect time with VPP (s, default 1800)"]["unit"] == "s" or any(r["unit"] == "s" for r in rows.values())
+    assert rows["Internal temperature"]["value"] == "17.9"
+    # firmware 1.0.18.x counts in 1/10 kWh; an unknown firmware is not guessed
+    vals18 = dict(vals, **{str(10112 + i): (b"1.0.18.2".ljust(12, b"\x00")[2 * i] | b"1.0.18.2".ljust(12, b"\x00")[2 * i + 1] << 8) for i in range(6)})
+    assert {r["name"]: r for r in anker_rows(wanted(True, 5), vals18, "big", True)}["Battery total charge energy"]["value"] == "278.30"
+    other = dict(vals, **{str(10112 + i): (b"9.9.9.9".ljust(12, b"\x00")[2 * i] | b"9.9.9.9".ljust(12, b"\x00")[2 * i + 1] << 8) for i in range(6)})
+    assert "raw" in {r["name"]: r for r in anker_rows(wanted(True, 5), other, "big", True)}["Battery total charge energy"]["value"]
+
+
+def test_details_unlisted_enum_values_are_shown_not_hidden():
+    from core.device_details import anker_rows
+    r = anker_rows([(10000, 1, "Plant status (1 on-grid, 2 off-grid, 3 standby, 4 fault)", "RO", "info")], {"10000": 9}, "big", True)
+    assert r[0]["value"] == "9 (not in Anker's list)"
+
+
+def test_details_ecoflow_values_are_named_like_the_vendors_integration():
+    from core.device_details import ecoflow_rows
+    q = {"relay2Onoff": True, "relay3Onoff": False, "energyStrategyOperateMode.operateSelfPoweredOpen": True, "cmsMaxChgSoc": 100, "cmsMinDsgSoc": 0,
+         "backupReverseSoc": 10, "cmsBattFullEnergy": 3840, "cmsBattSoc": 100.0, "powGetSysGrid": 1269.4321, "temp": 26, "cycles": 101,
+         "remainTime": 0, "bmsDsgRemTime": 5939, "mysteryKey": "x"}
+    rows = {r["name"]: r for r in ecoflow_rows(q)}
+    assert rows["AC 1 output"]["value"] == "On" and rows["AC 2 output"]["value"] == "Off" and rows["AC 1 output"]["kind"] == "setting"
+    assert rows["Backup reserve level"]["value"] == "10" and rows["Backup reserve level"]["unit"] == "%"
+    assert rows["Stored energy"]["value"] == "3840" and rows["Stored energy"]["unit"] == "Wh"
+    assert rows["Power grid"]["value"] == "1269.43" and rows["Battery temperature"]["unit"] == "°C" and rows["Cycles"]["value"] == "101"
+    assert rows["Time to empty"]["value"] == "98 h 59 min"
+    assert rows["mysteryKey"]["kind"] == "other" and rows["mysteryKey"]["value"] == "x"           # what is not named is still listed
+
+
+def test_details_solarbank_follows_the_published_modbus_document():
+    """Solarbank family (Anker's 'Modbus Protocol' V1.0.0): totals in 1/10 kWh, an on/off export limit in watts, SOH, AI mode; temperature as users report it."""
+    from core.device_details import anker_rows, wanted
+    vals = {"10064": 6, "10074": 1, "10014": 80, "10015": 98, "10156": 335, "10040": 1}
+    for addr, v in ((10075, 800), (10022, 1234), (10024, 1000), (10018, 55)):
+        hi, lo = from_i32(v, "big")
+        vals[str(addr)], vals[str(addr + 1)] = hi, lo
+    rows = {r["name"]: r for r in anker_rows(wanted(False), vals, "big", False)}
+    assert rows["Work mode"]["value"] == "smart / AI mode"
+    assert rows["Export power limit"]["value"] == "on" and rows["Export power limit value"]["value"] == "800" and rows["Export power limit value"]["unit"] == "W"
+    assert rows["Total battery charge energy"]["value"] == "123.40" and rows["Total battery discharge energy"]["value"] == "100.00"
+    assert rows["Total PV generation"]["value"] == "5.50" and rows["SOH"]["value"] == "98" and rows["SOH"]["unit"] == "%"
+    assert [r for r in rows if r.startswith("Internal temperature")] and rows[[r for r in rows if r.startswith("Internal temperature")][0]]["value"] == "33.5"
+
+
+def test_details_x1_electrical_readings_and_firmware_rules():
+    from core.device_details import _x1_energy_gain, anker_rows, wanted
+    # Only 1.0.18.x counts energy in 0.1 kWh; every other firmware reported so far (16, 17, 19, including 19.17) in 0.01 kWh.
+    assert [_x1_energy_gain(f) for f in ("1.0.18.8", "1.0.18.16", "1.0.19.17", "1.0.16.1", "1.0.17.8", "2.0.0.1", None)] == [10, 10, 100, 100, 100, None, None]
+    vals = {"10199": 2312, "10200": 0, "10201": 0, "10202": 2312, "10203": 0, "10204": 0, "10205": 1250, "10206": 0, "10207": 0,
+            "10212": 65526, "10213": 4998, "10632": 242, "10633": 0, "10634": 0, "10635": 130, "10636": 0, "10637": 0, "10649": 5001}
+    rows = {r["name"]: r for r in anker_rows(wanted(True, 0), vals, "big", True)}
+    assert rows["Grid voltage (Uab / Ubc / Uca / phase A, B, C)"]["value"].startswith("231.2 / 0.0 / 0.0 / 231.2")
+    assert rows["Grid current (phase A, B, C)"]["value"].startswith("12.50 /")
+    assert rows["Grid power factor"]["value"] == "-0.010" and rows["Grid frequency"]["value"] == "49.98" and rows["Grid frequency"]["unit"] == "Hz"
+    assert rows["Meter voltage (phase A, B, C)"]["value"].startswith("242.0 /")          # firmware 1.0.19.16 sends whole volts, older units 0.1 V
+    assert rows["Meter current (phase A, B, C)"]["value"].startswith("1.30 /") and rows["Meter grid frequency"]["value"] == "50.01"
+    older = {**vals, "10632": 2420}
+    assert {r["name"]: r for r in anker_rows(wanted(True, 0), older, "big", True)}["Meter voltage (phase A, B, C)"]["value"].startswith("242.0 /")
+
+
+def test_details_solarbank_capability_masks_and_ecoflow_5000_keys():
+    from core.device_details import anker_rows, ecoflow_rows, wanted
+    vals = {"32774": 0b0101011, "32775": 0b1011}
+    rows = {r["name"]: r for r in anker_rows(wanted(False), vals, "big", False)}
+    assert rows["Work modes this battery supports"]["value"] == "self-consumption, time-of-use, smart / AI mode, third-party control"
+    assert rows["Settings this battery supports"]["value"] == "charge limit, discharge limit, backup reserve switch"
+    r = {x["name"]: x for x in ecoflow_rows({"chgPowLimit": 1200, "feedGridModePowLimit": 800, "upsEnabled": True, "meterPhaseAVol": 231.5, "cycleSoh": 99})}
+    assert r["Net power in limit"]["kind"] == "setting" and r["UPS mode"]["value"] == "On" and r["Grid voltage L1 (meter)"]["unit"] == "V"

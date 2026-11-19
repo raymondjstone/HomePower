@@ -17,25 +17,73 @@ export default (U) => {
     return head + `<div class="grid g-cards">${cards}</div>`;
   },
 
-  // A read-only sheet of everything HomePower knows about one battery: its settings, its live readings and (once fetched) the
-  // driver's diagnostics and raw readings. Opened from the cog on a battery card.
+  // A read-only sheet of everything known about one battery: HomePower's settings, the live readings, what the battery itself
+  // reports (Anker's named registers, EcoFlow's values) and the Home Assistant device and entities that go with it.
+  // Opened from the cog on a battery card.
   async _batteryDetails(id) {
     const d = this.data.devices.find((x) => x.device_id === id);
     if (!d) return;
-    this._openModal(this._detailsHtml(d, null));
-    let dg = null;
-    try { dg = ((await this._hass.callWS({ type: "homepower/diagnostics" })).devices || {})[id] || null; } catch (e) { /* the sheet still shows settings and live readings */ }
-    if (this._modal && this.shadowRoot.getElementById("bd-" + id)) this.shadowRoot.getElementById("modal").innerHTML = this._detailsHtml(d, dg || false);
+    this._openModal(this._detailsHtml(d, null, null));
+    const [dg, det] = await Promise.all([
+      this._hass.callWS({ type: "homepower/diagnostics" }).then((r) => (r.devices || {})[id] || false).catch(() => false),
+      this._hass.callWS({ type: "homepower/device/details", device_id: id }).catch((e) => ({ error: e.message || String(e) })),
+    ]);
+    if (this._modal && this.shadowRoot.getElementById("bd-" + id)) this.shadowRoot.getElementById("modal").innerHTML = this._detailsHtml(d, dg, det);
   },
 
-  _detailsHtml(d, dg) {
+  // The Home Assistant device(s) that belong to this battery: the one its mapped entities sit on, else one whose serial
+  // number or name matches. Returns [{dev, why}].
+  _haDevicesFor(d, serial) {
+    const hd = this._hass.devices || {}, en = this._hass.entities || {};
+    const norm = (x) => String(x || "").trim().toLowerCase();
+    const out = new Map();
+    for (const eid of Object.values(d.entities || {})) {
+      const e = en[eid];
+      if (e && e.device_id && hd[e.device_id]) out.set(e.device_id, "the entities you chose for this battery");
+    }
+    if (!out.size && serial) {
+      for (const x of Object.values(hd)) if (norm(x.serial_number) === norm(serial)) out.set(x.id, "its serial number");
+    }
+    if (!out.size) {
+      const names = [norm(d.name), norm(this._profile(d.kind).label)].filter(Boolean);
+      for (const x of Object.values(hd)) if (names.includes(norm(x.name_by_user || x.name))) out.set(x.id, "its name");
+    }
+    return [...out].map(([id, why]) => ({ dev: hd[id], why }));
+  },
+
+  _haDeviceHtml(dev, why) {
+    const st = this._hass.states, en = Object.values(this._hass.entities || {}).filter((e) => e.device_id === dev.id);
+    const nm = dev.name_by_user || dev.name || dev.id;
+    const label = (e) => { const f = (st[e.entity_id] || { attributes: {} }).attributes.friendly_name || e.name || e.entity_id; return f.startsWith(nm) && f.length > nm.length ? f.slice(nm.length).trim() : f; };
+    const cat = (e) => String(e.entity_category ?? "");
+    const control = new Set(["number", "select", "switch", "button", "text", "time", "date", "datetime", "input_number", "input_select", "input_boolean"]);
+    const row = (e) => {
+      const s = st[e.entity_id], a = (s && s.attributes) || {};
+      let v = s ? s.state : "not available";
+      if (a.unit_of_measurement && !["unavailable", "unknown"].includes(v)) v += " " + a.unit_of_measurement;
+      const dom = e.entity_id.split(".")[0];
+      const extra = [dom === "number" && a.min != null ? `${a.min} to ${a.max}${a.step ? ", step " + a.step : ""}` : "", dom === "select" && (a.options || []).length ? `options: ${a.options.join(", ")}` : ""].filter(Boolean).join(" · ");
+      return `<tr><th title="${esc(e.entity_id)}">${esc(label(e))}</th><td>${esc(v)}${extra ? `<div class="sub" style="font-size:12px;color:var(--secondary-text-color)">${esc(extra)}</div>` : ""}</td></tr>`;
+    };
+    const ctl = en.filter((e) => control.has(e.entity_id.split(".")[0]) || ["config", "1"].includes(cat(e)));
+    const diag = en.filter((e) => !ctl.includes(e) && ["diagnostic", "2"].includes(cat(e)));
+    const rest = en.filter((e) => !ctl.includes(e) && !diag.includes(e));
+    const grp = (title, list, open) => (list.length ? `<details ${open ? "open" : ""} style="margin-top:6px"><summary>${title} (${list.length})</summary><table class="tbl">${list.sort((a, b) => label(a).localeCompare(label(b))).map(row).join("")}</table></details>` : "");
+    return `<div class="sub" style="font-size:13px;color:var(--secondary-text-color);margin:4px 0">${esc(nm)}${dev.manufacturer ? " · " + esc(dev.manufacturer) : ""}${dev.model ? " " + esc(dev.model) : ""}${dev.sw_version ? " · software " + esc(dev.sw_version) : ""}${dev.hw_version ? " · hardware " + esc(dev.hw_version) : ""} (found by ${esc(why)})</div>`
+      + (en.length ? grp("Controls and settings", ctl, true) + grp("Readings", rest, true) + grp("Diagnostic", diag, false) : `<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">This device has no entities.</div>`);
+  },
+
+  _detailsHtml(d, dg, det) {
     const id = d.device_id, r = this._reading(d), lv = r.lv || {}, prof = this._profile(d.kind);
     const when = (s) => (s ? new Date(s).toLocaleString([], this._tzOpt()) : null);
     const yn = (v) => (v ? "Yes" : "No");
     const L = (lv.limits || null);
     const rows = (list) => `<table class="tbl">${list.filter(([, v]) => v != null && v !== "").map(([k, v]) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`).join("")}</table>`;
     const t = (v) => (v == null ? null : esc(String(v)));
-    const p = r.power;
+    const w = (v) => (v == null ? null : fmtW(v));
+    const p = r.power, A = (det && det.actual) || {};
+    const regv = (re) => { const x = ((det && det.registers) || []).find((q) => re.test(q.name)); return x ? x.value : null; };
+    const info = [regv(/^model( name)?$/i), (regv(/^software version$/i) || lv.firmware) ? "Software " + (regv(/^software version$/i) || lv.firmware) : null, det && det.serial ? "Serial " + det.serial : null].filter(Boolean);
     const settings = rows([
       ["Model", esc(prof.label)], ["Connects through", t(prof.driver)],
       ["Capacity", d.capacity_wh ? fmtKwh(d.capacity_wh) : null], ["Max charge", d.max_charge_w ? fmtW(d.max_charge_w) : null], ["Max discharge", d.max_discharge_w ? fmtW(d.max_discharge_w) : null],
@@ -45,13 +93,19 @@ export default (U) => {
       ["HomePower may send commands", yn(d.control_enabled !== false)],
       ["Zero-import battery", this.data.settings.zero_import_device === id ? "Yes" : null],
       ...Object.entries(d.entities || {}).filter(([, v]) => v).map(([k, v]) => [`Entity: ${k}`, esc(v)]),
+      ...Object.entries(d.mode_map || {}).filter(([, v]) => v).map(([k, v]) => [`Mode name: ${k}`, esc(v)]),
       ...(d.invert_power ? [["Power sign flipped", "Yes"]] : []),
     ]);
     const live = rows([
       ["Status", r.online ? "Online" : "Offline"], ["Charge", r.soc != null ? Math.round(r.soc) + "%" : null],
       ["Stored energy", r.soc != null && d.capacity_wh ? fmtKwh((r.soc / 100) * d.capacity_wh) : null],
       ["Power", p == null ? null : Math.abs(p) < 20 ? "Idle" : (p > 0 ? "Charging " : "Discharging ") + fmtW(Math.abs(p))],
-      ["Solar input", lv.pv_w != null ? fmtW(lv.pv_w) : null], ["Temperature", lv.temp_c != null ? lv.temp_c.toFixed(1) + " °C" : null],
+      ["Solar input", lv.pv_w != null ? fmtW(lv.pv_w) : w(A.pv_w)], ["House load", w(A.load_w)],
+      ["Grid", A.grid_w != null ? `${fmtW(Math.abs(A.grid_w))} ${A.grid_w > 0 ? "import" : A.grid_w < 0 ? "export" : ""}` : null],
+      ["Set point on the battery", A.set_power_w != null ? fmtW(A.set_power_w) : null],
+      ["Target charge it holds", A.target_soc != null ? A.target_soc + "%" : null], ["Reserve it holds", A.reserve_soc != null ? A.reserve_soc + "%" : null],
+      ["Temperature", lv.temp_c != null ? lv.temp_c.toFixed(1) + " °C" : null],
+      ["Battery pack readings", (A.pack_v || []).length ? esc(A.pack_v.join(", ")) + " (raw, one per pack)" : null],
       ["Software version", t(lv.firmware)], ["Mode it reports", t((MODES[lv.mode] || {}).label || lv.mode)],
       ["HomePower wants", lv.desired_mode ? esc((MODES[lv.desired_mode] || {}).label || lv.desired_mode) + (lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : "") : "Nothing (the battery runs itself)"],
       ["Because", t(lv.reason)], ["Why idle", lv.why && !lv.last_error ? esc(lv.why) : null],
@@ -66,7 +120,10 @@ export default (U) => {
       ["Command results", (lv.traces || []).length ? (lv.traces || []).map((x) => esc(`${(x.at || "").slice(5, 16).replace("T", " ")} ${x.mode}: ${x.ok ? "reacted after " + x.reaction_s + " s" : "no effect"}, peak ${x.peak_w} W`)).join("<br>") : null],
       ["Settings changed", (lv.setting_changes || []).length ? lv.setting_changes.map((c) => esc(`${c.at} ${c.key}: ${c.from} → ${c.to}`)).join("<br>") : null],
     ]);
-    let tech = `<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">${dg === null ? "Loading…" : "Not available."}</div>`;
+    const loading = `<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">Loading…</div>`;
+    const none = (m) => `<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">${m}</div>`;
+    // What HomePower knows about the connection.
+    let tech = dg === null ? loading : none("Not available.");
     if (dg) {
       const conn = Object.entries(dg.connection || {}).filter(([k]) => k !== "map").map(([k, v]) => `${k}=${v}`).join("  ");
       const lc = dg.last_command;
@@ -76,15 +133,47 @@ export default (U) => {
         ["Last command", lc ? `${esc(lc.mode)}${lc.power_w ? " " + fmtW(lc.power_w) : ""} at ${esc(new Date(lc.at).toLocaleTimeString([], this._tzOpt()))} - ${esc(lc.result)}` : "none yet"],
         ["Unconfirmed commands", dg.unconfirmed ? dg.unconfirmed : null], ["Holding control", dg.release_pending ? "Yes" : null],
       ]);
-      const raw = Object.entries(dg.raw_readings || {});
-      if (raw.length) tech += `<details style="margin-top:8px"><summary>Raw readings from the battery (${raw.length})</summary><table class="tbl">${raw.sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(typeof v === "object" ? JSON.stringify(v) : String(v))}</td></tr>`).join("")}</table></details>`;
     }
-    return `<div class="overlay" data-close-bg><div class="modal" role="dialog" aria-label="Battery details" id="bd-${esc(id)}">
+    // What the battery itself reports: Anker's named registers, or EcoFlow's values.
+    let onBattery = det === null ? loading : "";
+    if (det && det.error && !det.registers && !det.raw) onBattery = `<div class="err">${esc(det.error)}</div>`;
+    else if (det) {
+      if (det.error) onBattery += `<div class="err">${esc(det.error)}</div>`;
+      const fmt = (x) => `${esc(x.value)}${x.unit ? " " + esc(x.unit) : ""}`;
+      const tbl = (list) => `<table class="tbl">${list.map((x) => `<tr><th title="${typeof x.addr === "number" ? "Register " + x.addr : esc(x.addr)}">${esc(x.name)}</th><td>${fmt(x)}${x.access === "RW" ? ' <span class="chip">can be changed</span>' : ""} ${x.addr !== "" && x.addr != null ? `<span class="sub" style="font-size:11px;color:var(--secondary-text-color)">${esc(x.addr)}</span>` : ""}</td></tr>`).join("")}</table>`;
+      if (det.registers) {
+        const groups = [["setting", "Controls and settings", true], ["live", "Sensors", true], ["alarm", "Alarms", true], ["info", "Identity and diagnostics", false], ["other", "Other values the battery sent", false]];
+        const main = det.registers.filter((x) => !/^Pack \d+ /.test(x.name)), packs = det.registers.filter((x) => /^Pack \d+ /.test(x.name));
+        for (const [k, title, open] of groups) {
+          const l = main.filter((x) => x.kind === k);
+          if (l.length) onBattery += `<details ${open ? "open" : ""} style="margin-top:6px"><summary>${title} (${l.length})</summary>${tbl(l)}</details>`;
+        }
+        const nums = [...new Set(packs.map((x) => x.name.match(/^Pack (\d+) /)[1]))];
+        for (const n of nums) {
+          const l = packs.filter((x) => x.name.startsWith(`Pack ${n} `)).map((x) => ({ ...x, name: x.name.replace(/^Pack \d+ /, "") }));
+          onBattery += `<details style="margin-top:6px"><summary>Battery pack ${n} (${l.length})</summary>${tbl(l)}</details>`;
+        }
+        if (det.registers.some((x) => typeof x.addr === "number")) onBattery += `<p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Names are from Anker's own register list. Units are shown only where HomePower knows them; other numbers are as the register holds them. Energy totals depend on the battery's software version. The Diagnostics tab has the full register tool.</p>`;
+        else onBattery += `<p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Names and units follow the Ecoflow-Cloud Home Assistant integration; a value it does not name is listed under its own key.</p>`;
+      }
+      if (!det.registers && det.raw && Object.keys(det.raw).length) onBattery += `<details style="margin-top:6px"><summary>Every value the battery has sent (${Object.keys(det.raw).length})</summary><table class="tbl">${Object.entries(det.raw).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(typeof v === "object" && v !== null ? JSON.stringify(v) : String(v))}</td></tr>`).join("")}</table></details>`;
+      if ((det.changes || []).length) onBattery += `<details style="margin-top:6px"><summary>Settings changed lately (${det.changes.length})</summary><table class="tbl">${det.changes.slice().reverse().map((c) => `<tr><th>${esc(c.at)}</th><td>${esc(c.key)}: ${esc(c.from)} → ${esc(c.to)}</td></tr>`).join("")}</table></details>`;
+      if (!onBattery) onBattery = none("HomePower reads this battery through Home Assistant entities, so see the Home Assistant device below for what it offers.");
+    }
+    // The Home Assistant device that goes with it.
+    let ha = "";
+    try {
+      const found = this._haDevicesFor(d, det && det.serial);
+      ha = found.length ? found.map((f) => this._haDeviceHtml(f.dev, f.why)).join("") : none("No Home Assistant device was found for this battery. If you also use the vendor's Home Assistant integration, its device is matched by serial number or by having the same name as this battery.");
+    } catch (e) { ha = none("Could not read the Home Assistant devices."); }
+    return `<div class="overlay" data-close-bg><div class="modal" role="dialog" aria-label="Battery details" id="bd-${esc(id)}" style="max-width:760px">
       <h2>${esc(d.name)} <span class="chip ${r.online ? "" : "bad"}">${r.online ? "Online" : "Offline"}</span></h2>
-      <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px">${this._ring(r.soc, 80)}<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">${esc(prof.label)}</div></div>
+      <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px">${this._ring(r.soc, 80)}<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">${esc(prof.label)}${info.length ? `<br>${info.map(esc).join(" · ")}` : ""}</div></div>
       <h3>Readings now</h3>${live}
-      <h3>Settings</h3>${settings}
-      <h3>Connection &amp; diagnostics</h3>${tech}
+      <h3>HomePower's settings for it</h3>${settings}
+      <h3>On the battery itself</h3>${onBattery}
+      <h3>Home Assistant device</h3>${ha}
+      <h3>Connection</h3>${tech}
       <div class="foot"><span></span><div class="r"><button class="btn" data-act="battery-details" data-id="${esc(id)}"><ha-icon icon="mdi:refresh" style="--mdc-icon-size:16px"></ha-icon>Refresh</button><button class="btn" data-act="edit-battery" data-id="${esc(id)}"><ha-icon icon="mdi:pencil" style="--mdc-icon-size:16px"></ha-icon>Edit</button><button class="btn pri" data-act="close">Close</button></div></div>
     </div></div>`;
   },

@@ -403,6 +403,48 @@ class HomePowerManager:
         except Exception as err:  # noqa: BLE001 - shown to the user
             raise ValidationError(f"could not read: {err}") from err
 
+    async def device_details(self, device_id: str) -> dict:
+        """Everything one battery reports, for the panel's details sheet (read-only): the last reading, plus the named
+        registers of an Anker battery (read now), or every value an EcoFlow battery has sent."""
+        from .core.device_details import actual_fields, addresses, anker_rows, wanted
+        from .coordinator import _PRIVATE_KEY
+
+        cached = self._adapters.get(device_id)
+        if device_id not in self.devices or cached is None:
+            raise ValidationError("unknown battery")
+        driver = getattr(cached[1], "driver", None)
+        st = self.coordinator._snap.devices.get(device_id) if self.coordinator else None
+        out: dict = {"actual": actual_fields(st.actual if st else None), "registers": None, "raw": None, "changes": [], "serial": None}
+        if driver is None:
+            return out
+        x1 = bool(driver.config.extra.get("house_meter"))
+        if hasattr(driver, "read_registers") and hasattr(driver, "scan"):          # an Anker battery: Anker's own register lists
+            try:
+                packs = None
+                if x1:
+                    n = (await driver.read_registers([10249])).get("10249")
+                    packs = n if isinstance(n, int) and 0 <= n <= 6 else None
+                entries = wanted(x1, packs)
+                addrs, values = addresses(entries), {}
+                for i in range(0, len(addrs), 64):
+                    values.update(await driver.read_registers(addrs[i:i + 64]))
+            except Exception as err:  # noqa: BLE001 - shown in the sheet
+                out["error"] = f"could not read the registers: {err}"
+            else:
+                out["registers"] = anker_rows(entries, values, driver._order, x1)
+                out["serial"] = next((r["value"] for r in out["registers"] if r["name"] == "Serial number"), None)
+        quota = getattr(driver, "last_quota", None)
+        if isinstance(quota, dict) and quota:
+            out["raw"] = {k: v for k, v in quota.items() if not _PRIVATE_KEY.search(k)}
+            if out["registers"] is None:
+                from .core.device_details import ecoflow_rows
+
+                out["registers"] = ecoflow_rows(out["raw"])      # named the way the vendor's own Home Assistant integration names them
+        out["changes"] = list(getattr(driver, "changes", None) or [])[-20:]
+        conn = driver.config.extra.get("connection") or {}
+        out["serial"] = out["serial"] or conn.get("sn")
+        return out
+
     async def register_note(self, device_id: str, address: int | None = None, label: str | None = None) -> dict:
         """The user's own names for registers (what they found by watching), per battery. A label of "" removes one."""
         if device_id not in self.devices:
