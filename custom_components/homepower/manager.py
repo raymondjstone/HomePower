@@ -418,6 +418,9 @@ class HomePowerManager:
         if driver is None:
             raise ValidationError("this battery has no settings that can be changed here")
         controlled = self._controlled(driver)
+        st = self.coordinator._snap.devices.get(device_id) if self.coordinator else None
+        if hasattr(driver, "read_registers") and st is not None and not (st.actual and st.actual.online):
+            raise ValidationError("The battery is not answering right now, so nothing was changed. Try again once it shows online.")
         try:
             family = await apply_change(driver, key, value, controlled)
         except ValueError as err:
@@ -450,7 +453,10 @@ class HomePowerManager:
         if driver is None:
             return out
         x1 = bool(driver.config.extra.get("house_meter"))
-        if hasattr(driver, "read_registers") and hasattr(driver, "scan"):          # an Anker battery: Anker's own register lists
+        silent = hasattr(driver, "read_registers") and st is not None and not (st.actual and st.actual.online)
+        if silent:          # do not send a burst of reads to a battery that is not answering: it is shown from what is already known
+            out["error"] = "The battery is not answering right now, so its registers were not read."
+        elif hasattr(driver, "read_registers") and hasattr(driver, "scan"):          # an Anker battery: Anker's own register lists
             try:
                 packs = None
                 if x1:
@@ -458,8 +464,11 @@ class HomePowerManager:
                     packs = n if isinstance(n, int) and 0 <= n <= 6 else None
                 entries = wanted(x1, packs)
                 addrs, values = addresses(entries), {}
-                for i in range(0, len(addrs), 64):
-                    values.update(await driver.read_registers(addrs[i:i + 64]))
+                rest = [a for a in addrs if a != 32775]            # 0x8007 on its own: in a batch with 32774 a battery without it answers a silent 0
+                for i in range(0, len(rest), 64):
+                    values.update(await driver.read_registers(rest[i:i + 64]))
+                if 32775 in addrs:
+                    values.update(await driver.read_registers([32775]))
             except Exception as err:  # noqa: BLE001 - shown in the sheet
                 out["error"] = f"could not read the registers: {err}"
             else:
@@ -468,7 +477,10 @@ class HomePowerManager:
         try:
             from .core.device_settings import read_settings
 
-            _, out["settings"], _ = await read_settings(driver, self._controlled(driver))
+            if silent:
+                out["settings"] = []
+            else:
+                _, out["settings"], _ = await read_settings(driver, self._controlled(driver))
         except Exception as err:  # noqa: BLE001 - the sheet still shows everything else
             out["settings"], out["settings_error"] = [], f"could not read the settings: {err}"
         quota = getattr(driver, "last_quota", None)

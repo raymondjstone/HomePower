@@ -20,7 +20,7 @@ from ..core.models import Actual, Desired, DeviceConfig, Mode
 import time
 
 from ..core.anker_x1_map import alarm_texts
-from .modbus import ModbusError, ModbusTcpClient, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
+from .modbus import ModbusError, ModbusTcpClient, describe_failure, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +48,10 @@ class AnkerModbusDriver:
         self._limits: tuple | None = None
         self._pack_v: tuple = ()
         self._packs_at = 0.0
+        self.last_error: str | None = None     # why the last read failed, in plain words (None while it answers)
+        self.outages: list[dict] = []          # the last few times it stopped answering: {"at": when it went quiet, "seconds": for how long}
+        self._down_since: float | None = None
+        self._down_wall = 0.0
 
     @property
     def _restore(self) -> int | None:
@@ -122,8 +126,9 @@ class AnkerModbusDriver:
         try:
             t = (await self.client.read_input(10156, 1))[0]
             self._temp = round((t - 0x10000 if t & 0x8000 else t) / 10, 1)
-        except ModbusError:
-            pass
+        except ModbusError as err:
+            if err.code is None:
+                return          # it is not answering at all: the other extras would only wait as long again
         if now >= self._packs_at:      # battery pack voltages every 5 minutes (pack n voltage = 10321 + 56 (n-1))
             self._packs_at = now + 300
             volts = []
@@ -142,13 +147,30 @@ class AnkerModbusDriver:
             except ModbusError:
                 pass
 
+    def _note_down(self, err: ModbusError) -> None:
+        self.last_error = describe_failure(err)
+        if self._down_since is None:
+            self._down_since, self._down_wall = time.monotonic(), time.time()
+            _LOGGER.warning("%s: the battery stopped answering: %s", self.config.device_id, self.last_error)
+
+    def _note_up(self) -> None:
+        if self._down_since is not None:
+            seconds = round(time.monotonic() - self._down_since)
+            self.outages = (self.outages + [{"at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._down_wall)), "seconds": seconds}])[-10:]
+            _LOGGER.info("%s: the battery answers again after %d s", self.config.device_id, seconds)
+            self._down_since = None
+        self.last_error = None
+
     async def read(self) -> Actual:
         try:
             await self._refresh_extras()
-            return self._decode(*await self._blocks())
+            actual = self._decode(*await self._blocks())
         except ModbusError as err:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
+            self._note_down(err)
             return Actual(online=False)
+        self._note_up()
+        return actual
 
     async def probe(self) -> dict:
         """Everything useful for setup, read from the battery itself: live values, model, capacity,

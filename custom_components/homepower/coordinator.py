@@ -29,7 +29,7 @@ from .core.report import charge_efficiency, ecoflow_report, startup_summary, win
 from .core.traces import CommandTrace
 from .core.weather import (BASE_C, ColdModel, TempLog, cold_extra_wh, parse_open_meteo, pick_tomorrow,
                            recent_degree_days, to_celsius)
-from .core.sanity import ChargeWatch, CommandBudget, RateLearner, cycling_margin, explain_idle, grid_sign_mismatch, next_unconfirmed
+from .core.sanity import ChargeWatch, CommandBudget, RateLearner, cycling_margin, explain_idle, grid_sign_mismatch, next_unconfirmed, offline_hint
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
 from .core.settings import AppSettings, build as build_settings
@@ -916,7 +916,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
             if st is None:
                 continue
             checks = {
-                f"offline:{did}": (bool(st.actual and not st.actual.online), f"{name} is offline: HomePower cannot read it.", OFFLINE_ALERT_AFTER_S),
+                f"offline:{did}": (bool(st.actual and not st.actual.online), f"{name} is offline: HomePower cannot read it." + (f" {h}" if (h := offline_hint(a.config.kind)) else ""), OFFLINE_ALERT_AFTER_S),
                 f"error:{did}": (st.last_error is not None, f"A command to {name} failed: {st.last_error}" if st.last_error
                                  else f"A command to {name} failed earlier and is working again.", 0),
                 f"unconfirmed:{did}": (st.unconfirmed >= UNCONFIRMED_ALERT_AFTER, f"{name} is not following HomePower's commands (not confirmed after {UNCONFIRMED_ALERT_AFTER} tries).", 0),
@@ -1641,6 +1641,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                 "unconfirmed": st.unconfirmed if st else 0, "release_pending": bool(st and st.release_pending),
                 "word_order": getattr(getattr(a, "driver", None), "_order", None),
                 "driver_error": getattr(getattr(a, "driver", None), "last_error", None),
+                "recent_outages": getattr(getattr(a, "driver", None), "outages", None) or None,
                 "pv_readings_ignored": getattr(getattr(a, "driver", None), "pv_ignored", None) or None,
                 "command_traces": self.traces.recent(did, 10) or None,
                 "recent_setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or []) or None,
@@ -1687,7 +1688,10 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
                                           self.rate_learner.rates.get(did), self.traces.verdict(did))
                            if not a.config.caps.power_control else None),
                 "measured_charge_w": self.rate_learner.rates.get(did) if not a.config.caps.power_control else None,
-                "why": explain_idle(control_enabled=bool(a.config.extra.get("control_enabled", True)), paused=self.paused,
+                "last_read_ok": datetime.fromtimestamp(st.last_read_ok, dt_util.UTC).isoformat() if st.last_read_ok else None,
+                "offline_hint": offline_hint(a.config.kind) if not (act and act.online) else None,
+                "offline_reason": (getattr(getattr(a, "driver", None), "last_error", None) if not (act and act.online) else None),
+                "why": explain_idle(control_enabled=bool(a.config.extra.get("control_enabled", True)), paused=self.paused, hint=offline_hint(a.config.kind),
                                     dry_run=self.settings.dry_run, online=bool(act and act.online), off_grid=bool(act and act.off_grid),
                                     protected=bool(act and act.protected), last_error=st.last_error, guard_held=st.guard_held,
                                     unconfirmed=st.unconfirmed, awaiting_confirm=st.awaiting_confirm),

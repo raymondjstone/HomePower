@@ -180,7 +180,7 @@ This is sent to the battery now.`)) return;
       ...(d.invert_power ? [["Power sign flipped", "Yes"]] : []),
     ]);
     const live = rows([
-      ["Status", r.online ? "Online" : "Offline"], ["Charge", r.soc != null ? Math.round(r.soc) + "%" : null],
+      ["Status", r.online ? "Online" : "Offline"], ["Why offline", !r.online ? t(lv.offline_hint) : null], ["Last failure", !r.online ? t(lv.offline_reason) : null], ["Last read", !r.online ? when(lv.last_read_ok) : null], ["Charge", r.soc != null ? Math.round(r.soc) + "%" : null],
       ["Stored energy", r.soc != null && d.capacity_wh ? fmtKwh((r.soc / 100) * d.capacity_wh) : null],
       ["Power", p == null ? null : Math.abs(p) < 20 ? "Idle" : (p > 0 ? "Charging " : "Discharging ") + fmtW(Math.abs(p))],
       ["Solar input", lv.pv_w != null ? fmtW(lv.pv_w) : w(A.pv_w)], ["House load", w(A.load_w)],
@@ -213,6 +213,7 @@ This is sent to the battery now.`)) return;
       tech = rows([
         ["Connection", conn ? esc(conn) : null], ["Last good read", when(dg.last_read_ok) || "never"],
         ["32-bit word order", t(dg.word_order)], ["Driver error", t(dg.driver_error)],
+        ["Recent dropouts", (dg.recent_outages || []).length ? dg.recent_outages.slice().reverse().map((o) => esc(`${o.at}: silent for ${o.seconds >= 120 ? Math.round(o.seconds / 60) + " min" : o.seconds + " s"}`)).join("<br>") : null],
         ["Solar readings held back", dg.pv_readings_ignored ? `${dg.pv_readings_ignored} (EcoFlow sometimes reports grid charging as solar; those readings were replaced by the last good one)` : null],
         ["Last command", lc ? `${esc(lc.mode)}${lc.power_w ? " " + fmtW(lc.power_w) : ""} at ${esc(new Date(lc.at).toLocaleTimeString([], this._tzOpt()))} - ${esc(lc.result)}` : "none yet"],
         ["Unconfirmed commands", dg.unconfirmed ? dg.unconfirmed : null], ["Holding control", dg.release_pending ? "Yes" : null],

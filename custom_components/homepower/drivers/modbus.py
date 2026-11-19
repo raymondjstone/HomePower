@@ -3,12 +3,32 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import time
 
 
 class ModbusError(Exception):
-    def __init__(self, msg: str, code: int | None = None) -> None:
+    def __init__(self, msg: str, code: int | None = None, reason: str | None = None) -> None:
         super().__init__(msg)
         self.code = code  # Modbus exception code, if the device answered with one
+        self.reason = reason  # why there was no answer: refused / no_connect / no_reply / closed / garbage
+
+
+class _BadReply(OSError):
+    """Something answered that is not a Modbus TCP reply."""
+
+
+_WHY = {
+    "refused": "the battery refused the connection (its Modbus service is not running)",
+    "no_connect": "no reply when connecting (the battery is not reachable on the network)",
+    "no_reply": "connected, but the battery did not answer in time",
+    "closed": "the battery closed the connection",
+    "garbage": "something answered that is not a Modbus device",
+}
+
+
+def describe_failure(err: Exception) -> str:
+    """A plain-words reason for a failed read, for the panel and the log."""
+    return _WHY.get(getattr(err, "reason", None) or "", "") or str(err)
 
 
 def _signed(v: int) -> int:
@@ -62,8 +82,13 @@ def to_text_low_first(regs: list[int]) -> str:
 
 
 class ModbusTcpClient:
-    def __init__(self, host: str, port: int = 502, unit: int = 1, timeout: float = 3.0) -> None:
+    def __init__(self, host: str, port: int = 502, unit: int = 1, timeout: float = 3.0, patience: float | None = None) -> None:
         self.host, self.port, self.unit, self.timeout = host, port, unit, timeout
+        # How long a FRESH connection (or a battery that has been slow to answer) is waited for. A request is never re-sent while a
+        # slow reply might still be on its way: a battery busy with its own cloud connection can take several seconds to answer.
+        self.patience = patience if patience is not None else 2 * timeout
+        self._slow = False                  # the last reply took longer than the short wait
+        self.reply_s: float | None = None   # how long the last reply took
         self._r: asyncio.StreamReader | None = None
         self._w: asyncio.StreamWriter | None = None
         self._tid = 0
@@ -81,27 +106,48 @@ class ModbusTcpClient:
     async def _txn(self, pdu: bytes) -> bytes:
         async with self._lock:
             last: Exception | None = None
+            reason = "closed"
+            body = None
             for _ in range(2):  # one transparent reconnect
+                patient, phase = False, "connect"
                 try:
-                    if self._w is None:
+                    fresh = self._w is None
+                    if fresh:
                         self._r, self._w = await asyncio.wait_for(
                             asyncio.open_connection(self.host, self.port), self.timeout)
+                    # An old connection that has gone quiet may simply be dead, so it gets the short wait and then a fresh one. A fresh
+                    # connection, or a battery that has been slow to answer, gets the long wait: its request is not sent again meanwhile.
+                    wait = self.patience if (fresh or self._slow) else self.timeout
+                    patient, phase = wait > self.timeout, "reply"
                     self._tid = (self._tid + 1) & 0xFFFF
                     self._w.write(struct.pack(">HHHB", self._tid, 0, len(pdu) + 1, self.unit) + pdu)
                     await self._w.drain()
+                    sent = time.monotonic()
                     tid, _proto, length, _unit = struct.unpack(
-                        ">HHHB", await asyncio.wait_for(self._r.readexactly(7), self.timeout))
+                        ">HHHB", await asyncio.wait_for(self._r.readexactly(7), wait))
                     if not 2 <= length <= 260 or _proto != 0:           # not a Modbus reply (another service on this port, or garbage)
-                        raise OSError("not a Modbus TCP reply")
-                    body = await asyncio.wait_for(self._r.readexactly(length - 1), self.timeout)
+                        raise _BadReply("not a Modbus TCP reply")
+                    body = await asyncio.wait_for(self._r.readexactly(length - 1), wait)
                     if tid != self._tid:
-                        raise OSError("transaction id mismatch")
+                        raise _BadReply("transaction id mismatch")
+                    self.reply_s = time.monotonic() - sent
+                    self._slow = self.reply_s > self.timeout
                     break
                 except (OSError, asyncio.TimeoutError, asyncio.IncompleteReadError) as err:
-                    last = err
+                    last, body = err, None
+                    if isinstance(err, _BadReply):
+                        reason = "garbage"
+                    elif isinstance(err, ConnectionRefusedError):
+                        reason = "refused"
+                    elif isinstance(err, asyncio.TimeoutError):
+                        reason = "no_connect" if phase == "connect" else "no_reply"
+                    else:
+                        reason = "closed"
                     await self.close()
-            else:
-                raise ModbusError(f"{self.host}:{self.port} unreachable: {last!r}")
+                    if patient and isinstance(err, asyncio.TimeoutError):
+                        break      # it had the long wait on a fresh connection: asking again would only double the wait
+            if body is None:
+                raise ModbusError(f"{self.host}:{self.port} unreachable: {last!r}", reason=reason)
         if body[0] & 0x80:
             code = body[1] if len(body) > 1 else 0
             raise ModbusError(f"device returned exception {code}", code=code)

@@ -166,6 +166,125 @@ for (const tab of ["overview", "plan", "schedules", "batteries", "insights", "di
   must("details sheet copes with no registers and no Home Assistant device", /No Home Assistant device was found/.test(root.getElementById("modal").textContent) && !bad(root.getElementById("modal").textContent));
   el._closeModal();
 }
+
+// The rest of the details sheet: every kind of Home Assistant control, richer live readings, finding the Home Assistant device other ways,
+// a failed details call, groups staying open, the EcoFlow "pending" message and the cog on the Overview card.
+{
+  const dev0 = el.data.devices[0], id = dev0.device_id, modal = () => root.getElementById("modal");
+  const press = async (b) => { b.dispatchEvent(new w.MouseEvent("click", { bubbles: true, composed: true })); await wait(40); };
+  const services = () => calls.filter((c) => String(c.type).startsWith("(service)")).map((c) => `${c.type.slice(10)} ${JSON.stringify(Object.fromEntries(Object.entries(c).filter(([k]) => k !== "type")))}`);
+  const dev = { id: "hd1", name: "Garage Anker", manufacturer: "Anker", model: "X1", serial_number: "sn123" };
+  hass.devices = { hd1: dev };
+  const ent = (eid, extra = {}) => [eid, { entity_id: eid, device_id: "hd1", ...extra }];
+  hass.entities = Object.fromEntries([ent("select.garage_mode"), ent("switch.garage_ac"), ent("switch.garage_off"), ent("button.garage_reboot"), ent("text.garage_label"),
+    ent("number.garage_gone"), ent("sensor.garage_soc"), ent("sensor.garage_temp", { entity_category: "diagnostic" })]);
+  hass.states = {
+    "select.garage_mode": { state: "Auto", attributes: { friendly_name: "Garage Anker Mode", options: ["Auto", "Eco"] } },
+    "switch.garage_ac": { state: "on", attributes: { friendly_name: "Garage Anker AC" } }, "switch.garage_off": { state: "off", attributes: { friendly_name: "Garage Anker Spare" } },
+    "button.garage_reboot": { state: "2026-11-01T00:00:00", attributes: { friendly_name: "Garage Anker Reboot" } },
+    "text.garage_label": { state: "Shed", attributes: { friendly_name: "Garage Anker Label" } },
+    "number.garage_gone": { state: "unavailable", attributes: { friendly_name: "Garage Anker Gone", min: 0, max: 10 } },
+    "sensor.garage_soc": { state: "62", attributes: { friendly_name: "Garage Anker SOC", unit_of_measurement: "%" } },
+    "sensor.garage_temp": { state: "31", attributes: { friendly_name: "Garage Anker Temp", unit_of_measurement: "°C" } },
+  };
+  globalThis.__details = { actual: {}, serial: "SN123", registers: [], settings: [] };
+  el.tab = "batteries"; el._modal = null; el._render();
+  await el._batteryDetails(id);
+  const q = (eid) => modal().querySelector(`[data-act="ha-set"][data-eid="${eid}"]`);
+  root.getElementById("ha-select.garage_mode").value = "Eco"; await press(q("select.garage_mode"));
+  await press(q("switch.garage_ac")); await press(q("switch.garage_off")); await press(q("button.garage_reboot"));
+  root.getElementById("ha-text.garage_label").value = "Garage"; await press(q("text.garage_label"));
+  const got = services();
+  must("a Home Assistant choice, switches, button and text field use the standard services",
+    got.includes('select.select_option {"entity_id":"select.garage_mode","option":"Eco"}') && got.includes('switch.turn_off {"entity_id":"switch.garage_ac"}')
+    && got.includes('switch.turn_on {"entity_id":"switch.garage_off"}') && got.includes('button.press {"entity_id":"button.garage_reboot"}')
+    && got.includes('text.set_value {"entity_id":"text.garage_label","value":"Garage"}'), got.join(" | "));
+  must("an unavailable entity and a sensor have no controls", !q("number.garage_gone") && !q("sensor.garage_soc") && !q("sensor.garage_temp"));
+  // groups the user opened or closed stay that way when the sheet is redrawn
+  const grp = (name) => [...modal().querySelectorAll("details")].find((d) => (d.querySelector("summary") || {}).textContent.startsWith(name));
+  grp("Diagnostic").open = true; grp("Controls and settings").open = false;
+  await press(q("switch.garage_ac"));
+  must("groups keep their open or closed state when the sheet is redrawn", grp("Diagnostic").open === true && grp("Controls and settings").open === false);
+  el._closeModal();
+
+  // the EcoFlow "pending" message
+  const ecoSetting = { key: "ac1", label: "AC 1 output", kind: "switch", group: "Controls", value: true, unit: "", min: null, max: null, step: null, options: [], hint: "", locked: "" };
+  globalThis.__details = { actual: {}, registers: [], settings: [ecoSetting] };
+  globalThis.__settingReply = { settings: [{ ...ecoSetting, value: false }], pending: true };
+  await el._batteryDetails(id);
+  await press(modal().querySelector('[data-act="setting-set"][data-key="ac1"]'));
+  must("an EcoFlow change says it is sent and the cloud applies it shortly", /EcoFlow's cloud applies it/.test(modal().textContent));
+  globalThis.__settingReply = null; el._closeModal();
+
+  // richer live readings: every row of the sheet that depends on what the battery reports
+  const savedLive = el.live, savedDev = { ...dev0 };
+  Object.assign(dev0, { driver: "anker_modbus", entities: {}, role: "reserve", solar: "yes", grid_meter: "yes", invert_power: true, mode_map: { charge: "Charge" } });
+  el.live = { ...el.live, devices: { ...el.live.devices, [id]: {
+    online: true, soc: 62, power_w: 1200, pv_w: 300, has_solar: true, temp_c: 31.2, firmware: "1.0.19.16", mode: "charge", desired_mode: "charge", desired_power_w: 1500,
+    reason: "cheap rate", why: "waiting for the cheap rate", limits: [100, 10, 20, true], measured_charge_w: 1200, off_grid: true, protected: true, guard_held: true,
+    alarms: ["meter 1 communication failure"], active_schedules: ["Night charge"], override: { mode: "hold", until: new Date(Date.now() + 3600e3).toISOString() },
+    last_error: "write refused", charge_verdict: "unreliable", traces: [{ at: "2026-11-19T01:00:00", mode: "charge", ok: true, reaction_s: 5, peak_w: 1500 }, { at: "2026-11-19T02:00:00", mode: "charge", ok: false, peak_w: 0 }],
+    setting_changes: [{ at: "2026-11-19 10:00", key: "workMode", from: 1, to: 2 }] } } };
+  globalThis.__details = { actual: { grid_w: -250, load_w: 450, set_power_w: 1500, target_soc: 90, reserve_soc: 20, pack_v: [527, 526] }, serial: "SN123", registers: [], settings: [] };
+  hass.devices = {}; hass.entities = {}; hass.states = {};
+  await el._batteryDetails(id);
+  const t2 = modal().textContent;
+  must("the sheet shows the battery's alarms, override, limits, command results and changes",
+    /meter 1 communication failure/.test(t2) && /Night charge/.test(t2) && /Manual override/.test(t2) && /charges to 100%, stops discharging at 10%, backup reserve 20%/.test(t2)
+    && /reacted after 5 s/.test(t2) && /no effect/.test(t2) && /workMode: 1 → 2/.test(t2) && /write refused/.test(t2) && /Not working/.test(t2) && /Grid down/.test(t2)
+    && /Protection active/.test(t2) && /SOC limit reached/.test(t2) && /Charges at \(measured\)/.test(t2) && /export/.test(t2) && /Reserve it holds/.test(t2) && /Power sign flipped/.test(t2) && /Mode name: charge/.test(t2), t2.slice(0, 600));
+  must("the richer sheet is clean", !bad(t2), (t2.match(/.{0,40}(undefined|NaN|\[object Object\]).{0,40}/) || [""])[0]);
+  el._closeModal();
+
+  // finding the Home Assistant device: by the entities mapped to the battery, then by name
+  Object.assign(dev0, { entities: { soc: "sensor.garage_soc" } });
+  hass.devices = { hd1: dev }; hass.entities = Object.fromEntries([ent("sensor.garage_soc")]); hass.states = { "sensor.garage_soc": { state: "62", attributes: { friendly_name: "Garage Anker SOC" } } };
+  globalThis.__details = { actual: {}, registers: [], settings: [] };
+  await el._batteryDetails(id);
+  must("the Home Assistant device is found through the entities mapped to the battery", /found by the entities you chose/.test(modal().textContent));
+  el._closeModal();
+  Object.assign(dev0, { entities: {} });
+  hass.devices = { hd2: { id: "hd2", name: dev0.name } }; hass.entities = {}; hass.states = {};
+  await el._batteryDetails(id);
+  must("the Home Assistant device is found by name, and one with no entities says so", /found by its name/.test(modal().textContent) && /no entities/.test(modal().textContent));
+  el._closeModal();
+
+  // the details call failing leaves the rest of the sheet usable
+  globalThis.__details = { __error: "register read failed" };
+  await el._batteryDetails(id);
+  must("a failed details call is shown and the rest of the sheet is still there", /register read failed/.test(modal().textContent) && /Readings now/.test(modal().textContent) && !bad(modal().textContent));
+  el._closeModal();
+
+  // the cog on an Overview card opens the sheet
+  Object.keys(dev0).forEach((k) => delete dev0[k]); Object.assign(dev0, savedDev); el.live = savedLive; globalThis.__details = null; hass.devices = {}; hass.entities = {}; hass.states = {};
+  el.tab = "overview"; el._modal = null; el._render();
+  const cog = root.querySelector('#app [data-act="battery-details"]');
+  must("each battery card on the Overview has a cog", !!cog);
+  if (cog) { await press(cog); must("the cog opens that battery's sheet", !!root.getElementById("bd-" + id)); }
+  el._closeModal();
+}
+// A Solarbank that has gone silent: the card and the sheet say when it was last read and why it may be offline.
+{
+  const dev0 = el.data.devices[0], id = dev0.device_id, savedLive = el.live, savedDev = { ...dev0 };
+  Object.assign(dev0, { driver: "anker_modbus", entities: {} });
+  const hint = "The Solarbank 4 and Max AC stop answering on your network while they cannot reach Anker's cloud.";
+  el.live = { ...el.live, devices: { ...el.live.devices, [id]: { online: false, soc: null, power_w: null, last_read_ok: "2026-11-19T10:42:00+00:00", offline_hint: hint, offline_reason: "connected, but the battery did not answer in time" } } };
+  el.tab = "overview"; el._modal = null; el._render();
+  const card = app().textContent;
+  must("an offline Solarbank's card says when it was last read and why it may be offline", /Offline/.test(card) && /Last read/.test(card) && /stop answering on your network/.test(card) && /Connected, but the battery did not answer in time/.test(card) && !bad(card), card.slice(0, 300));
+  el.live.devices[id].offline_hint = null; el._lastHtml = ""; el._render();
+  must("another offline battery gets the last-read time but no Anker explanation", /Last read/.test(app().textContent) && !/Anker's cloud/.test(app().textContent));
+  el.live.devices[id].offline_hint = hint;
+  globalThis.__details = { actual: {}, registers: [], settings: [] };
+  payload.diag.devices[id].recent_outages = [{ at: "2026-11-19 09:10:00", seconds: 45 }, { at: "2026-11-19 10:42:00", seconds: 600 }];
+  await el._batteryDetails(id);
+  const sheet = root.getElementById("modal").textContent;
+  must("the sheet says why the battery is offline, the last failure and the recent dropouts",
+    /Why offline/.test(sheet) && /Last read/.test(sheet) && /Last failure/.test(sheet) && /did not answer in time/.test(sheet) && /Recent dropouts/.test(sheet) && /silent for 10 min/.test(sheet) && /silent for 45 s/.test(sheet) && !bad(sheet), sheet.slice(0, 300));
+  delete payload.diag.devices[id].recent_outages;
+  el._closeModal();
+  Object.keys(dev0).forEach((k) => delete dev0[k]); Object.assign(dev0, savedDev); el.live = savedLive; globalThis.__details = null;
+}
 must("no unhandled errors from any button", rejections.length === 0, rejections.map((e) => String(e && e.stack || e).split("\n")[0]).join(" || "));
 const sent = new Set(calls.map((c) => c.type));
 must("safe mode and debug file reached the backend", sent.has("homepower/safe") && sent.has("homepower/debug") && [...sent].some((t) => t.startsWith("(download)")), [...sent].join(","));

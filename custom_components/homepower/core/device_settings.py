@@ -219,7 +219,10 @@ async def read_settings(driver, controlled: bool) -> tuple[str, list[dict], dict
     """(family, settings, the fresh readings they came from) for a battery that has settings that can be changed; family "" if none."""
     if hasattr(driver, "read_registers") and hasattr(driver, "scan"):          # an Anker battery
         x1 = bool(driver.config.extra.get("house_meter"))
-        raw = await driver.read_registers(list(anker_registers(x1)))
+        wanted = list(anker_registers(x1))
+        raw = await driver.read_registers([a for a in wanted if a != 32775])
+        if 32775 in wanted:        # read on its own: in a batch with 32774 a battery without it answers a silent 0, which would hide every limit
+            raw.update(await driver.read_registers([32775]))
         regs = {int(k): v for k, v in raw.items()}
         return "anker", anker_settings(x1, regs, driver._order, controlled), regs
     quota = getattr(driver, "last_quota", None)

@@ -115,11 +115,24 @@ class CommandBudget:
         return True
 
 
+# Anker's own words (issues 76, 81 and 124 of anker-charging/ha-anker-solix-official): a Solarbank's Modbus server stops while the battery
+# cannot reach Anker's cloud, and returns when it can again. Confirmed by Anker as a firmware defect, for these two models.
+_CLOUD_DEPENDENT = ("anker_e5000_pro", "anker_solarbank_max_ac")
+SOLARBANK_CLOUD_HINT = ("The Solarbank 4 and Max AC stop answering on your network while they cannot reach Anker's cloud, even if the app showed them online "
+                        "a moment ago. Opening the Anker app, or the battery getting its internet connection back, brings it back. Anker has confirmed this as a "
+                        "firmware defect and is rolling out a fix; it is not a HomePower setting.")
+
+
+def offline_hint(kind: str | None) -> str | None:
+    """Why a battery of this kind may be unreachable even though it is working, when that is known; else None."""
+    return SOLARBANK_CLOUD_HINT if kind in _CLOUD_DEPENDENT else None
+
+
 def explain_idle(*, control_enabled: bool, paused: bool, dry_run: bool, online: bool, off_grid: bool, protected: bool,
-                 last_error: str | None, guard_held: bool, unconfirmed: int, awaiting_confirm: bool = False) -> str | None:
+                 last_error: str | None, guard_held: bool, unconfirmed: int, awaiting_confirm: bool = False, hint: str | None = None) -> str | None:
     """The main reason a battery is not being driven right now, in plain words (None = nothing is in the way)."""
     if not online:
-        return "Offline: HomePower cannot read it."
+        return "Offline: HomePower cannot read it." + (" " + hint if hint else "")
     if off_grid:
         return "The grid is down: the battery runs the house itself and gets no commands."
     if not control_enabled:

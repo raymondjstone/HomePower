@@ -43,7 +43,7 @@ class FakeAnker:
                     addr, n = struct.unpack(">HH", pdu[1:5])
                     space = self.hold if fc == 3 else self.inp
                     if fc == 4 and addr == 32768:
-                        vals = list(self.model) + [0] * (n - 8)
+                        vals = (list(self.model) + [0] * max(0, n - 8))[:n]       # exactly n registers, whatever n is
                     elif any(a not in space for a in range(addr, addr + n)):
                         resp = bytes([fc | 0x80, 2])
                         w.write(struct.pack(">HHHB", tid, 0, 1 + len(resp), unit) + resp)
@@ -1294,3 +1294,114 @@ def test_details_and_settings_survive_garbage_from_a_battery():
                 ecoflow_write_params(key, rnd.choice(junk + [rnd.randrange(-5, 200)]), q, controlled)
             except ValueError:
                 pass
+
+
+def test_settings_the_remaining_refusals_and_empty_cases():
+    from core.device_settings import anker_write_plan, apply_change, read_settings
+    x1regs = {10064: 20, 10074: 2, 10075: 0, 10076: 3600, 10077: 0, 10078: 0, 10079: 0, 10080: 600}
+    from core.device_settings import anker_settings
+    assert "export_limit" not in {s["key"] for s in anker_settings(True, x1regs, None, False)}          # the value cannot even be shown without the word order
+    with pytest.raises(ValueError, match="does not have that setting"):               # so a 32-bit limit is never written in a guessed word order
+        anker_write_plan(True, "export_limit", 2000, x1regs, None, False)
+    assert anker_write_plan(True, "watchdog", 600, x1regs, None, False) == [(10080, [600])]          # a 16-bit register needs no word order
+    sb = {10064: 0, 32774: 0b1111011, 32775: 0b1111, 60000: 100, 60001: 10, 60002: 90, 60003: 1}
+    with pytest.raises(ValueError, match="charging limit must be above"):
+        anker_write_plan(False, "charge_limit", 85, sb, "big", False)              # the reserve (90 %) would end up above the charging limit
+    assert anker_write_plan(False, "charge_limit", 95, sb, "big", False) == [(60000, [95])]
+    sb[60003] = 0                                                                  # the reserve is off: its limits do not apply
+    assert anker_write_plan(False, "charge_limit", 85, sb, "big", False) == [(60000, [85])]
+
+    class Bare:                                                                    # a battery driven through Home Assistant entities, or a generic Modbus map
+        config = type("C", (), {"extra": {}})()
+    async def go():
+        assert await read_settings(Bare(), False) == ("", [], {})
+        with pytest.raises(ValueError, match="no settings that can be changed"):
+            await apply_change(Bare(), "work_mode", 0, False)
+    asyncio.run(go())
+
+
+def test_details_actual_fields():
+    from core.device_details import actual_fields
+    from core.models import Actual
+    assert actual_fields(None) == {}
+    f = actual_fields(Actual(online=True, soc=62.0, power_w=-300.0, mode=Mode.HOLD, set_power_w=0, grid_w=120.0, pv_w=40.0, load_w=420.0, temp_c=21.5,
+                             firmware="1.0.19.16", alarms=("meter 1 communication failure",), pack_v=(527, 526), limits=(100, 10, 20, True), off_grid=False))
+    assert f["mode"] == "hold" and f["limits"] == {"charge_to": 100, "discharge_to": 10, "backup_reserve": 20, "backup_on": True}
+    assert f["alarms"] == ["meter 1 communication failure"] and f["pack_v"] == [527, 526] and f["load_w"] == 420.0 and f["off_grid"] is False
+    assert actual_fields(Actual(online=False))["limits"] is None and actual_fields(Actual(online=False))["mode"] is None
+
+
+def test_ecoflow_read_applies_the_solar_screen_on_both_paths():
+    """The guard must be wired into read(): the cloud poll and the live push both."""
+    from core.models import Actual  # noqa: F401
+    good = {"soc": 50, "powGetBpCms": 3800.0, "powGetPvSum": 350.0, "powGetSysGrid": 3837.0, "backupReverseSoc": 10}
+    bad = {**good, "powGetPvSum": 3792.8, "powGetSysGrid": 0}
+
+    async def go():
+        d = eco(good)
+        assert (await d.read()).pv_w == 350.0
+        d._cache = None
+        d.api._q = bad
+        a = await d.read()                                  # the cloud poll path
+        assert a.pv_w == 350.0 and d.pv_ignored == 1
+        d._cache = None
+        d.api._q = good
+        assert (await d.read()).pv_w == 350.0
+        d.merge_push({"powGetPvSum": 3794.1, "powGetSysGrid": 0})                  # the live push path: same mark, same answer
+        assert (await d.read()).pv_w == 350.0 and d.pv_ignored == 2
+    asyncio.run(go())
+
+
+def test_offline_explanation_for_the_solarbanks_whose_modbus_depends_on_anker_cloud():
+    from core.sanity import SOLARBANK_CLOUD_HINT, explain_idle, offline_hint
+    assert offline_hint("anker_e5000_pro") == SOLARBANK_CLOUD_HINT and offline_hint("anker_solarbank_max_ac") == SOLARBANK_CLOUD_HINT
+    assert offline_hint("anker_x1") is None and offline_hint("ecoflow_stream_ultra_x") is None and offline_hint(None) is None      # only where Anker has confirmed it
+    base = dict(control_enabled=True, paused=False, dry_run=False, off_grid=False, protected=False, last_error=None, guard_held=False, unconfirmed=0)
+    off = explain_idle(online=False, hint=SOLARBANK_CLOUD_HINT, **base)
+    assert off.startswith("Offline: HomePower cannot read it.") and "Anker's cloud" in off and "Anker app" in off
+    assert explain_idle(online=False, **base) == "Offline: HomePower cannot read it."                          # no hint for other batteries
+    assert explain_idle(online=True, hint=SOLARBANK_CLOUD_HINT, **base) is None                                # the hint only ever explains being offline
+
+
+def test_anker_driver_records_why_it_went_quiet_and_how_long_for():
+    async def go():
+        dev = FakeAnker()
+        srv = await asyncio.start_server(dev.handle, "127.0.0.1", 0)
+        port = srv.sockets[0].getsockname()[1]
+        d = AnkerModbusDriver(cfg(port))
+        d.client.timeout, d.client.patience = 0.3, 0.6
+        assert (await d.read()).online and d.last_error is None and d.outages == []
+        for w in dev.conns:
+            w.close()
+        srv.close()
+        a = await d.read()
+        assert not a.online and any(t in d.last_error for t in ("refused the connection", "no reply when connecting"))
+        await asyncio.sleep(0.2)
+        srv = await asyncio.start_server(dev.handle, "127.0.0.1", port)
+        assert (await d.read()).online
+        assert d.last_error is None and len(d.outages) == 1 and d.outages[0]["seconds"] >= 0 and d.outages[0]["at"]
+        await d.close(); srv.close()
+    asyncio.run(go())
+
+
+def test_settings_read_the_capability_mask_0x8007_on_its_own():
+    from core.device_settings import read_settings
+
+    async def go():
+        async with fake_anker() as dev:
+            dev.hold.update({10064: 0, 60000: 100, 60001: 10, 60002: 20, 60003: 1})
+            dev.inp[32774] = 0b1111011                          # the battery has the mode mask but not 0x8007
+            d = AnkerModbusDriver(cfg(dev.port))
+            await d.read()
+            asked = []
+            real = d.read_registers
+
+            async def spy(addrs):
+                asked.append(list(addrs))
+                return await real(addrs)
+            d.read_registers = spy
+            _, st, _ = await read_settings(d, False)
+            assert not any(32774 in a and 32775 in a for a in asked) and [32775] in asked
+            assert {"charge_limit", "discharge_limit", "backup_reserve"} <= {s["key"] for s in st}      # no 0x8007: every limit is still offered
+            await d.close()
+    asyncio.run(go())
