@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -40,6 +40,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
                      EnergyTotal(coord, entry, f"bat:{c.device_id}_in", f"{c.name} energy charged"),
                      EnergyTotal(coord, entry, f"bat:{c.device_id}_out", f"{c.name} energy discharged"),
                      Efficiency(coord, entry, c.device_id, c.name), Cycles(coord, entry, c.device_id, c.name, c.caps.capacity_wh)]
+            if c.extra.get("house_meter"):     # Anker X1: the inverter's own PV inputs
+                ents.append(PvTotal(coord, entry, c.device_id, c.name))
+                for i in range(8):
+                    ents += [PvString(coord, entry, c.device_id, c.name, i, kind) for kind in ("voltage", "current", "power")]
         add(ents)
 
     _sync()
@@ -179,6 +183,45 @@ class BatteryDevicePower(_BatteryBase):
     def native_value(self):
         a = self._actual()
         return None if a is None or a.power_w is None else round(a.power_w)
+
+
+class PvTotal(_BatteryBase):
+    """X1: total solar power at the inverter's PV inputs (register 10183)."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+
+    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+        super().__init__(coord, entry, device_id, name, "pv_total", "PV input power")
+
+    @property
+    def native_value(self):
+        a = self._actual()
+        return None if a is None or a.pv_total_w is None else round(a.pv_total_w)
+
+
+class PvString(_BatteryBase):
+    """X1: one PV string's voltage, current or power (V x A). Strings 5-8 are off until you enable them."""
+
+    _KINDS = {"voltage": (SensorDeviceClass.VOLTAGE, UnitOfElectricPotential.VOLT, 1),
+              "current": (SensorDeviceClass.CURRENT, UnitOfElectricCurrent.AMPERE, 2),
+              "power": (SensorDeviceClass.POWER, UnitOfPower.WATT, 0)}
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coord, entry, device_id: str, name: str, index: int, kind: str) -> None:
+        super().__init__(coord, entry, device_id, name, f"pv{index + 1}_{kind}", f"PV{index + 1} {kind}")
+        self._i, self._kind = index, kind
+        self._attr_device_class, self._attr_native_unit_of_measurement, self._digits = self._KINDS[kind]
+        self._attr_entity_registry_enabled_default = index < 4
+
+    @property
+    def native_value(self):
+        a = self._actual()
+        if a is None or len(a.pv_strings) <= self._i:
+            return None
+        v, amps = a.pv_strings[self._i]
+        return round({"voltage": v, "current": amps, "power": v * amps}[self._kind], self._digits)
 
 
 class EnergyTotal(_Base):

@@ -984,7 +984,7 @@ class HomePowerCoordinator(DataUpdateCoordinator[Snapshot]):
     @staticmethod
     def _finite(act: Actual) -> Actual:
         """NaN and infinity from a device or its cloud are no reading: they would stop the decision engine and poison the saved totals."""
-        bad = {f: None for f in ("soc", "power_w", "grid_w", "pv_w", "load_w", "temp_c")
+        bad = {f: None for f in ("soc", "power_w", "grid_w", "pv_w", "load_w", "temp_c", "pv_total_w")
                if isinstance(getattr(act, f), float) and (getattr(act, f) != getattr(act, f) or abs(getattr(act, f)) == float("inf"))}
         return _replace(act, **bad) if bad else act
 

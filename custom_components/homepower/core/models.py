@@ -56,6 +56,8 @@ class Actual:
     temp_c: float | None = None     # internal temperature (X1)
     alarms: tuple = ()              # active alarms the device reports, as plain text (X1)
     off_grid: bool | None = None    # the device reports the grid is lost (None = it cannot tell)
+    pv_strings: tuple = ()          # X1: (volts, amps) of each of PV1-PV8 (registers 10167-10182); () = not read yet
+    pv_total_w: float | None = None  # X1: the inverter's own total PV power (register 10183)
     pack_v: tuple = ()              # X1: raw voltage reading of each battery pack (for the health trend)
 
 
