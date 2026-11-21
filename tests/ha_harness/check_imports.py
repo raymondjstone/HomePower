@@ -3,7 +3,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path[:0] = [ROOT, os.path.join(ROOT, "tests")]
 import importlib, inspect, sys, traceback
 ok = True
-for m in ["__init__", "config_flow", "const", "coordinator", "manager", "sensor", "switch", "diagnostics", "services", "websocket_api", "options_flow", "adapters.ha_entities", "drivers.modbus_generic"]:
+for m in ["__init__", "config_flow", "const", "coordinator", "coord_base", "coord_prices", "coord_alerts", "coord_forecast", "coord_reports", "manager", "sensor", "switch", "diagnostics", "services", "websocket_api", "options_flow", "adapters.ha_entities", "drivers.modbus_generic"]:
     name = "custom_components.homepower" + ("" if m == "__init__" else "." + m)
     try:
         importlib.import_module(name); print("import ok:", name)

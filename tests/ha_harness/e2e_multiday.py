@@ -44,6 +44,8 @@ class Clock:
 
 
 C._time = Clock()
+for _m in ("coord_prices", "coord_forecast", "coord_reports"):   # the coordinator's parts read the same clock
+    sys.modules[f"custom_components.homepower.{_m}"]._time = C._time
 
 
 class Battery:

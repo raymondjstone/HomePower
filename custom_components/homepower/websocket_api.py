@@ -57,7 +57,7 @@ def async_register(hass: HomeAssistant) -> None:
                 ws_override, ws_clear_override,
                 ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control, ws_confirm, ws_safe, ws_debug, ws_scan_ports,
                 ws_save_goal, ws_delete_goal, ws_flag, ws_preview, ws_diagnostics, ws_test, ws_device_details, ws_device_setting,
-                ws_save_scene, ws_delete_scene, ws_apply_scene, ws_export, ws_import):
+                ws_save_scene, ws_delete_scene, ws_apply_scene, ws_export, ws_import, ws_hardware_report):
         websocket_api.async_register_command(hass, cmd)
 
 
@@ -387,6 +387,16 @@ async def ws_debug(hass, msg):
     """Everything useful for a bug report in one file: readings, command results, plan against actual, recent events."""
     c = _coord(hass)
     return c.debug_bundle()
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/hardware_report"})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_hardware_report(hass, msg):
+    """How each battery really responded to control (model, firmware, test and command results), to share: no names, keys,
+    serial numbers or addresses."""
+    return _coord(hass).hardware_report()
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/device/confirm", vol.Required("device_id"): str})

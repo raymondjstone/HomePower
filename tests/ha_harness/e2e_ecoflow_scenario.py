@@ -31,6 +31,8 @@ import custom_components.homepower.manager as M
 M.async_get_clientsession = lambda hass: None        # no real network in this test: the fake API below replaces it
 CLOCK = Clock()
 C._time = CLOCK
+for _m in ("coord_prices", "coord_forecast", "coord_reports"):   # the coordinator's parts read the same clock
+    sys.modules[f"custom_components.homepower.{_m}"]._time = CLOCK
 E.time = CLOCK
 
 

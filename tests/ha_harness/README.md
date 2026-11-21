@@ -24,6 +24,7 @@ socket. They are not part of the normal `pytest` run because they need Home Assi
     python tests/ha_harness/e2e_handback_retry.py   # a forced battery is always handed back, even after failures
     python tests/ha_harness/e2e_restore_junk.py   # a damaged or hostile backup file restores safely
     python tests/ha_harness/e2e_soak.py        # a simulated day of cycles: speed and growth (SOAK_CYCLES=... to change)
+    python tests/ha_harness/e2e_export_events_repairs.py   # paid export, wear cost, a saving session, Repairs, the hardware report, X1 solar strings
 
 What they cover: every module imports and every Home Assistant function used has the signature HomePower calls;
 the Configure flow for every battery model; the whole control loop (monitor-only, control, hand-back, override,

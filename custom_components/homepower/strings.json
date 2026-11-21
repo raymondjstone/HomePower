@@ -279,5 +279,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "alert": {
+      "title": "HomePower: {title}",
+      "description": "{message}\n\nThis clears by itself once the problem is gone. HomePower's panel (Diagnostics) has more detail."
+    }
   }
 }

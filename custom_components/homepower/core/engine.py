@@ -3,7 +3,7 @@
 Pure and HA-free so every policy can be tested. The coordinator only gathers inputs and applies results.
 
 Priority, highest first:
-  manual override > backup reserve > schedule > goal plan > zero-import battery
+  manual override > backup reserve > grid event > schedule > goal plan > zero-import battery > paid export
 then, for batteries still without an instruction: peak shaving / export limiting, and finally
 "hand back to the battery's own control" for ones we previously forced.
 Safety clamps always apply: device limits, SOC limits (with hysteresis), load rules, overall caps.
@@ -53,6 +53,8 @@ class Settings:
     save_for_peak: bool = False   # during cheap hours, hold batteries instead of letting them discharge
     hold_for_dearer: bool = False   # hold stored energy when a clearly dearer price is coming within hours
     forecast_share: float = 0.5
+    export_discharge: bool = False   # discharge to the grid while exporting pays more than buying the energy back later
+    wear_cost: float = 0.0           # what a kWh through the battery costs in wear (main units): trading must beat it
 
 
 @dataclass
@@ -81,6 +83,10 @@ class World:
     cold_note: str = ""                             # the temperatures behind that, for the plan
     price_now: float | None = None                 # current import price (main units)
     price_later_max: float | None = None           # the dearest import price in the next few hours
+    export_price_now: float | None = None          # what exporting pays right now (main units)
+    buyback_price: float | None = None             # the cheapest import price coming in the next 24 h (main units)
+    export_keep_pct: int = 0                       # paid export never takes a battery below this (what the house needs until it is cheap again)
+    grid_event: bool = False                       # a demand-flexibility event (e.g. a saving session) is running: discharge, buy nothing
 
 
 @dataclass
@@ -93,6 +99,23 @@ class Result:
 
 
 GOAL_TOLERANCE_PTS = 1.5   # an idle battery this close to a goal's target is left alone (see the goal planning below)
+ROUND_TRIP = 0.85          # energy back out of a battery for each unit put in (charge and discharge losses together)
+EXPORT_REASON = "paid export"
+EVENT_REASON = "grid event"
+
+
+def export_pays(export_now: float | None, buyback: float | None, wear: float = 0.0) -> bool:
+    """Is a kWh sent out now worth more than the kWh bought back later at the cheapest coming price, allowing for the losses
+    of putting it back into the battery and the wear of cycling it?"""
+    if export_now is None or buyback is None:
+        return False
+    return export_now > max(0.0, buyback) / ROUND_TRIP + max(0.0, wear)
+
+
+def _can_discharge(d: DevIn, above: int) -> bool:
+    caps, act = d.config.caps, d.actual
+    return (d.controllable and act.online and act.soc is not None and Mode.DISCHARGE in caps.supported_modes
+            and caps.max_discharge_w > 0 and caps.power_control and act.soc > above + SOC_MARGIN)
 
 
 def _floor(caps: Capabilities, w: World) -> int:
@@ -219,6 +242,7 @@ def compute(w: World) -> Result:
     goal_src: dict[str, str] = {}      # batteries whose instruction comes from a goal -> its charge source
 
     # ---- 1. who wants what
+    export_ok = S.export_discharge and export_pays(w.export_price_now, w.buyback_price, S.wear_cost)
     for d in w.devices:
         did, caps = d.config.device_id, d.config.caps
         want, reason = None, ""
@@ -226,12 +250,25 @@ def compute(w: World) -> Result:
             want, reason = w.overrides[did], "manual override"
         elif w.backup_active and (b := backup_desired(d.actual.soc if d.actual.online else None, S.backup_pct, caps)):
             want, reason = b, "backup reserve"
+        elif w.grid_event and d.controllable and d.actual.online:
+            # A saving session or similar: every battery that can runs the house (and exports) down to its floor, and nothing
+            # charges from the grid. One that cannot be told to discharge is handed to its own control, which powers the house.
+            if _can_discharge(d, _floor(caps, w)):
+                want, reason = Desired(Mode.DISCHARGE, caps.max_discharge_w, reserve_soc=_floor(caps, w)), EVENT_REASON
+            elif d.release_pending:
+                want, reason = Desired(Mode.AUTO), EVENT_REASON + " (own control)"
+            else:
+                continue
         elif (e := resolve_entry(w.schedules, did, w.now, w.condition_ok, w.away)) is not None:
             want, reason, entries[did] = e.desired, f"schedule '{e.id}'", e
         elif did in goal_plan:
             want, reason, goal_src[did] = goal_plan[did]
         elif did == S.zero_import_device:
             want, reason = _zero_import(w, d), "zero-import"
+        elif export_ok and "discharge" not in w.load_blocks and _can_discharge(d, max(_floor(caps, w), w.export_keep_pct)):
+            keep = max(_floor(caps, w), w.export_keep_pct)
+            want = Desired(Mode.DISCHARGE, caps.max_discharge_w, reserve_soc=keep)
+            reason = f"{EXPORT_REASON}: exporting pays {w.export_price_now:.3f}, buying back costs {w.buyback_price:.3f} (down to {keep}%)"
         if want is None:
             continue
         if want.mode is Mode.CHARGE and reason == "zero-import" and not caps.power_control:
@@ -327,8 +364,8 @@ def compute(w: World) -> Result:
         d = by_id[did]
         caps = d.config.caps
         want = clamp(res.wants[did], max_charge_w=caps.max_charge_w, max_discharge_w=caps.max_discharge_w, min_soc=caps.min_soc)
-        guarded = soc_guard(want, d.actual.soc if d.actual.online else None, replace(caps, min_soc=_floor(caps, w)),
-                            held=d.guard_held)
+        floor = max(_floor(caps, w), w.export_keep_pct) if res.reasons[did].startswith(EXPORT_REASON) else _floor(caps, w)
+        guarded = soc_guard(want, d.actual.soc if d.actual.online else None, replace(caps, min_soc=floor), held=d.guard_held)
         res.guard_held[did] = guarded.mode is not want.mode
         if res.reasons[did] not in ("manual override", "backup reserve"):
             guarded = apply_load_rules(guarded, w.load_blocks)
@@ -376,7 +413,8 @@ def compute(w: World) -> Result:
     solar_about = any((o.actual.pv_w or 0) > 50 for o in w.devices if o.actual.online) or (w.grid_w is not None and w.grid_w < -50)
     for d in w.devices:
         did, caps = d.config.device_id, d.config.caps
-        if (did in res.wants or not d.controllable or not d.actual.online or Mode.HOLD not in caps.supported_modes or solar_about):
+        if (did in res.wants or not d.controllable or not d.actual.online or Mode.HOLD not in caps.supported_modes or solar_about
+                or w.grid_event):     # during a grid event stored energy is meant to be used, not held
             continue
         ceiling, soc = w.solar_ceiling.get(did), d.actual.soc
         if (ceiling is not None and w.cheap_now and soc is not None

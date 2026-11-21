@@ -37,7 +37,8 @@ from .drivers.modbus_generic import GenericModbusDriver
 _LOGGER = logging.getLogger(__name__)
 
 
-BATTERY_SENSOR_SUFFIXES = ("soc", "power", "target", "efficiency", "cycles")   # sensor.py's per-battery unique ids
+BATTERY_SENSOR_SUFFIXES = ("soc", "power", "target", "efficiency", "cycles", "pv_total") + tuple(   # sensor.py's per-battery unique ids
+    f"pv{i}_{kind}" for i in range(1, 9) for kind in ("voltage", "current", "power"))                  # (the PV ones: Anker X1 only)
 
 
 class HomePowerManager:
@@ -63,6 +64,7 @@ class HomePowerManager:
         self.health_data: dict = {}              # weekly battery efficiency
         self.grid_events: list = []              # times a battery reported the grid down
         self.trend_data: dict = {}               # daily temperature / pack-voltage spread per battery
+        self.pv_health_data: dict = {}           # X1: which solar strings are used and their energy per day
         self.register_notes: dict[str, dict[str, str]] = {}   # the user's own names for registers they have identified
         self.scenes: dict[str, dict] = {}        # saved combinations of modes and limits
         self.event_state: dict[str, bool] = {}   # heads-up messages currently showing
@@ -117,6 +119,7 @@ class HomePowerManager:
             return v if isinstance(v, dict) else {}
 
         self.plan_log_data, self.trace_data, self.weather_data = dict(plain("plan_log")), dict(plain("traces")), dict(plain("weather"))
+        self.pv_health_data = dict(plain("pv_health"))
         conf = data.get("confirmed")
         self.confirmed = {c for c in conf if isinstance(c, str)} if isinstance(conf, list) else set()
         self.charge_rates = {k: int(v) for k, v in plain("charge_rates").items() if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")}
@@ -137,7 +140,7 @@ class HomePowerManager:
             "health": c.health.dump() if c else self.health_data, "scenes": list(self.scenes.values()),
             "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen), "forecast_days": self.forecast_days,
             "ecoflow_orig": self.ecoflow_orig, "charge_rates": c.rate_learner.rates if c else self.charge_rates,
-            "plan_log": c.plan_log.dump() if c else self.plan_log_data,
+            "plan_log": c.plan_log.dump() if c else self.plan_log_data, "pv_health": c.pv_health.dump() if c else self.pv_health_data,
             "traces": c.traces.dump() if c else self.trace_data,
             "weather": ({"temps": c.temp_log.dump(), "model": c.cold_model.dump()} if c else self.weather_data), "confirmed": sorted(self.confirmed),
         })
@@ -449,7 +452,8 @@ class HomePowerManager:
             raise ValidationError("unknown battery")
         driver = getattr(cached[1], "driver", None)
         st = self.coordinator._snap.devices.get(device_id) if self.coordinator else None
-        out: dict = {"actual": actual_fields(st.actual if st else None), "registers": None, "raw": None, "changes": [], "serial": None}
+        out: dict = {"actual": actual_fields(st.actual if st else None), "registers": None, "raw": None, "changes": [], "serial": None,
+                     "pv": self.coordinator.pv_view(device_id) if self.coordinator else None}
         if driver is None:
             return out
         x1 = bool(driver.config.extra.get("house_meter"))

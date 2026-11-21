@@ -28,6 +28,8 @@ class Clock:
 
 CLOCK = Clock()
 C._time = CLOCK
+for _m in ("coord_prices", "coord_forecast", "coord_reports"):   # the coordinator's parts read the same clock
+    sys.modules[f"custom_components.homepower.{_m}"]._time = CLOCK
 E.time = CLOCK
 M.async_get_clientsession = lambda hass: None
 

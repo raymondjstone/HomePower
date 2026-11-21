@@ -39,13 +39,15 @@ def grid_sign_mismatch(meter_w: float | None, device_w: float | None, min_w: flo
     return (meter_w > 0) != (device_w > 0)
 
 
-def cycling_margin(buy: float, avoided: float, efficiency: float) -> dict:
+def cycling_margin(buy: float, avoided: float, efficiency: float, wear: float = 0.0) -> dict:
     """What storing one kWh is worth: `buy` is what it costs to charge it, `avoided` what the energy would otherwise cost
-    (or earn if exported) when it is used later, `efficiency` the battery's round trip (0-1). Prices in the same unit."""
+    (or earn if exported) when it is used later, `efficiency` the battery's round trip (0-1), `wear` what cycling a kWh
+    through the battery costs in wear. Prices in the same unit."""
     eff = min(1.0, max(0.05, efficiency))
-    net = avoided * eff - buy
-    return {"net_per_kwh": round(net, 4), "worth_it": net > 0, "break_even_price": round(buy / eff, 4),
-            "efficiency_pct": round(eff * 100, 1)}
+    wear = max(0.0, wear)
+    net = avoided * eff - buy - wear
+    return {"net_per_kwh": round(net, 4), "worth_it": net > 0, "break_even_price": round((buy + wear) / eff, 4),
+            "efficiency_pct": round(eff * 100, 1), "wear_per_kwh": round(wear, 4)}
 
 
 # ---------------------------------------------------------------- batteries that cannot be told a power

@@ -258,6 +258,7 @@ This is sent to the battery now.`)) return;
       <h2>${esc(d.name)} <span class="chip ${r.online ? "" : "bad"}">${r.online ? "Online" : "Offline"}</span></h2>
       <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px">${this._ring(r.soc, 80)}<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">${esc(prof.label)}${info.length ? `<br>${info.map(esc).join(" · ")}` : ""}</div></div>
       <h3>Readings now</h3>${live}
+      ${this._pvHtml((det && det.pv) || lv.pv) ? `<h3>Solar strings</h3>${this._pvHtml((det && det.pv) || lv.pv)}` : ""}
       <h3>HomePower's settings for it</h3>${settings}
       ${settingsHtml ? `<h3>Settings you can change</h3>${settingsHtml}` : ""}${det && det.settings_error ? `<div class="err">${esc(det.settings_error)}</div>` : ""}
       <h3>On the battery itself</h3>${onBattery}
@@ -265,6 +266,25 @@ This is sent to the battery now.`)) return;
       <h3>Connection</h3>${tech}
       <div class="foot"><span></span><div class="r"><button class="btn" data-act="battery-details" data-id="${esc(id)}"><ha-icon icon="mdi:refresh" style="--mdc-icon-size:16px"></ha-icon>Refresh</button><button class="btn" data-act="edit-battery" data-id="${esc(id)}"><ha-icon icon="mdi:pencil" style="--mdc-icon-size:16px"></ha-icon>Edit</button><button class="btn pri" data-act="close">Close</button></div></div>
     </div></div>`;
+  },
+
+  // An inverter's solar strings (Anker X1 PV1-PV8): live volts, amps and watts, a bar for each string's share of the power now,
+  // and its health against its own usual share of a day's solar (see core/pv_health.py). Unused strings are left out.
+  _pvHtml(pv) {
+    if (!pv || !(pv.strings || []).length) return "";
+    const used = pv.strings.filter((s) => s.state !== "unused");
+    if (!used.length) return "";
+    const total = used.reduce((a, s) => a + (s.watts || 0), 0);
+    const STATE = { ok: ["OK", ""], weak: ["Weaker than usual", "warn"], dead: ["Not producing", "bad"], learning: ["Learning", ""] };
+    const row = (s) => {
+      const [label, cls] = STATE[s.state] || [s.state, ""];
+      const share = total > 0 && s.watts != null ? Math.round((100 * s.watts) / total) : null;
+      const live = s.watts != null ? `${fmtW(s.watts)} <span class="sub">(${s.volts} V × ${s.amps} A)</span>` : '<span class="sub">no reading</span>';
+      const bar = share != null ? `<div title="${share}% of the solar now" style="height:6px;border-radius:3px;background:var(--divider-color,#ddd);margin-top:4px"><div style="height:6px;border-radius:3px;width:${share}%;background:var(--primary-color)"></div></div>` : "";
+      const usual = s.usual_share != null ? `today ${s.today_share != null ? s.today_share + "%" : "-"} of the solar, usually ${s.usual_share}%` : "usual share not known yet (needs 3 sunny days)";
+      return `<tr><th>PV${s.string}</th><td>${live}${bar}<div class="sub" style="font-size:12px">${esc(usual)}</div>${s.note ? `<div class="sub" style="font-size:12px">${esc(s.note)}</div>` : ""}</td><td><span class="chip ${cls}">${esc(label)}</span></td></tr>`;
+    };
+    return `<table class="tbl">${used.map(row).join("")}${pv.total_w != null ? `<tr><th>All strings</th><td>${fmtW(pv.total_w)} <span class="sub">(the inverter's own total)</span></td><td></td></tr>` : ""}</table>`;
   },
 
   get _cat() { return this.data.catalogue || { profiles: [], drivers: {}, vendors: {} }; },
