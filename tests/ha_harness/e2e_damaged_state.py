@@ -5,6 +5,7 @@ sys.path[:0] = [ROOT, os.path.join(ROOT, "tests")]
 
 import asyncio, copy, json, tempfile
 import conftest  # noqa: F401
+import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.util import dt as dt_util

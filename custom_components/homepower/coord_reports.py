@@ -182,6 +182,9 @@ class ReportsMixin:
                       "power_w": p.power_w, "price": p.price} for p in self.last_result.allocs],
             "notes": self.last_result.notes,
             "prices": self._price_slots(now, hours),
+            "day_plan": self.day_plan.as_dict() if getattr(self, "day_plan", None) else None,
+            "events": [{"start": s.isoformat(), "end": e.isoformat()} for s, e in self._event_windows()
+                       if e > now and s < now + timedelta(hours=hours)],
         }
 
     _IPV4 = re.compile(r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w])")
@@ -345,7 +348,7 @@ class ReportsMixin:
                                     protected=bool(act and act.protected), last_error=st.last_error, guard_held=st.guard_held,
                                     unconfirmed=st.unconfirmed, awaiting_confirm=st.awaiting_confirm),
                 "setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or [])[-8:],
-                "pv": self.pv_view(did) if a.config.extra.get("house_meter") else None,
+                "pv": self.pv_view(did),          # None for a battery that does not report its solar inputs one by one
             }
         return out
 

@@ -93,7 +93,12 @@ class PvHealth:
         usual = self.usual_shares(did, day)
         for i in range(8):
             key = (did, i)
-            if total >= MIN_TOTAL_W and used[i] and (usual[i] or 0) >= MIN_SHARE and power[i] < DEAD_SHARE * total:
+            judged = used[i] and (usual[i] or 0) >= MIN_SHARE
+            if not judged:
+                self._quiet.pop(key, None)
+            elif total < MIN_TOTAL_W:
+                continue                 # too little light to tell: a string already quiet stays quiet (no clear-and-raise with each cloud)
+            elif power[i] < DEAD_SHARE * total:
                 self._quiet.setdefault(key, now_s)
             else:
                 self._quiet.pop(key, None)

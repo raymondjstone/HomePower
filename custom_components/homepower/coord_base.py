@@ -28,6 +28,7 @@ UNCONFIRMED_ALERT_AFTER = 3
 GRID_SLOW_AFTER_S = 120     # setup check: warn that the grid reading is not live
 GRID_STALE_AFTER_S = 300    # control: too old to steer by (solar surplus tracking waits instead)
 ACTION_PAUSE, ACTION_HAND_BACK = "HOMEPOWER_PAUSE", "HOMEPOWER_HAND_BACK"   # buttons on phone notifications
+MONEY_SAVED, MONEY_EXPORT = "money:saved", "money:export"   # lifetime money counters, kept with the energy counters
 FORCING_REASONS = ("schedule", "goal", "manual override", "backup reserve")
 REPAIR_KINDS = {   # alert kinds shown under Settings > Repairs (until fixed), with the title shown there
     "offline": "battery offline", "error": "command failed", "unconfirmed": "battery not following commands",

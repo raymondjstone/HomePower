@@ -10,6 +10,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .coord_base import MONEY_EXPORT, MONEY_SAVED
 from .coordinator import HomePowerCoordinator
 
 
@@ -25,6 +26,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     add([BatteryFlow(coord, entry), StoredEnergy(coord, entry), GridPower(coord, entry),
          EnergyTotal(coord, entry, "grid_in", "Grid energy imported"), EnergyTotal(coord, entry, "grid_out", "Grid energy exported"),
          EnergyTotal(coord, entry, "pv_in", "Solar energy"), Savings(coord, entry, "today"), Savings(coord, entry, "month"), PriceNow(coord, entry),
+         MoneyTotal(coord, entry, MONEY_EXPORT, "Export earnings", "mdi:cash-plus"), MoneyTotal(coord, entry, MONEY_SAVED, "Battery savings", "mdi:piggy-bank-outline"),
          HomeBattery(coord, entry), DailyShare(coord, entry, "self_consumption", "Solar self-consumption today"),
          DailyShare(coord, entry, "cheap_share", "Cheap-rate share of grid import today")])
     known: set[str] = set()
@@ -266,6 +268,30 @@ class Savings(_Base):
         now = dt_util.now()
         key = now.strftime("%Y-%m-%d") if self._period == "today" else now.strftime("%Y-%m")
         return round(self.coordinator.ledger.saved(key), 2) + 0.0   # + 0.0 turns -0.0 into 0.0
+
+
+class MoneyTotal(_Base):
+    """A lifetime money total Home Assistant keeps long-term statistics of: export earnings (every kWh sent to the grid at the
+    export price then: usable as the Energy dashboard's export compensation) or the batteries' estimated savings. In Home
+    Assistant's own currency (Settings > System > General), so the Energy dashboard accepts it."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coord, entry, key: str, name: str, icon: str) -> None:
+        super().__init__(coord, entry)
+        self._key = key
+        self._attr_name, self._attr_icon = name, icon
+        self._attr_unique_id = f"{entry.entry_id}_{key.replace(':', '_')}_total"
+
+    @property
+    def native_unit_of_measurement(self):
+        return getattr(self.coordinator.hass.config, "currency", None) or "GBP"
+
+    @property
+    def native_value(self):
+        return round(self.coordinator.meter.totals.get(self._key, 0.0), 4) + 0.0
 
 
 class PriceNow(_Base):

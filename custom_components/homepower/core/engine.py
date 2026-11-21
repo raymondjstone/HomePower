@@ -14,6 +14,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Callable
 
+from .dayplan import DayPlan
+from .events import GOAL_ID as EVENT_GOAL_ID
 from .goals import Goal, next_deadline
 from .insights import auto_target_soc
 from .grid import apply_load_rules, backup_desired, export_guard, peak_shave, split_power
@@ -87,6 +89,7 @@ class World:
     buyback_price: float | None = None             # the cheapest import price coming in the next 24 h (main units)
     export_keep_pct: int = 0                       # paid export never takes a battery below this (what the house needs until it is cheap again)
     grid_event: bool = False                       # a demand-flexibility event (e.g. a saving session) is running: discharge, buy nothing
+    day_plan: DayPlan | None = None                # where stored energy is worth most until refilling is cheapest (core/dayplan.py)
 
 
 @dataclass
@@ -190,9 +193,10 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str, str]]:
                 res.notes.append(f"goal '{g.id}': target raised to {target}% for the cold ({w.cold_note}: about {w.cold_extra_wh / 1000:.1f} kWh more use)")
 
         def tgt(d: DevIn, target: int = target) -> int:
-            # grid charging stops short of the battery's room-for-solar ceiling; solar-only charging may fill it
+            # grid charging stops short of the battery's room-for-solar ceiling; solar-only charging may fill it, and so may the
+            # charge before a grid event (the energy is to be sold during the event, so there is no point leaving room for solar)
             c = w.solar_ceiling.get(d.config.device_id)
-            return target if c is None or g.source == "solar" else min(target, c)
+            return target if c is None or g.source == "solar" or g.id == EVENT_GOAL_ID else min(target, c)
 
         for d in devs:
             if tgt(d) < target:
@@ -242,7 +246,18 @@ def compute(w: World) -> Result:
     goal_src: dict[str, str] = {}      # batteries whose instruction comes from a goal -> its charge source
 
     # ---- 1. who wants what
-    export_ok = S.export_discharge and export_pays(w.export_price_now, w.buyback_price, S.wear_cost)
+    # Paid export: with a day plan, only in the half-hours it picked (a better-paid one later gets the energy) and at its power,
+    # shared by stored energy; without one, whenever exporting beats buying back.
+    export_w: dict[str, int] = {}
+    if S.export_discharge and w.day_plan is not None:
+        exporters = [d for d in w.devices if d.config.device_id != S.zero_import_device and "discharge" not in w.load_blocks
+                     and _can_discharge(d, max(_floor(d.config.caps, w), w.export_keep_pct))]
+        if w.day_plan.export_now_w > 0 and exporters:
+            export_w = split_power(w.day_plan.export_now_w, [
+                (d.config.device_id, max(1.0, d.config.caps.capacity_wh * d.actual.soc / 100), d.config.caps.max_discharge_w) for d in exporters])
+        export_ok = bool(export_w)
+    else:
+        export_ok = S.export_discharge and export_pays(w.export_price_now, w.buyback_price, S.wear_cost)
     for d in w.devices:
         did, caps = d.config.device_id, d.config.caps
         want, reason = None, ""
@@ -265,10 +280,14 @@ def compute(w: World) -> Result:
             want, reason, goal_src[did] = goal_plan[did]
         elif did == S.zero_import_device:
             want, reason = _zero_import(w, d), "zero-import"
-        elif export_ok and "discharge" not in w.load_blocks and _can_discharge(d, max(_floor(caps, w), w.export_keep_pct)):
+        elif (export_ok and "discharge" not in w.load_blocks and _can_discharge(d, max(_floor(caps, w), w.export_keep_pct))
+              and (w.day_plan is None or export_w.get(did, 0) > 0)):
             keep = max(_floor(caps, w), w.export_keep_pct)
-            want = Desired(Mode.DISCHARGE, caps.max_discharge_w, reserve_soc=keep)
-            reason = f"{EXPORT_REASON}: exporting pays {w.export_price_now:.3f}, buying back costs {w.buyback_price:.3f} (down to {keep}%)"
+            want = Desired(Mode.DISCHARGE, export_w.get(did, caps.max_discharge_w), reserve_soc=keep)
+            pays = f"{w.export_price_now:.3f}" if w.export_price_now is not None else "?"
+            buy = f"{w.buyback_price:.3f}" if w.buyback_price is not None else "?"
+            reason = (f"{EXPORT_REASON}: exporting pays {pays}, buying back costs {buy} (down to {keep}%"
+                      + (", planned: the best-paid half-hours for what is stored)" if w.day_plan is not None else ")"))
         if want is None:
             continue
         if want.mode is Mode.CHARGE and reason == "zero-import" and not caps.power_control:
@@ -427,10 +446,12 @@ def compute(w: World) -> Result:
             res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "kept in reserve while other batteries have charge"
         elif S.save_for_peak and w.cheap_now:
             res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "saving charge for peak-rate hours"
-        elif (S.hold_for_dearer and Mode.HOLD in caps.supported_modes and hold_for_dearer(w.price_now, w.price_later_max)
+        elif (S.hold_for_dearer and Mode.HOLD in caps.supported_modes
+              and (w.day_plan.hold_now if w.day_plan is not None else hold_for_dearer(w.price_now, w.price_later_max))
               and (d.actual.pv_w or 0) < 100 and d.actual.soc is not None and d.actual.soc > caps.min_soc + 5):
-            # not while solar is charging it (Hold would stop that), and only when a clearly dearer price is coming
-            res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "saving charge for dearer hours later"
+            # not while solar is charging it (Hold would stop that); with a day plan, when the stored energy is planned for dearer
+            # half-hours later, else when a clearly dearer price is coming within hours
+            res.wants[did], res.reasons[did] = Desired(Mode.HOLD), "saving charge for dearer hours later" + (" (planned)" if w.day_plan is not None else "")
 
     # ---- 5. hand back batteries we forced earlier and nothing wants any more
     for d in w.devices:

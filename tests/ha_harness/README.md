@@ -5,6 +5,11 @@ coordinator/manager, Home Assistant's own form and websocket machinery) and a si
 socket. They are not part of the normal `pytest` run because they need Home Assistant installed:
 
     pip install homeassistant pytest      # Linux / macOS / WSL; on Windows the classes import and run too
+    python tests/ha_harness/run_all.py    # every script below, one line each (also run by GitHub Actions on each push)
+
+Each script imports `_harness.py`, which stops Python 3.12+'s `Server.wait_closed()` waiting for the connection HomePower keeps
+open to the simulated battery (without it most scripts hang at the end). The scripts one by one:
+
     python tests/ha_harness/check_imports.py
     python tests/ha_harness/configure_flows.py
     python tests/ha_harness/e2e_control_loop.py

@@ -21,7 +21,7 @@ from .core.models import Actual, Desired, Mode
 from .core.meter import MeterReader
 from .core.pv_health import PvHealth
 from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, PlanLog, UsageHistory, combine
-from .core.rates import RateTable, to_main_units
+from .core.rates import RateTable
 from .core.report import charge_efficiency, startup_summary
 from .core.traces import CommandTrace
 from .core.weather import ColdModel, TempLog
@@ -33,15 +33,17 @@ from .coord_base import (  # noqa: F401 - shared names, also re-exported from co
     _LOGGER, READ_TIMEOUT_S, HANDBACK_TIMEOUT_S, APPLY_TIMEOUT_S, PERSIST_EVERY_S, TARIFF_REFRESH_S,
     TARIFF_HISTORY_DAYS, FORECAST_PLATFORMS, GLOW_DOMAIN, KEEPALIVE_EVERY_S, OFFLINE_ALERT_AFTER_S, PROTECT_ALERT_AFTER_S,
     UNCONFIRMED_ALERT_AFTER, GRID_SLOW_AFTER_S, GRID_STALE_AFTER_S, ACTION_PAUSE, ACTION_HAND_BACK, FORCING_REASONS,
-    REPAIR_KINDS, repair_id, DeviceStatus, Snapshot, _PRIVATE_KEY, _real,
+    REPAIR_KINDS, repair_id, DeviceStatus, Snapshot, _PRIVATE_KEY, _real, MONEY_SAVED, MONEY_EXPORT,
 )
 from .coord_prices import PricesMixin
 from .coord_alerts import AlertsMixin
 from .coord_forecast import ForecastMixin
 from .coord_reports import ReportsMixin
+from .coord_inputs import InputsMixin
+from .coord_accounting import AccountingMixin
 
 
-class HomePowerCoordinator(PricesMixin, AlertsMixin, ForecastMixin, ReportsMixin, DataUpdateCoordinator[Snapshot]):
+class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixin, ForecastMixin, ReportsMixin, DataUpdateCoordinator[Snapshot]):
     def __init__(self, hass: HomeAssistant, config_entry, manager, adapters: list[DeviceAdapter],
                  schedules: list[ScheduleEntry], goals: list[Goal]) -> None:
         super().__init__(hass, _LOGGER, config_entry=config_entry, name=DOMAIN,
@@ -87,6 +89,7 @@ class HomePowerCoordinator(PricesMixin, AlertsMixin, ForecastMixin, ReportsMixin
         self.pv_health = PvHealth(getattr(manager, "pv_health_data", None))   # X1: each solar string against the others
         self._exp_table: RateTable | None = None            # export prices (Settings > export rates sensor), read each cycle
         self.grid_event = False                             # a saving session (or similar) is running
+        self.day_plan = None                                # where stored energy is worth most (core/dayplan.py), for the Plan tab
         self._clear_stale_repairs()
         self.forecast_floor: dict = {}                      # the forecast-based reserve working, shown in the panel
         self.why: deque = deque(maxlen=80)                  # what each battery was told to do and the inputs behind it
@@ -195,33 +198,6 @@ class HomePowerCoordinator(PricesMixin, AlertsMixin, ForecastMixin, ReportsMixin
     def _condition_ok(self, entity_id: str) -> bool:
         return self._entity_on(entity_id)
 
-    def _glow(self) -> dict[str, str]:
-        """Entities of the Hildebrand Glow (DCC) integration, if it is set up: its live electricity power sensor
-        and its electricity unit-rate sensor. Used when the user has not picked a sensor themselves."""
-        if _time.monotonic() - self._glow_at < 60:
-            return self._glow_cache
-        found: dict[str, str] = {}
-        try:
-            from homeassistant.helpers import device_registry as dr, entity_registry as er
-            ereg, dreg = er.async_get(self.hass), dr.async_get(self.hass)
-            for e in ereg.entities.values():
-                if e.platform != GLOW_DOMAIN or e.domain != "sensor" or e.disabled_by:
-                    continue
-                uid = str(e.unique_id or "")
-                dev = dreg.async_get(e.device_id) if e.device_id else None
-                elec = dev is not None and "electric" in str(dev.name_by_user or dev.name or "").lower()
-                if uid.endswith("-power") and (e.device_class or e.original_device_class) in ("power", None):
-                    if elec or "power" not in found:
-                        found["power"] = e.entity_id
-                elif uid.endswith("-rate") and elec:
-                    found["rate"] = e.entity_id
-                elif elec and (e.device_class or e.original_device_class) == "energy" and uid and "-" not in uid[-12:]:
-                    found["usage"] = e.entity_id   # HandyHat original: only a daily kWh counter, no live power
-        except Exception as err:  # noqa: BLE001 - registries unavailable: no auto-detection
-            _LOGGER.debug("glow lookup failed: %s", err)
-        self._glow_cache, self._glow_at = found, _time.monotonic()
-        return found
-
     def _note_decision(self, did: str, name: str, st: DeviceStatus, act: Actual, world: World, res: Result, grid: float | None, now: datetime) -> None:
         """Remember what a battery was told to do, why, and the readings behind it (Diagnostics > Why it did that). Only
         a change is recorded, and power is rounded so a zero-import battery adjusting by a few watts is not a change."""
@@ -238,142 +214,10 @@ class HomePowerCoordinator(PricesMixin, AlertsMixin, ForecastMixin, ReportsMixin
                        "forecast_kwh": world.forecast_kwh, "reserve_floor_pct": world.reserve_floor_pct or None,
                        "solar_ceiling_pct": world.solar_ceiling.get(did), "notes": list(res.notes)[:3]}})
 
-    def _load_blocks(self) -> set[str]:
-        blocks: set[str] = set()
-        for r in self.settings.load_rules:
-            st = self.hass.states.get(r["entity"])
-            if st is None:
-                continue
-            if r.get("above_w") is not None:
-                try:
-                    active = float(st.state) > r["above_w"]
-                except ValueError:
-                    active = False
-            else:
-                active = st.state == "on"
-            if active:
-                blocks |= {"charge", "discharge"} if r["block"] == "both" else {r["block"]}
-        return blocks
-
-    def _grid_w(self, actuals: dict[str, Actual]) -> float | None:
-        """House grid power (+ importing), from the first source in the user's order (Settings > Grid meter) that has a
-        reading. Sources: "sensor" = the sensor the user picked; "battery" = a battery on the local network whose meter
-        measures the whole house (many only measure themselves: see _measures_house); "glow" = Hildebrand Glow found
-        automatically (smart-meter data, which can run late); "cloud" = a cloud-reported figure (EcoFlow)."""
-        s = self.settings
-        cfgs = {x.config.device_id: x.config for x in self.adapters}
-
-        def from_battery(local: bool) -> float | None:
-            for did, a in actuals.items():
-                cfg = cfgs.get(did)
-                if cfg is None or (cfg.extra.get("driver") != "ecoflow_stream") != local or not self._measures_house(cfg):
-                    continue
-                if a.online and a.grid_w is not None:
-                    self.grid_source = f"{cfg.name} ({'its own meter reading' if local else 'cloud reading'})"
-                    self.grid_age_s = None if local else 30.0
-                    return a.grid_w
-            return None
-
-        def from_sensor(ent: str) -> float | None:
-            v = self._meter_w(ent)
-            if v is None:
-                return None
-            self.grid_source, self.grid_age_s = ent or s.grid_export_entity, self._entity_age(ent or s.grid_export_entity)
-            return -v if s.grid_invert else v
-
-        def glow() -> float | None:
-            g = self._glow()
-            ent = g.get("power", "") or g.get("usage", "")
-            return from_sensor(ent) if ent and not (s.grid_entity or s.grid_export_entity) else None
-
-        sources = {
-            "sensor": lambda: from_sensor(s.grid_entity) if (s.grid_entity or s.grid_export_entity) else None,
-            "battery": lambda: from_battery(True), "glow": glow, "cloud": lambda: from_battery(False),
-        }
-        for name in s.grid_order:
-            v = sources[name]()
-            if v is not None:
-                return v
-        self.grid_source, self.grid_age_s = "", None
-        return None
-
-    @staticmethod
-    def _measures_house(cfg) -> bool:
-        """Does this battery's grid figure cover the whole house? What the user said; else what is usual for the model
-        (an X1 sits at the grid connection; plug-in batteries only see their own socket; EcoFlow's cloud figure is kept
-        as a last resort)."""
-        said = cfg.extra.get("grid_meter", "auto")
-        if said != "auto":
-            return said == "yes"
-        return bool(cfg.extra.get("house_meter")) or cfg.extra.get("driver") in ("ecoflow_stream", "ecoflow_modbus")
-
-    def _entity_age(self, entity_id: str) -> float | None:
-        st = self.hass.states.get(entity_id) if entity_id else None
-        if st is None:
-            return None
-        seen = getattr(st, "last_reported", None) or st.last_updated
-        return max(0.0, (dt_util.utcnow() - seen).total_seconds())
-
-    def _meter_w(self, imp_ent: str) -> float | None:
-        """Smart-meter reading in W (+ importing): an import sensor, less an optional export sensor. Each may be
-        a power sensor (W/kW) or a cumulative energy counter (Wh/kWh)."""
-        s, now = self.settings, _time.monotonic()
-        out = []
-        for key, ent in (("imp", imp_ent), ("exp", s.grid_export_entity)):
-            st = self.hass.states.get(ent) if ent else None
-            out.append(None if st is None else self._meter.read(key, st.state, st.attributes.get("unit_of_measurement"), now))
-        imp, exp = out
-        if imp is None:
-            return None if exp is None or imp_ent else -exp
-        return imp - (exp or 0.0)
-
-    def _house_load(self, actuals: dict[str, Actual], grid: float | None, pv_w: float) -> float | None:
-        """Whole-house consumption: what a battery reports, else worked out from the meter, battery and solar flows."""
-        reported = [a.load_w for a in actuals.values() if a.online and a.load_w is not None and a.load_w >= 0]
-        if reported:
-            return max(reported)
-        if grid is None:
-            return None
-        bat = sum(a.power_w or 0.0 for a in actuals.values() if a.online)   # + charging
-        return max(0.0, grid - bat + pv_w)
-
-    def _has_solar(self, cfg) -> bool | None:
-        """Are panels attached to this battery? What the user said, else whether it has ever reported solar power."""
-        said = cfg.extra.get("solar", "auto")
-        if said != "auto":
-            return said == "yes"
-        return True if cfg.device_id in self.manager.pv_seen else None
-
     # ------------------------------------------------------------------ logging / notifications
     def _log(self, device_id: str, msg: str) -> None:
         self._snap.events.append((dt_util.now().isoformat(), device_id, msg))
         _LOGGER.info("%s: %s", device_id, msg)
-
-    async def _divert(self, now_s: float, actuals: dict[str, Actual], grid: float | None) -> None:
-        """Solar surplus: run a chosen load while the batteries are full and power is being exported."""
-        s = self.settings
-        if self._divert_entity and self._divert_entity != s.divert_entity:      # setting changed or cleared: release the old load
-            if self.diverter.on:
-                await self._switch(self._divert_entity, False)
-                self.manager.divert_on = ""
-            self.diverter = Diverter()
-        self._divert_entity = s.divert_entity
-        if not s.divert_entity:
-            return
-        # While paused HomePower switches nothing on, and lets go of the load if it is running.
-        soc = None if self.paused else self._combined(actuals)["soc"]
-        act = self.diverter.decide(now_s, soc, grid, s.divert_export_w, s.divert_min_soc, cheap=bool(s.divert_cheap and self._cheap_now and not self.paused))
-        if act:
-            await self._switch(s.divert_entity, act == "on")
-            self.manager.divert_on = s.divert_entity if act == "on" else ""
-            self.hass.async_create_task(self.manager.save_runtime())
-            self._log("divert", f"{s.divert_entity} switched {act} ({('cheap rate' if s.divert_cheap and self._cheap_now else 'surplus solar') if act == 'on' else 'no surplus'})")
-
-    async def _switch(self, entity_id: str, on: bool) -> None:
-        try:
-            await self.hass.services.async_call("homeassistant", "turn_on" if on else "turn_off", {"entity_id": entity_id})
-        except Exception:  # noqa: BLE001 - a missing entity must not affect battery control
-            _LOGGER.debug("could not switch %s", entity_id, exc_info=True)
 
     def _combined(self, actuals: dict[str, Actual]) -> dict:
         items = []
@@ -433,10 +277,19 @@ class HomePowerCoordinator(PricesMixin, AlertsMixin, ForecastMixin, ReportsMixin
         if event != self.grid_event:
             self.grid_event = event
             self._log("events", "grid event started: batteries discharge and nothing charges from the grid" if event else "grid event ended")
+        try:
+            self.day_plan = self._day_plan(rates, now, actuals)
+        except Exception:  # noqa: BLE001 - without a plan the simpler rules apply
+            _LOGGER.exception("day plan failed; using the simpler rules this cycle")
+            self.day_plan = None
+        before_event = self._event_goal(now)
         world = World(
-            now=now, settings=_replace(self.settings.engine, wear_cost=self._wear(rates)), schedules=self.schedules, goals=self.goals,
+            now=now, settings=_replace(self.settings.engine, wear_cost=self._wear(rates)), schedules=self.schedules,
+            goals=self.goals + ([before_event] if before_event else []), day_plan=self.day_plan,
             export_price_now=self._export_price_now(rates, now), buyback_price=self._buyback_price(rates, now),
-            export_keep_pct=self._export_keep_pct(rates, now) if self.settings.engine.export_discharge else 0, grid_event=event,
+            # with a day plan the house's own use is in the plan, so only the level the user set is kept back from paid export
+            export_keep_pct=(0 if not self.settings.engine.export_discharge else int(self.settings.export_keep_pct or 0) if self.day_plan
+                             else self._export_keep_pct(rates, now)), grid_event=event,
             overrides=self._active_overrides(now), grid_w=grid, condition_ok=self._condition_ok, usage_wh=self.profile.expected_wh,
             backup_active=self.backup_active, away=self.away, load_blocks=self._load_blocks(), reserve_floor_pct=self._forecast_floor(now),
             grid_fresh=self.grid_age_s is None or self.grid_age_s <= GRID_STALE_AFTER_S,
@@ -548,7 +401,7 @@ class HomePowerCoordinator(PricesMixin, AlertsMixin, ForecastMixin, ReportsMixin
                 st = self._snap.devices.get(a.config.device_id)
                 if st is None or not (st.actual and st.actual.online) or (st.actual and st.actual.off_grid):
                     continue
-                did, pre = a.config.device_id, f"x1lim:{a.config.device_id}:"
+                pre = f"x1lim:{a.config.device_id}:"
                 mine = {}                                      # limits HomePower itself wrote, kept across restarts as "x1lim:<id>:<label>:<W>"
                 for k in [k for k in self._event_state if k.startswith(pre)]:
                     label, _, w = k[len(pre):].partition(":")
@@ -562,58 +415,6 @@ class HomePowerCoordinator(PricesMixin, AlertsMixin, ForecastMixin, ReportsMixin
                         self._event_state[f"{pre}{label}:{w}"] = True
                 if changed:
                     self._log(a.config.device_id, "set the inverter's own " + " and ".join(changed))
-
-    def _account(self, now: datetime, wall: float, actuals: dict[str, Actual], grid: float | None, rates: RateTable | None) -> None:
-        """Energy counters and the savings ledger (an estimate: see core/energy.py)."""
-        steps: dict[str, tuple[float, float]] = {}
-        for did, act in actuals.items():
-            steps[did] = self.meter.add(f"bat:{did}", wall, act.power_w if act.online else None)
-        g_in, g_out = self.meter.add("grid", wall, grid)
-        for did, act in actuals.items():
-            if act.online and (act.pv_w or 0) > 50 and did not in self.manager.pv_seen:
-                self.manager.pv_seen.add(did)      # this battery has panels: remembered for 'solar: auto'
-        pv = [a.pv_w for a in actuals.values() if a.online and a.pv_w is not None]
-        pv_in, _ = self.meter.add("pv", wall, sum(pv) if pv else None)
-        price = self._price_now(rates, now)
-        self._cheap_now = self._is_cheap(rates, now, price)
-        self.daily.add(now.strftime("%Y-%m-%d"), pv_kwh=pv_in, export_kwh=g_out, import_kwh=g_in, cheap=self._is_cheap(rates, now, price))
-        load_w = self._house_load(actuals, grid, sum(pv) if pv else 0.0)
-        l_in, _ = self.meter.add("load", wall, load_w)
-        self.usage.add(now, g_in, g_out, l_in, pv_in)
-        self.profile.record(now, load_w)
-        self.health.update(now.strftime("%G-W%V"), {did: (self.meter.get(f"bat:{did}_in"), self.meter.get(f"bat:{did}_out"))
-                                                     for did in actuals})
-        self._account_savings(now, actuals, grid, rates, steps)
-
-    def _account_savings(self, now: datetime, actuals: dict[str, Actual], grid: float | None, rates: RateTable | None,
-                         steps: dict[str, tuple[float, float]]) -> None:
-        """Savings ledger (an estimate: see core/energy.py Ledger)."""
-        on = {did: a for did, a in actuals.items() if a.online}
-        # Batteries told to charge from the grid: all their charging is bought. Solar-only and grid + solar ones, and
-        # batteries charging by themselves, are judged from the grid reading: whatever is imported beyond the forced
-        # charging is shared among them; with no reading their charging is counted as solar.
-        forced = {did for did, st in self._snap.devices.items() if did in on and self._grid_charging(st)}
-        forced_w = sum(max(0.0, on[d].power_w or 0.0) for d in forced)
-        # Charging a battery does from its own panels never passes the house meter and is free: only what it charges beyond
-        # its panels can have come from the grid, so only that part takes a share of the import.
-        free = {d: (max(0.0, a.power_w or 0.0), max(0.0, (a.power_w or 0.0) - max(0.0, a.pv_w or 0.0))) for d, a in on.items() if d not in forced}
-        free_np = sum(np_ for _, np_ in free.values())
-        np_share = min(1.0, max(0.0, grid - forced_w) / free_np) if grid is not None and free_np > 0 else 0.0
-        shares = {d: (np_share * np_ / p if p > 0 else 0.0) for d, (p, np_) in free.items()}
-        # Battery energy that went out to the grid replaced no import: it earns the export price (if any) instead.
-        out_w = sum(max(0.0, -(a.power_w or 0.0)) for a in on.values())
-        exp_share = min(1.0, max(0.0, -grid) / out_w) if grid is not None and out_w > 0 else 0.0
-        unit, price = self._unit(rates), self._price_now(rates, now)
-        exp_price = self._export_price_now(rates, now) or 0.0
-        cheapest = self._cheapest_price(rates, now)
-        first = None if cheapest is None else to_main_units(cheapest, unit)
-        caps = {a.config.device_id: a.config.caps.capacity_wh for a in self.adapters}
-        day = now.strftime("%Y-%m-%d")
-        for did, act in actuals.items():
-            d_in, d_out = steps.get(did, (0.0, 0.0))
-            stored = act.soc / 100 * caps.get(did, 0) / 1000 if act.online and act.soc is not None and did in caps else None
-            self.ledger.add(day, did, d_in, 1.0 if did in forced else shares.get(did, 0.0), d_out, exp_share, price, exp_price, stored, first)
-        self.ledger.forget(set(caps))
 
     # ------------------------------------------------------------------ weather (cold-day target)
 
@@ -637,45 +438,6 @@ class HomePowerCoordinator(PricesMixin, AlertsMixin, ForecastMixin, ReportsMixin
         if Mode.CHARGE in caps.supported_modes and self.traces.verdict(cfg.device_id) == "unreliable":
             caps = _replace(caps, supported_modes=frozenset(caps.supported_modes - {Mode.CHARGE}))   # it has not worked: stop relying on it
         return cfg if caps is cfg.caps else _replace(cfg, caps=caps)
-
-    def _record_plan(self, now: datetime, actuals: dict[str, Actual]) -> None:
-        """Remember what each battery was told to do, and what it did, for the plan-versus-actual chart."""
-        for did, act in actuals.items():
-            st = self._snap.devices.get(did)
-            want = st.desired if st else None
-            planned = None
-            if want is not None and want.mode is not Mode.AUTO:
-                planned = {Mode.CHARGE: 1, Mode.DISCHARGE: -1}.get(want.mode, 0) * float(want.power_w or 0)
-            self.plan_log.add(now, did, planned, act.power_w if act.online else None)
-
-    def _watch_traces(self, wall: float, now: datetime, actuals: dict[str, Actual]) -> None:
-        for did, act in actuals.items():
-            if act.online:
-                rec = self.traces.observe(did, wall, act.soc, act.power_w, act.mode.value if act.mode else None)
-                if rec:
-                    self._log(did, f"command result: {rec['mode']} {'worked' if rec['ok'] else 'had no effect (nearly full: not counted)' if rec.get('inconclusive') else 'had no effect'} "
-                                   f"(peak {rec['peak_w']} W, {'reacted after ' + str(rec['reaction_s']) + ' s' if rec['ok'] else 'no reaction in 10 min'})")
-
-    def _watch_pv(self, now: datetime, mono: float, actuals: dict[str, Actual]) -> None:
-        """X1: feed each solar string's reading to the string health check (core/pv_health.py)."""
-        day = now.strftime("%Y-%m-%d")
-        for did, act in actuals.items():
-            if act.online and act.pv_strings:
-                self.pv_health.observe(did, day, act.pv_strings, mono)
-
-    def _forget_plan(self, did: str) -> None:
-        for devs in self.plan_log.days.values():
-            devs.pop(did, None)
-
-    def _learn_rates(self, adapters) -> None:
-        changed = False
-        for a in adapters:
-            st = self._snap.devices.get(a.config.device_id)
-            if st is None or st.actual is None or a.config.caps.power_control:
-                continue
-            changed |= self.rate_learner.observe(a.config.device_id, self._grid_charging(st), st.actual.power_w, st.actual.soc)
-        if changed:
-            self.manager.charge_rates = dict(self.rate_learner.rates)
 
     @staticmethod
     def _grid_charging(st: DeviceStatus) -> bool:

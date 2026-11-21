@@ -2,7 +2,7 @@
    The panel is split over several files (panel-*.js). Each adds its methods to the class below; they are loaded with
    this file's own ?v= tag so a new version is never mixed with cached old parts. */
 const V = new URL(import.meta.url).search;
-const FILES = ["overview", "charts", "schedules", "batteries", "plan", "insights", "diag", "settings"];
+const FILES = ["overview", "charts", "schedules", "batteries", "details", "plan", "insights", "diag", "settings"];
 const U = await import(`./panel-util.js${V}`);
 const { MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS } = U;
 const PARTS = await Promise.all(FILES.map((f) => import(`./panel-${f}.js${V}`)));

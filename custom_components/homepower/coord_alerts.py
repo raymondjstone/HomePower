@@ -57,9 +57,16 @@ class AlertsMixin:
 
             iid = repair_id(key)
             if raised:
-                ir.async_create_issue(self.hass, DOMAIN, iid, is_fixable=False, is_persistent=False,
+                # some have an obvious remedy, offered right there (repairs.py): test the battery or stop commanding it; use the
+                # cheap hours found in the price history
+                fix = {"unconfirmed": "battery", "stuck": "battery", "tariffdrift": "tariff"}.get(kind)
+                data = {"fix": fix, "message": message[:500], "title": REPAIR_KINDS[kind]}
+                if fix == "battery":
+                    data["device_id"] = key.split(":", 1)[1]
+                ir.async_create_issue(self.hass, DOMAIN, iid, is_fixable=fix is not None, is_persistent=False, data=data if fix else None,
                                       severity=ir.IssueSeverity.ERROR if kind in ("offline", "error", "stuck", "grid") else ir.IssueSeverity.WARNING,
-                                      translation_key="alert", translation_placeholders={"title": REPAIR_KINDS[kind], "message": message})
+                                      translation_key=f"alert_fix_{fix}" if fix else "alert",
+                                      translation_placeholders={"title": REPAIR_KINDS[kind], "message": message})
             else:
                 ir.async_delete_issue(self.hass, DOMAIN, iid)
             return True
@@ -221,7 +228,7 @@ class AlertsMixin:
                 self.trend.update(dt_util.now().strftime("%Y-%m-%d"), did, act.temp_c, act.pack_v)
             drift = self.trend.warning(did)
             checks[f"trend:{did}"] = (drift is not None, f"{name}: {drift}", 0)
-            if a.config.extra.get("house_meter"):     # X1: a solar string that is dead or clearly weaker than usual
+            if a.config.extra.get("house_meter") or did in self.pv_health.used:   # X1 / EcoFlow: a solar string dead or clearly weaker than usual
                 pv = self.pv_health.warnings(did, dt_util.now().strftime("%Y-%m-%d"), now_s)
                 for n in range(1, 9):
                     checks[f"pv:{did}:{n}"] = (n in pv, f"{name}: {pv.get(n, f'PV{n} is producing normally again')}.", 0)

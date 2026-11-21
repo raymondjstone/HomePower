@@ -9,6 +9,7 @@ import asyncio, logging, tempfile
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import conftest  # noqa: F401
+import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.util import dt as dt_util
@@ -44,7 +45,7 @@ class Clock:
 
 
 C._time = Clock()
-for _m in ("coord_prices", "coord_forecast", "coord_reports"):   # the coordinator's parts read the same clock
+for _m in ("coord_prices", "coord_forecast", "coord_reports", "coord_inputs", "coord_accounting"):   # the coordinator's parts read the same clock
     sys.modules[f"custom_components.homepower.{_m}"]._time = C._time
 
 

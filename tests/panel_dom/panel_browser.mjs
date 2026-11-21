@@ -79,7 +79,7 @@ await page.goto(base);
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 15000 });
 await page.waitForFunction(() => window.__panel._loaded === true, null, { timeout: 15000 });
 
-const parts = ["homepower-panel.js", "panel-util.js", ...["overview", "charts", "schedules", "batteries", "plan", "insights", "diag", "settings"].map((f) => `panel-${f}.js`)];
+const parts = ["homepower-panel.js", "panel-util.js", ...["overview", "charts", "schedules", "batteries", "details", "plan", "insights", "diag", "settings"].map((f) => `panel-${f}.js`)];
 const fetched = new Set(requests.map((r) => r.path.slice(1)));
 must("every part of the panel was fetched by the browser", parts.every((p) => fetched.has(p)), parts.filter((p) => !fetched.has(p)).join(", "));
 must("every part was fetched with the version tag", requests.filter((r) => /^\/(panel-.*|homepower-panel)\.js$/.test(r.path)).every((r) => r.query === "?v=1.2.3-browser"), JSON.stringify(requests.filter((r) => r.query !== "?v=1.2.3-browser")));

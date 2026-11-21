@@ -24,6 +24,7 @@ def _stub_homeassistant():
     dt = mods["homeassistant.util.dt"]
     dt.now = lambda: datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
     dt.UTC = timezone.utc
+    dt.DEFAULT_TIME_ZONE = timezone.utc
     mods["homeassistant.util"].dt = dt
     sys.modules.update(mods)
 
@@ -33,6 +34,7 @@ coordinator = pytest.importorskip("hp.coordinator")
 
 from hp.core.models import Actual, Capabilities, Desired, DeviceConfig, Mode  # noqa: E402
 from hp.core.insights import PlanLog  # noqa: E402
+from hp.core.pv_health import PvHealth  # noqa: E402
 from hp.core.sanity import CommandBudget, RateLearner  # noqa: E402
 from hp.core.traces import CommandTrace  # noqa: E402
 
@@ -68,6 +70,7 @@ def bare(manager=None):
     c.manager = manager or FakeManager()
     c.rate_learner, c.traces, c.budget = RateLearner(), CommandTrace(), CommandBudget()
     c.plan_log = PlanLog()
+    c.pv_health = PvHealth()
     c._snap = coordinator.Snapshot()
     c.last_grid = 120.0
     c._log = lambda *a, **k: None
@@ -337,3 +340,31 @@ def test_lasting_problems_get_stable_repair_ids_and_fall_back_to_notifications_w
     c.hass = None
     assert c._repair("offline:garage", "Garage is offline", True) is False        # Repairs not available here: notify instead
     assert c._repair("summary_20261118", "daily summary", True) is False           # not a lasting problem
+
+
+def test_load_rules_read_kilowatt_sensors_in_watts():
+    c = bare()
+    st = {"sensor.ohme_power": types.SimpleNamespace(state="7.2", attributes={"unit_of_measurement": "kW"}),
+          "sensor.heat_pump_power": types.SimpleNamespace(state="900", attributes={"unit_of_measurement": "W"}),
+          "sensor.broken": types.SimpleNamespace(state="unavailable", attributes={"unit_of_measurement": "kW"}),
+          "sensor.nan": types.SimpleNamespace(state="nan", attributes={})}
+    c.hass = types.SimpleNamespace(states=types.SimpleNamespace(get=st.get))
+    c.settings = types.SimpleNamespace(load_rules=[{"entity": "sensor.ohme_power", "block": "discharge", "above_w": 1000.0},
+                                                   {"entity": "sensor.heat_pump_power", "block": "charge", "above_w": 1000.0},
+                                                   {"entity": "sensor.broken", "block": "both", "above_w": 1.0},
+                                                   {"entity": "sensor.nan", "block": "both", "above_w": 1.0}])
+    assert c._load_blocks() == {"discharge"}                 # 7.2 kW is busy; 900 W is not; unreadable ones are not
+
+
+def test_grid_event_ignores_an_all_day_calendar_entry():
+    c = bare()
+    st = {"calendar.saving": types.SimpleNamespace(state="on", attributes={"all_day": True, "start_time": "2026-03-01 00:00:00", "end_time": "2026-03-02 00:00:00"}),
+          "binary_sensor.octo": types.SimpleNamespace(state="off", attributes={})}
+    c.hass = types.SimpleNamespace(states=types.SimpleNamespace(get=st.get))
+    c.settings = types.SimpleNamespace(event_entity="calendar.saving, binary_sensor.octo")
+    assert c._grid_event_on() is False
+    st["calendar.saving"] = types.SimpleNamespace(state="on", attributes={"start_time": "2026-03-01 11:30:00", "end_time": "2026-03-01 12:30:00"})
+    assert c._grid_event_on() is True
+    st["calendar.saving"] = types.SimpleNamespace(state="off", attributes={})
+    st["binary_sensor.octo"] = types.SimpleNamespace(state="on", attributes={})
+    assert c._grid_event_on() is True

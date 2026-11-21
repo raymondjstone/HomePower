@@ -8,7 +8,8 @@
     "websocket_api",
     "network",
     "persistent_notification",
-    "recorder"
+    "recorder",
+    "repairs"
   ],
   "categories": ["energy.solar_batteries"],
   "codeowners": ["@raymondjstone"],

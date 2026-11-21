@@ -216,3 +216,34 @@ def test_big_load_sensors_finds_uncovered_chargers_and_heat_pumps():
     covered = big_load_sensors(ents, [{"entity": "sensor.zappi_power", "block": "discharge"}, {"entity": "binary_sensor.heat_pump_running"}])
     assert covered == ["sensor.evcc_charge_power", "sensor.ohme_charger_power"]          # a rule on the same device counts
     assert big_load_sensors([], None) == [] and big_load_sensors([(None, None, None)], [{"x": 1}, "junk"]) == []
+
+
+def test_ecoflow_solar_inputs_are_read_as_strings():
+    from hp.drivers.ecoflow import EcoFlowStreamDriver
+    q = {"plugInInfoPvVol": 61.2, "plugInInfoPvAmp": 8.1, "plugInInfoPv2Vol": "58.0", "plugInInfoPv2Amp": "7.5",
+         "plugInInfoPv3Vol": "nan", "plugInInfoPv3Amp": 1.0, "plugInInfoPv4Vol": -3, "plugInInfoPv4Amp": 0}
+    s = EcoFlowStreamDriver._strings(q)
+    assert len(s) == 8 and s[0] == (61.2, 8.1) and s[1] == (58.0, 7.5) and s[2] == (0.0, 0.0) and s[3] == (0.0, 0.0)
+    assert EcoFlowStreamDriver._strings({"soc": 50}) == ()
+    pv = PvHealth()
+    pv.observe("eco", "2026-06-01", s, 0.0)
+    assert pv.used["eco"][:3] == [True, True, False]
+
+
+def test_a_dead_string_stays_flagged_through_a_cloud_and_clears_only_when_it_produces():
+    pv, t = PvHealth(), 0.0
+    for d in range(1, 5):
+        t = _sunny_day(pv, "x1", f"2026-06-0{d}", (1000, 1000, 500), t + 3600)
+    t += 3600
+    dead = ((300.0, 1000 / 300), (300.0, 1000 / 300), (301.0, 0.0)) + ((0.0, 0.0),) * 5
+    for _ in range(35):
+        pv.observe("x1", "2026-06-05", dead, t)
+        t += 60
+    assert list(pv.warnings("x1", "2026-06-05", t)) == [3]
+    dull = ((300.0, 0.3), (300.0, 0.3), (301.0, 0.0)) + ((0.0, 0.0),) * 5        # 180 W in all: too dark to judge
+    for _ in range(10):
+        pv.observe("x1", "2026-06-05", dull, t)
+        t += 60
+    assert list(pv.warnings("x1", "2026-06-05", t)) == [3]                     # still flagged, not cleared by the cloud
+    pv.observe("x1", "2026-06-05", _strings(1000, 1000, 500), t)
+    assert pv.warnings("x1", "2026-06-05", t) == {}

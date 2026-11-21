@@ -19,10 +19,10 @@ DEFAULTS: dict = {
     "load_rules": [],
     "ecoflow_live": False, "dry_run": False, "erase_on_remove": False, "solar_room": True, "base_load_w": 0, "notify_full": False, "offpeak_extra": "", "save_for_peak": False, "hold_for_dearer": False,
     "weather_boost": False, "weather_entity": "", "temp_sensor_entity": "", "forecast_temp_entity": "", "weather_online": False,
-    "compare_tariffs": "", "weekly_digest": False, "export_rates_entity": "", "export_discharge": False, "export_keep_pct": 0, "wear_cost": None, "event_entity": "", "forecast_reserve_kwh": 0, "forecast_reserve_pct": 50, "divert_cheap": False, "x1_grid_limits": False, "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
+    "compare_tariffs": "", "weekly_digest": False, "export_rates_entity": "", "export_discharge": False, "export_keep_pct": 0, "wear_cost": None, "event_entity": "", "event_charge_pct": 0, "forecast_reserve_kwh": 0, "forecast_reserve_pct": 50, "divert_cheap": False, "x1_grid_limits": False, "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
-            "notify_low_pct", "cheap_soon_below_pct", "forecast_reserve_kwh", "forecast_reserve_pct", "divert_export_w", "divert_min_soc", "base_load_w", "export_keep_pct")
+            "notify_low_pct", "cheap_soon_below_pct", "forecast_reserve_kwh", "forecast_reserve_pct", "divert_export_w", "divert_min_soc", "base_load_w", "export_keep_pct", "event_charge_pct")
 FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price", "wear_cost")
 BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "hold_for_dearer", "weather_boost", "weather_online", "notify_full", "notify_cheap_soon", "export_discharge")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
@@ -121,8 +121,9 @@ def clean(raw: dict) -> dict:
     for k in ("notify_low_pct", "cheap_soon_below_pct"):
         if k in out and out[k] > 100:
             raise SettingsError("percentages must be 0-100")
-    if "export_keep_pct" in out and out["export_keep_pct"] > 100:
-        raise SettingsError("percentages must be 0-100")
+    for k in ("event_charge_pct", "export_keep_pct"):
+        if out.get(k, 0) > 100:
+            raise SettingsError("percentages must be 0-100")
     if out.get("wear_cost") is not None and out["wear_cost"] < 0:
         raise SettingsError("battery wear cost cannot be negative")
     if "forecast_reserve_pct" in out and out["forecast_reserve_pct"] > 100:
@@ -224,6 +225,7 @@ class AppSettings:
     export_keep_pct: int = 0          # paid export never takes a battery below this
     wear_cost: float | None = None    # what a kWh through the battery costs in wear (same unit as the prices)
     event_entity: str = ""            # on while a demand-flexibility event runs (saving-session calendar / binary sensor)
+    event_charge_pct: int = 0         # charge to this before the next event starts (0 = off; needs an entity that gives the times)
 
 
 def _int_or(v, default: int) -> int:
@@ -250,5 +252,5 @@ def build(cfg: dict) -> AppSettings:
         divert_export_w=_int_or(c["divert_export_w"], 500), divert_min_soc=_int_or(c["divert_min_soc"], 95), notify_full=bool(c["notify_full"]), notify_low_pct=int(c["notify_low_pct"] or 0),
         notify_cheap_soon=bool(c["notify_cheap_soon"]), cheap_soon_below_pct=_int_or(c["cheap_soon_below_pct"], 60),
         export_rates_entity=c["export_rates_entity"] or "", export_keep_pct=int(c["export_keep_pct"] or 0),
-        wear_cost=c["wear_cost"], event_entity=c["event_entity"] or "",
+        wear_cost=c["wear_cost"], event_entity=c["event_entity"] or "", event_charge_pct=int(c["event_charge_pct"] or 0),
     )

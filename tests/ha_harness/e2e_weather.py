@@ -7,6 +7,7 @@ import asyncio, tempfile
 from datetime import timedelta
 from types import SimpleNamespace
 import conftest  # noqa: F401
+import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse, State
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.util import dt as dt_util

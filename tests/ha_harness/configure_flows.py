@@ -4,6 +4,7 @@ sys.path[:0] = [ROOT, os.path.join(ROOT, "tests")]
 import asyncio, sys
 from types import SimpleNamespace
 import conftest  # noqa: F401  (aliases hp.* so tests/test_drivers imports)
+import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from test_drivers import FakeAnker  # simulated Anker device
 from custom_components.homepower.options_flow import HomePowerOptionsFlow
 from custom_components.homepower.core.serde import device_from_dict, device_to_dict, ValidationError

@@ -6,6 +6,7 @@ sys.path[:0] = [ROOT, os.path.join(ROOT, "tests")]
 
 import asyncio, tempfile
 import conftest  # noqa: F401
+import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from homeassistant.core import HomeAssistant
 import custom_components.homepower.manager as M
 from custom_components.homepower.manager import HomePowerManager

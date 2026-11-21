@@ -4,8 +4,10 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path[:0] = [ROOT, os.path.join(ROOT, "tests")]
 
 import asyncio, json, tempfile
+from datetime import timedelta
 from types import SimpleNamespace
 import conftest  # noqa: F401
+import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from test_drivers import FakeAnker
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
@@ -67,7 +69,9 @@ async def main():
     mgr.confirmed.add("a")
     # Fixed tariff: 30p, 7p at night (buy back at 7p); export pays 30p from a plain export price sensor
     hass.states.async_set("sensor.export_price", "30")
-    await must("homepower/settings/save", settings={"price_peak": 30, "price_offpeak": 7, "offpeak_start": "00:30", "offpeak_end": "05:30",
+    cheap_from = dt_util.now() + timedelta(hours=6)            # the cheap window is always ahead, whatever time this runs
+    win = (cheap_from.strftime("%H:00"), (cheap_from + timedelta(hours=2)).strftime("%H:00"))
+    await must("homepower/settings/save", settings={"price_peak": 30, "price_offpeak": 7, "offpeak_start": win[0], "offpeak_end": win[1],
                                                      "export_rates_entity": "sensor.export_price", "export_discharge": True, "export_keep_pct": 30})
     await coord.async_refresh()
     st = coord._snap.devices["a"]
@@ -137,6 +141,86 @@ async def main():
     b = rep["batteries"][0]
     assert b["kind"] == "anker_e5000_pro" and b["control_test"]["passed"] is True and b["limits"]["sets_watts"] is True
     print("report   :", {k: b[k] for k in ("kind", "commands_watched", "followed_plan_pct", "proven")})
+
+    # ---- the day plan through real rate sensors: export 15p now but 30p in two hours, so the energy is kept for then
+    now = dt_util.now()
+    lo = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
+
+    def table(prices):
+        return [{"start": (lo + timedelta(minutes=30 * i)).isoformat(), "end": (lo + timedelta(minutes=30 * (i + 1))).isoformat(),
+                 "value_inc_vat": p} for i, p in enumerate(prices)]
+    hass.states.async_set("sensor.agile", "20", {"rates": table([20, 20, 20, 20, 35, 35, 20, 20, 7, 7, 20, 20] * 4)})
+    hass.states.async_set("sensor.export_price", "15", {"rates": table([15, 15, 15, 15, 30, 30, 15, 15, 15, 15, 15, 15] * 4)})
+    await must("homepower/settings/save", settings={"rates_entity": "sensor.agile", "price_peak": "", "price_offpeak": "", "offpeak_start": "",
+                                                     "offpeak_end": "", "offpeak_auto": False, "export_discharge": True, "hold_for_dearer": True,
+                                                     "event_entity": "", "export_keep_pct": 30, "export_rates_entity": "sensor.export_price"})
+    # (this harness's settings save keeps only what each call sends, so everything needed is sent together)
+    await coord.async_refresh()
+    st = coord._snap.devices["a"]
+    plan = coord.day_plan
+    assert plan is not None and plan.export_now_w == 0 and plan.hold_now, plan.as_dict()
+    assert st.desired.mode.value == "hold" and "(planned)" in st.reason, (st.desired, st.reason)
+    pv2 = await must("homepower/preview")
+    peak = [s for s in pv2["day_plan"]["slots"] if s["export_wh"] > 0]
+    assert peak and all(s["export"] == 0.3 for s in peak), pv2["day_plan"]
+    print("day plan :", st.reason, "| export planned at", [s["start"][11:16] for s in peak])
+
+    # ---- charging up before a saving session on a calendar (3 h from now)
+    start = lo + timedelta(hours=3)
+    hass.states.async_set("calendar.saving", "off", {"message": "Saving session", "start_time": start.strftime("%Y-%m-%d %H:%M:%S"),
+                                                      "end_time": (start + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")})
+    await must("homepower/settings/save", settings={"event_entity": "calendar.saving", "event_charge_pct": 95, "export_discharge": False, "hold_for_dearer": False,
+                                                     "rates_entity": "sensor.agile", "offpeak_auto": False, "export_rates_entity": "sensor.export_price"})
+    await coord.async_refresh()
+    assert any("before grid event" in n for n in coord.last_result.notes) or coord.last_result.allocs, coord.last_result.notes
+    assert all(a.end <= start.astimezone(a.end.tzinfo) for a in coord.last_result.allocs)
+    pv3 = await must("homepower/preview")
+    assert len(pv3["events"]) == 1 and pv3["events"][0]["start"].startswith(start.strftime("%Y-%m-%dT%H:%M")), pv3["events"]
+    print("event    : charge planned before", start.strftime("%H:%M"), "in", len(coord.last_result.allocs), "half-hours")
+
+    # ---- money totals: export earnings at the export price, kept as a 'total' Home Assistant keeps statistics of
+    before = coord.meter.totals.get("money:export", 0.0)
+    coord._account_savings(dt_util.now(), {}, -1000.0, coord._rates(), {}, 2.0)
+    assert abs(coord.meter.totals["money:export"] - before - 2.0 * 0.15) < 1e-9, coord.meter.totals
+    from custom_components.homepower.sensor import MoneyTotal
+    m = MoneyTotal(coord, entry, "money:export", "Export earnings", "mdi:cash-plus")
+    assert m.native_value == round(coord.meter.totals["money:export"], 4) and m.native_unit_of_measurement == hass.config.currency
+    assert m.state_class == "total" and m.device_class == "monetary"
+    print("money    :", m.native_value, m.native_unit_of_measurement)
+
+    # ---- the Configure form for prices, export and events
+    from custom_components.homepower.options_flow import HomePowerOptionsFlow
+    f = HomePowerOptionsFlow()
+    f.hass, f.flow_id, f.handler = hass, "x", "e1"
+    hass.config_entries.async_get_known_entry = lambda i: entry
+    form = await f.async_step_money()
+    assert form["type"] == "form" and "event_entity" in str(form["data_schema"].schema)
+    res = await f.async_step_money({"export_discharge": True, "wear_cost": 4.5, "event_entity": ["calendar.saving", "binary_sensor.saving_session"],
+                                    "event_charge_pct": 90, "export_keep_pct": 20})
+    assert res["type"] == "create_entry" and res["data"]["event_entity"] == "calendar.saving, binary_sensor.saving_session", res
+    assert res["data"]["wear_cost"] == 4.5 and res["data"]["hold_for_dearer"] is False and res["data"]["export_price"] is None
+    bad = await f.async_step_money({"event_charge_pct": 150})
+    assert bad["type"] == "abort", bad
+    print("configure: prices, export and events form saves")
+
+    # ---- a fix from Repairs: 'not following commands' -> switch the battery to monitor-only
+    await coord._notify("unconfirmed:a", "A is not following HomePower's commands.", True)
+    iss = next(i for (d, k), i in ir.async_get(hass).issues.items() if d == "homepower" and k.startswith("unconfirmed_a_"))
+    assert iss.is_fixable and iss.data["device_id"] == "a" and iss.translation_key == "alert_fix_battery", iss
+    from custom_components.homepower import repairs
+    flow = await repairs.async_create_fix_flow(hass, iss.issue_id, iss.data)
+    flow.hass = hass
+    menu = await flow.async_step_init()
+    assert menu["type"] == "menu" and menu["menu_options"] == ["test", "monitor"]
+    done = await flow.async_step_monitor()
+    assert done["type"] == "create_entry" and mgr.devices["a"]["control_enabled"] is False
+    tflow = await repairs.async_create_fix_flow(hass, "t", {"fix": "tariff", "message": "m"})
+    tflow.hass = hass
+    entry_opts = {}
+    hass.config_entries.async_update_entry = lambda e, options=None, **kw: entry_opts.update(options or {}) or True
+    assert (await tflow.async_step_init())["type"] == "form"
+    assert (await tflow.async_step_init({}))["type"] == "create_entry" and entry_opts["offpeak_start"] == "" and entry_opts["offpeak_auto"] is True
+    print("repairs  : fix flows switch a battery to monitor-only and reset typed cheap hours")
 
     # string history is saved and loaded again
     await mgr.save_runtime()

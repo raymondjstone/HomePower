@@ -6,6 +6,7 @@ sys.path[:0] = [ROOT, os.path.join(ROOT, "tests")]
 
 import asyncio, struct, time as real_time, tempfile
 import conftest  # noqa: F401
+import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.util import dt as dt_util
@@ -28,7 +29,7 @@ class Clock:
 
 CLOCK = Clock()
 C._time = CLOCK
-for _m in ("coord_prices", "coord_forecast", "coord_reports"):   # the coordinator's parts read the same clock
+for _m in ("coord_prices", "coord_forecast", "coord_reports", "coord_inputs", "coord_accounting"):   # the coordinator's parts read the same clock
     sys.modules[f"custom_components.homepower.{_m}"]._time = CLOCK
 EM.time = CLOCK
 M.async_get_clientsession = lambda hass: None

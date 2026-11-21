@@ -2,6 +2,7 @@
 import random
 from datetime import datetime, time, timedelta, timezone
 
+from core.dayplan import DayPlan
 from core.engine import DevIn, Settings, World, compute
 from core.goals import Goal
 from core.models import Actual, Capabilities, Desired, DeviceConfig, Mode
@@ -59,6 +60,7 @@ def rand_world(rng: random.Random) -> World:
         solar_ceiling={i: rng.randint(10, 99) for i in ids if rng.random() < 0.4},
         export_price_now=rng.choice([None, 0.04, 0.3]), buyback_price=rng.choice([None, -0.02, 0.07, 0.3]),
         export_keep_pct=rng.choice([0, 30, 60]), grid_event=rng.random() < 0.15,
+        day_plan=rng.choice([None, None, DayPlan(export_now_w=rng.choice([0, 800, 9000]), hold_now=rng.random() < 0.5)]),
     )
 
 

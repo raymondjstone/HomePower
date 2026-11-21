@@ -34,17 +34,30 @@ export default (U) => {
     const X = (t) => ((t - t0) / span) * W, Y = (v) => H - ((v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo)) * H;
     const planned = (a, b) => (pv.plan || []).some((x) => Date.parse(x.start) < b && Date.parse(x.end) > a)
       || Object.values(pv.segments || {}).some((l) => l.some((g) => g.mode === "charge" && Date.parse(g.start) < b && Date.parse(g.end) > a));
+    // the day plan (where stored energy is worth most) and grid events, over the same half-hours
+    const dp = (pv.day_plan && pv.day_plan.slots) || [];
+    const inPlan = (a, b) => dp.filter((s) => Date.parse(s.start) < b && Date.parse(s.end) > a);
+    const sum = (l, k) => l.reduce((t, s) => t + (s[k] || 0), 0);
+    const events = pv.events || [];
     const bars = pr.map((x) => {
       const a = Date.parse(x.start), b = Date.parse(x.end), y = Y(Math.max(x.price, 0)), h = Math.abs(Y(x.price) - Y(0)), chg = planned(a, b);
-      return `<rect x="${(X(a) + 0.6).toFixed(1)}" y="${Math.min(y, Y(0)).toFixed(1)}" width="${Math.max(1, X(b) - X(a) - 1.2).toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" fill="${chg ? MODES.charge.color : x.cheap ? "#60a5fa" : "var(--disabled-text-color,#9ca3af)"}" opacity="${chg ? 1 : 0.75}"><title>${new Date(a).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}: ${cur}${x.price.toFixed(3)}/kWh${chg ? " · charging planned" : ""}</title></rect>`;
+      const ps = inPlan(a, b), exp = sum(ps, "export_wh"), house = sum(ps, "house_wh"), kept = ps.length && !house && sum(ps, "load_wh") > 0;
+      const fill = chg ? MODES.charge.color : exp > 0 ? MODES.discharge.color : x.cheap ? "#60a5fa" : "var(--disabled-text-color,#9ca3af)";
+      const what = [chg ? "charging planned" : "", exp > 0 ? `exporting about ${fmtKwh(exp)}` : "", house > 0 ? `battery runs the house (${fmtKwh(house)})` : "", kept ? "stored energy kept for dearer hours" : ""].filter(Boolean).join(" · ");
+      const strip = ps.length ? `<rect x="${(X(a) + 0.6).toFixed(1)}" y="${H - 4}" width="${Math.max(1, X(b) - X(a) - 1.2).toFixed(1)}" height="4" fill="${house > 0 ? "#16a34a" : kept ? "#b45309" : "transparent"}"/>` : "";
+      return `<rect x="${(X(a) + 0.6).toFixed(1)}" y="${Math.min(y, Y(0)).toFixed(1)}" width="${Math.max(1, X(b) - X(a) - 1.2).toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" fill="${fill}" opacity="${chg || exp > 0 ? 1 : 0.75}"><title>${new Date(a).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}: ${cur}${x.price.toFixed(3)}/kWh${what ? " · " + what : ""}</title></rect>${strip}`;
+    }).join("");
+    const shade = events.map((ev) => {
+      const a = Math.max(t0, Date.parse(ev.start)), b = Math.min(t1, Date.parse(ev.end));
+      return b > a ? `<rect x="${X(a).toFixed(1)}" y="0" width="${(X(b) - X(a)).toFixed(1)}" height="${H}" fill="#7c3aed" opacity="0.12"><title>Grid event (saving session)</title></rect>` : "";
     }).join("");
     const grid = nt.ticks.map((v) => `<line x1="0" x2="${W}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}" stroke="var(--divider-color)" stroke-opacity=".5" stroke-dasharray="3 4" vector-effect="non-scaling-stroke"/>`).join("");
     const now = Date.now(), nowLine = now > t0 && now < t1 ? `<line x1="${X(now).toFixed(1)}" x2="${X(now).toFixed(1)}" y1="0" y2="${H}" stroke="var(--primary-color)" stroke-width="2" vector-effect="non-scaling-stroke"/>` : "";
     const ylab = nt.ticks.map((v) => `<span style="top:${((1 - (v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo)) * 100).toFixed(2)}%">${cur}${v.toFixed(2)}</span>`).join("");
     const xlab = [0, 0.25, 0.5, 0.75, 1].map((f, i) => `<span style="left:${i * 25}%">${this._fmtT(t0 + f * span, span)}</span>`).join("");
     return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-bar"></ha-icon>Prices and planned charging (per kWh)</h2>
-      <div class="plot"><div class="plot-y" style="height:190px">${ylab}</div><div class="plot-main"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:190px" role="img" aria-label="Electricity prices for the next 24 hours">${grid}${bars}${nowLine}</svg><div class="plot-x">${xlab}</div></div></div>
-      <div class="legend"><span><i class="sw" style="background:${MODES.charge.color}"></i>Charging planned</span><span><i class="sw" style="background:#60a5fa"></i>Cheap rate</span><span><i class="sw" style="background:var(--disabled-text-color,#9ca3af)"></i>Standard rate</span><span>Line = now</span></div></div>`;
+      <div class="plot"><div class="plot-y" style="height:190px">${ylab}</div><div class="plot-main"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:190px" role="img" aria-label="Electricity prices for the next 24 hours">${grid}${shade}${bars}${nowLine}</svg><div class="plot-x">${xlab}</div></div></div>
+      <div class="legend"><span><i class="sw" style="background:${MODES.charge.color}"></i>Charging planned</span><span><i class="sw" style="background:#60a5fa"></i>Cheap rate</span><span><i class="sw" style="background:var(--disabled-text-color,#9ca3af)"></i>Standard rate</span>${dp.some((s) => s.export_wh > 0) ? `<span><i class="sw" style="background:${MODES.discharge.color}"></i>Exporting planned</span>` : ""}${dp.length ? `<span><i class="sw" style="background:#16a34a"></i>Battery runs the house</span><span><i class="sw" style="background:#b45309"></i>Kept for dearer hours</span>` : ""}${events.length ? `<span><i class="sw" style="background:#7c3aed;opacity:.35"></i>Grid event</span>` : ""}<span>Line = now</span></div>${pv.day_plan ? `<p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin:6px 0 0">Stored energy: ${fmtKwh(pv.day_plan.budget_wh)} usable, ${fmtKwh(pv.day_plan.used_wh)} planned before ${new Date(pv.day_plan.until).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}, when buying it back is cheapest. A half-hour must be worth more than ${cur}${pv.day_plan.threshold.toFixed(3)}/kWh (buying back, losses and wear) to use it.</p>` : ""}</div>`;
   },
 
   // Is everything set up? Shown on Overview until all is done, and always on Diagnostics.

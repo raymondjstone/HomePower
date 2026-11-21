@@ -32,6 +32,8 @@ from .drivers.ecoflow import EcoFlowApi, EcoFlowError, EcoFlowStreamDriver
 from .drivers.ecoflow_modbus import EcoFlowModbusDriver
 from .drivers.ecoflow_live import EcoFlowLive
 from .drivers.modbus_generic import GenericModbusDriver
+from .manager_details import DetailsMixin
+from .manager_backup import BackupMixin
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,7 +43,7 @@ BATTERY_SENSOR_SUFFIXES = ("soc", "power", "target", "efficiency", "cycles", "pv
     f"pv{i}_{kind}" for i in range(1, 9) for kind in ("voltage", "current", "power"))                  # (the PV ones: Anker X1 only)
 
 
-class HomePowerManager:
+class HomePowerManager(DetailsMixin, BackupMixin):
     """Source of truth for user-defined batteries, schedules and goals (JSON dicts, validated)."""
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -374,176 +376,7 @@ class HomePowerManager:
         except MapError:
             return False
 
-    async def scan_registers(self, device_id: str) -> dict:
-        """Raw register dump of a connected battery (read-only), for the panel's register compare tool."""
-        cached = self._adapters.get(device_id)
-        driver = getattr(cached[1], "driver", None) if cached else None
-        if driver is None or not hasattr(driver, "scan"):
-            raise ValidationError("this battery does not support a register scan")
-        try:
-            out = await driver.scan()
-        except Exception as err:  # noqa: BLE001 - shown to the user
-            raise ValidationError(f"could not scan: {err}") from err
-        from .core.anker_x1_map import describe_all
-        out["order"] = driver._order      # 32-bit word order, so the panel can decode two-register values
-        out["text_low_first"] = bool(driver.config.extra.get("house_meter"))   # the X1 holds each text character pair low byte first; Solarbanks high byte first
-        out["names"] = describe_all(bool(driver.config.extra.get("house_meter")))   # Anker's register lists: names, read/write, live-or-setting
-        return out
-
-    async def read_registers(self, device_id: str, addrs: list[int], names: bool = False) -> dict:
-        """Current value of a few registers (read-only), for the panel's register watch."""
-        cached = self._adapters.get(device_id)
-        driver = getattr(cached[1], "driver", None) if cached else None
-        if driver is None or not hasattr(driver, "read_registers"):
-            raise ValidationError("this battery does not support reading registers")
-        try:
-            out = {"values": await driver.read_registers(addrs), "order": driver._order}
-            if names:
-                from .core.anker_x1_map import describe_all
-
-                out["names"] = describe_all(bool(driver.config.extra.get("house_meter")))
-            return out
-        except Exception as err:  # noqa: BLE001 - shown to the user
-            raise ValidationError(f"could not read: {err}") from err
-
-    def _controlled(self, driver) -> bool:
-        """HomePower is currently driving this battery (so the settings it drives are locked in the panel)."""
-        return bool(driver.config.extra.get("control_enabled", True)) and not (self.paused or self.safe)
-
-    async def set_device_setting(self, device_id: str, key: str, value) -> dict:
-        """Change one setting of a battery from the panel (admin only). Checked against the vendor's own ranges and rules first."""
-        from .core.device_settings import apply_change, read_settings
-
-        cached = self._adapters.get(device_id)
-        if device_id not in self.devices or cached is None:
-            raise ValidationError("unknown battery")
-        driver = getattr(cached[1], "driver", None)
-        if driver is None:
-            raise ValidationError("this battery has no settings that can be changed here")
-        controlled = self._controlled(driver)
-        st = self.coordinator._snap.devices.get(device_id) if self.coordinator else None
-        if hasattr(driver, "read_registers") and st is not None and not (st.actual and st.actual.online):
-            raise ValidationError("The battery is not answering right now, so nothing was changed. Try again once it shows online.")
-        try:
-            family = await apply_change(driver, key, value, controlled)
-        except ValueError as err:
-            raise ValidationError(str(err)) from err
-        except Exception as err:  # noqa: BLE001 - the battery or its cloud said no
-            raise ValidationError(f"the battery did not accept it: {err}") from err
-        _LOGGER.info("%s: setting %s changed to %r from the panel", device_id, key, value)
-        if family == "ecoflow":
-            driver._cache, driver._pushed = None, 0.0           # the next read comes from the cloud and shows the change
-        if self.coordinator:
-            await self.coordinator.async_request_refresh()
-        try:
-            _, settings, _ = await read_settings(driver, controlled)
-        except Exception:  # noqa: BLE001 - the change itself went through
-            settings = []
-        return {"settings": settings, "pending": family == "ecoflow"}
-
-    async def device_details(self, device_id: str) -> dict:
-        """Everything one battery reports, for the panel's details sheet (read-only): the last reading, plus the named
-        registers of an Anker battery (read now), or every value an EcoFlow battery has sent."""
-        from .core.device_details import actual_fields, addresses, anker_rows, wanted
-        from .coordinator import _PRIVATE_KEY
-
-        cached = self._adapters.get(device_id)
-        if device_id not in self.devices or cached is None:
-            raise ValidationError("unknown battery")
-        driver = getattr(cached[1], "driver", None)
-        st = self.coordinator._snap.devices.get(device_id) if self.coordinator else None
-        out: dict = {"actual": actual_fields(st.actual if st else None), "registers": None, "raw": None, "changes": [], "serial": None,
-                     "pv": self.coordinator.pv_view(device_id) if self.coordinator else None}
-        if driver is None:
-            return out
-        x1 = bool(driver.config.extra.get("house_meter"))
-        silent = hasattr(driver, "read_registers") and st is not None and not (st.actual and st.actual.online)
-        if silent:          # do not send a burst of reads to a battery that is not answering: it is shown from what is already known
-            out["error"] = "The battery is not answering right now, so its registers were not read."
-        elif hasattr(driver, "read_registers") and hasattr(driver, "scan"):          # an Anker battery: Anker's own register lists
-            try:
-                packs = None
-                if x1:
-                    n = (await driver.read_registers([10249])).get("10249")
-                    packs = n if isinstance(n, int) and 0 <= n <= 6 else None
-                entries = wanted(x1, packs)
-                addrs, values = addresses(entries), {}
-                rest = [a for a in addrs if a != 32775]            # 0x8007 on its own: in a batch with 32774 a battery without it answers a silent 0
-                for i in range(0, len(rest), 64):
-                    values.update(await driver.read_registers(rest[i:i + 64]))
-                if 32775 in addrs:
-                    values.update(await driver.read_registers([32775]))
-            except Exception as err:  # noqa: BLE001 - shown in the sheet
-                out["error"] = f"could not read the registers: {err}"
-            else:
-                out["registers"] = anker_rows(entries, values, driver._order, x1)
-                out["serial"] = next((r["value"] for r in out["registers"] if r["name"] == "Serial number"), None)
-        try:
-            from .core.device_settings import read_settings
-
-            if silent:
-                out["settings"] = []
-            else:
-                _, out["settings"], _ = await read_settings(driver, self._controlled(driver))
-        except Exception as err:  # noqa: BLE001 - the sheet still shows everything else
-            out["settings"], out["settings_error"] = [], f"could not read the settings: {err}"
-        quota = getattr(driver, "last_quota", None)
-        if isinstance(quota, dict) and quota:
-            out["raw"] = {k: v for k, v in quota.items() if not _PRIVATE_KEY.search(k)}
-            if out["registers"] is None:
-                from .core.device_details import ecoflow_rows
-
-                out["registers"] = ecoflow_rows(out["raw"])      # named the way the vendor's own Home Assistant integration names them
-        out["changes"] = list(getattr(driver, "changes", None) or [])[-20:]
-        conn = driver.config.extra.get("connection") or {}
-        out["serial"] = out["serial"] or conn.get("sn")
-        return out
-
-    async def register_note(self, device_id: str, address: int | None = None, label: str | None = None) -> dict:
-        """The user's own names for registers (what they found by watching), per battery. A label of "" removes one."""
-        if device_id not in self.devices:
-            raise ValidationError("unknown battery")
-        notes = self.register_notes.setdefault(device_id, {})
-        if address is not None:
-            label = str(label or "").strip()[:80]
-            if label:
-                notes[str(int(address))] = label
-            else:
-                notes.pop(str(int(address)), None)
-            await self._save()
-        return {"notes": dict(notes)}
-
     # ------------------------------------------------------------------ the daily safety copies
-    def _backup_dir(self) -> str:
-        return self.hass.config.path("homepower_backups")
-
-    async def list_backups(self) -> list[dict]:
-        def run() -> list[dict]:
-            from pathlib import Path
-
-            from . import backup_files
-
-            d = Path(self._backup_dir())
-            return [{"name": p.name, "size": p.stat().st_size} for p in sorted(backup_files(d), reverse=True)] if d.is_dir() else []
-
-        return await self.hass.async_add_executor_job(run)
-
-    async def restore_backup(self, name: str, entry) -> dict:
-        import json as _json
-        import re as _re
-        from pathlib import Path
-
-        if not _re.fullmatch(r"homepower-\d{4}-\d\d-\d\d\.json", name or ""):
-            raise ValidationError("not one of HomePower's backup files")
-
-        def run() -> dict:
-            return _json.loads((Path(self._backup_dir()) / name).read_text(encoding="utf8"))
-
-        try:
-            data = await self.hass.async_add_executor_job(run)
-        except (OSError, ValueError) as err:
-            raise ValidationError(f"could not read that backup: {err}") from err
-        return await self.import_all(data, entry)
 
     async def _hand_back(self, device_id: str) -> bool:
         """Give a battery we are forcing back to its own control before we stop managing it. True when it is handed back (or was
@@ -682,83 +515,6 @@ class HomePowerManager:
             await c.async_request_refresh()
 
     # ------------------------------------------------------------------ backup / restore
-    def export_all(self, settings: dict, include_secrets: bool = False) -> dict:
-        devices = []
-        for d in self.devices.values():
-            d = {**d, "connection": dict(d.get("connection", {}))}
-            if not include_secrets:
-                for k in ("secret_key", "access_key"):
-                    if k in d["connection"]:
-                        d["connection"][k] = ""
-            devices.append(d)
-        return {"homepower_export": 1, "includes_secrets": include_secrets, "devices": devices,
-                "schedules": list(self.schedules.values()), "goals": list(self.goals.values()),
-                "scenes": list(self.scenes.values()), "settings": settings}
-
-    async def import_all(self, data: dict, entry) -> dict:
-        """Restore from export_all(). Every row is validated on its own; bad ones are reported, never half-applied: if anything
-        unexpected goes wrong the stored batteries, schedules, goals and scenes are put back as they were."""
-        if not isinstance(data, dict) or data.get("homepower_export") != 1:
-            raise ValidationError("this is not a HomePower export file")
-        before = (dict(self.devices), dict(self.schedules), dict(self.goals), dict(self.scenes))
-        options_before = dict(entry.options) if entry is not None else None
-        try:
-            return await self._import_rows(data, entry)
-        except Exception as err:  # noqa: BLE001 - nothing may stay half restored
-            self.devices, self.schedules, self.goals, self.scenes = before
-            if entry is not None and dict(entry.options) != options_before:
-                self.hass.config_entries.async_update_entry(entry, options=options_before)   # the settings too
-            if isinstance(err, ValidationError):
-                raise
-            _LOGGER.warning("restore failed, nothing was changed", exc_info=True)
-            raise ValidationError(f"the file could not be restored ({type(err).__name__}); nothing was changed") from err
-
-    @staticmethod
-    def _row_name(raw, *keys: str) -> str:
-        return next((str(raw[k]) for k in keys if isinstance(raw, dict) and raw.get(k)), "?")
-
-    async def _import_rows(self, data: dict, entry) -> dict:
-        added, skipped = {"devices": 0, "schedules": 0, "goals": 0, "scenes": 0}, []
-        for raw in data.get("devices") or []:
-            try:
-                if not isinstance(raw, dict):
-                    raise ValidationError("not a battery entry")
-                raw = self._with_saved_secret(dict(raw))
-                d = device_to_dict(device_from_dict(raw))
-                old = self.devices.get(d["device_id"])
-                if old and old.get("control_enabled", True) and not d["control_enabled"]:
-                    await self._hand_back(d["device_id"])        # control is being revoked by the restore: do not leave it forced
-                self.devices[d["device_id"]] = d
-                added["devices"] += 1
-            except (ValidationError, KeyError, TypeError, ValueError, AttributeError, OverflowError) as err:
-                name = self._row_name(raw, "name", "device_id")
-                skipped.append(f"battery {name}: {err} (re-add it, keys are not in the file)" if "required" in str(err) else f"battery {name}: {err}")
-        for kind, coll, parse, dump in (("schedules", self.schedules, schedule_from_dict, schedule_to_dict),
-                                        ("goals", self.goals, goal_from_dict, goal_to_dict)):
-            for raw in data.get(kind) or []:
-                try:
-                    row = dump(parse(raw))
-                    coll[row["id"]] = row
-                    added[kind] += 1
-                except (ValidationError, KeyError, TypeError, ValueError, AttributeError, OverflowError) as err:
-                    skipped.append(f"{kind[:-1]} {self._row_name(raw, 'id')}: {err}")
-        for raw in data.get("scenes") or []:
-            try:
-                s = clean_scene(raw)
-                self.scenes[s["name"]] = s
-                added["scenes"] += 1
-            except (SceneError, KeyError, TypeError, ValueError, AttributeError, OverflowError) as err:
-                skipped.append(f"scene {self._row_name(raw, 'name')}: {err}")
-        if isinstance(data.get("settings"), dict) and entry is not None:
-            from .core.settings import SettingsError, clean
-
-            try:
-                self.hass.config_entries.async_update_entry(entry, options={**entry.options, **clean(data["settings"])})
-                added["settings"] = len(data["settings"])
-            except SettingsError as err:
-                skipped.append(f"settings: {err}")
-        await self._apply()
-        return {"added": added, "skipped": skipped}
 
     # ------------------------------------------------------------------ views
     def warnings_for(self, kind: str, row: dict) -> list[str]:

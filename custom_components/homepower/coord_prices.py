@@ -153,11 +153,65 @@ class PricesMixin:
         base = max((a.config.caps.min_soc for a in self.adapters), default=0)
         return min(100, max(keep, base + int(-(-need * 100 // cap))))
 
+    def _event_entities(self) -> list[str]:
+        return [e.strip() for e in str(getattr(self.settings, "event_entity", "") or "").split(",") if e.strip()]
+
+    def _event_windows(self) -> list:
+        """Start and end of the events the chosen entities describe (a calendar, the Octopus saving-session entities...)."""
+        from .core.events import event_windows
+
+        out = []
+        for ent in self._event_entities():
+            st = self.hass.states.get(ent)
+            if st is not None:
+                out += event_windows(dict(st.attributes), dt_util.DEFAULT_TIME_ZONE)
+        return sorted(set(out))
+
+    def _event_goal(self, now: datetime):
+        """Settings > Grid events: a goal that charges the batteries up, in the cheapest half-hours, before the next event starts."""
+        pct = int(getattr(self.settings, "event_charge_pct", 0) or 0)
+        if not pct:
+            return None
+        from .core.events import charge_goal, next_event_start
+
+        return charge_goal(next_event_start(self._event_windows(), now), pct, now)
+
+    def _day_plan(self, rates: RateTable | None, now: datetime, actuals: dict):
+        """Where the stored energy is worth most until refilling is cheapest (core/dayplan.py). Only when paid export or 'keep
+        stored energy for dearer hours' is on, and prices are known."""
+        from .core.dayplan import plan_day
+        from .core.models import Mode
+
+        s = self.settings
+        if rates is None or not (s.engine.export_discharge or s.engine.hold_for_dearer):
+            return None
+        unit = self._unit(rates)
+        imp = [Slot(x.start, x.end, to_main_units(x.price, unit)) for x in rates.slots_between(now, now + timedelta(hours=24))]
+        keep = int(getattr(s, "export_keep_pct", 0) or 0) if s.engine.export_discharge else 0   # the export setting's floor, only for export
+        budget = export_w = house_w = 0.0
+        for a in self.adapters:
+            act, c = actuals.get(a.config.device_id), a.config.caps
+            if not (act and act.online and act.soc is not None and a.config.extra.get("control_enabled", True)):
+                continue
+            budget += max(0.0, act.soc - max(c.min_soc, keep)) / 100 * c.capacity_wh
+            house_w += c.max_discharge_w or 0
+            if c.power_control and Mode.DISCHARGE in c.supported_modes and a.config.device_id != s.engine.zero_import_device:
+                export_w += c.max_discharge_w
+        export_at = (lambda t: self._export_price_now(rates, t)) if s.engine.export_discharge else None
+        return plan_day(now, imp, export_at, self.profile.expected_wh, budget, export_w, self._wear(rates),
+                        discharge_max_w=house_w or None)
+
     def _grid_event_on(self) -> bool:
         """Is a demand-flexibility event running (a saving session)? Any of the chosen entities on: a binary sensor, a calendar
         while one of its events runs, or an input_boolean."""
-        ents = [e.strip() for e in str(getattr(self.settings, "event_entity", "") or "").split(",") if e.strip()]
-        return any(self._entity_on(e) for e in ents)
+        from .core.events import all_day
+
+        for e in self._event_entities():
+            st = self.hass.states.get(e)
+            if st is not None and st.state == "on" and not all_day(dict(st.attributes)):
+                return True              # (a calendar is on all day for an all-day entry: that is a note, not a session)
+        now = dt_util.now()          # an entity that lists the events (not on / off): one of them is running now
+        return any(s <= now < e for s, e in self._event_windows())
 
     def _unit(self, rates: RateTable | None) -> str:
         """pence or main units for the prices in use. With "auto" the whole table decides (any price of 5 or more means pence),
@@ -236,7 +290,10 @@ class PricesMixin:
         exp, buy, wear = self._export_price_now(rates, now), self._buyback_price(rates, now), self._wear(rates)
         return {"price_now": exp, "buyback": buy, "wear": wear or None, "pays": export_pays(exp, buy, wear),
                 "on": self.settings.engine.export_discharge, "sensor": bool(self._exp_table),
-                "keep_pct": self._export_keep_pct(rates, now) if self.settings.engine.export_discharge else None}
+                "keep_pct": (None if not self.settings.engine.export_discharge else int(self.settings.export_keep_pct or 0)
+                             if getattr(self, "day_plan", None) else self._export_keep_pct(rates, now)),
+                "planned": bool(getattr(self, "day_plan", None)),
+                "export_now_w": self.day_plan.export_now_w if getattr(self, "day_plan", None) else None}
 
     def _cycling(self, did: str, rates: RateTable | None, now: datetime) -> dict | None:
         """What storing a kWh in this battery is worth right now: the cheapest import in the next 24 h against the dearest
