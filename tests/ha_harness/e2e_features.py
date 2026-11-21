@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import conftest  # noqa: F401
 import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from test_drivers import FakeAnker
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, callback   # recording services run in the loop, in order
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.util import dt as dt_util
 import custom_components.homepower.coordinator as C
@@ -35,8 +35,8 @@ async def main():
     dev = FakeAnker(); srv = await asyncio.start_server(dev.handle, "127.0.0.1", 0); port = srv.sockets[0].getsockname()[1]
     hass, entry, mgr, coord = await make(tmp, port)
     sent = []
-    hass.services.async_register("persistent_notification", "create", lambda call: sent.append(("create", call.data["notification_id"])))
-    hass.services.async_register("persistent_notification", "dismiss", lambda call: sent.append(("dismiss", call.data["notification_id"])))
+    hass.services.async_register("persistent_notification", "create", callback(lambda call: sent.append(("create", call.data["notification_id"]))))
+    hass.services.async_register("persistent_notification", "dismiss", callback(lambda call: sent.append(("dismiss", call.data["notification_id"]))))
     sp = lambda: to_i32(dev.hold[10071], dev.hold[10072], "big")
     await mgr.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "grid_meter": "yes", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": True})
     now = dt_util.now()
@@ -109,7 +109,7 @@ async def main():
     sys.modules["custom_components.homepower.coord_alerts"].OFFLINE_ALERT_AFTER_S = 0   # where the alert check reads it
     coord2.adapters, coord2.schedules, coord2.goals = mgr2.build()
     coord2.set_config(coord2.adapters, [], [])
-    hass2.services.async_register("persistent_notification", "create", lambda call: sent.append(("create", call.data["notification_id"])))
+    hass2.services.async_register("persistent_notification", "create", callback(lambda call: sent.append(("create", call.data["notification_id"]))))
     srv.close(); await srv.wait_closed()
     await coord2._async_update_data()
     await asyncio.sleep(0.2)   # service calls are scheduled, not instant

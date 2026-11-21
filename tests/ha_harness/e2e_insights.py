@@ -9,6 +9,7 @@ import conftest  # noqa: F401
 import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from test_drivers import FakeAnker
 from homeassistant.core import HomeAssistant
+from homeassistant.core import callback   # recording services run in the loop, in order (a plain function runs in a thread)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.util import dt as dt_util
 from custom_components.homepower.manager import HomePowerManager
@@ -33,8 +34,8 @@ async def main():
         coord.apply_settings({**e.data, **e.options})
     hass.config_entries = SimpleNamespace(async_get_known_entry=lambda i: entry, async_update_entry=update_entry)
     sent = []
-    hass.services.async_register("persistent_notification", "create", lambda call: sent.append(("create", call.data["notification_id"])))
-    hass.services.async_register("persistent_notification", "dismiss", lambda call: sent.append(("dismiss", call.data["notification_id"])))
+    hass.services.async_register("persistent_notification", "create", callback(lambda call: sent.append(("create", call.data["notification_id"]))))
+    hass.services.async_register("persistent_notification", "dismiss", callback(lambda call: sent.append(("dismiss", call.data["notification_id"]))))
 
     await mgr.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "grid_meter": "yes", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": False})
     await coord._async_update_data()
@@ -178,8 +179,8 @@ async def main():
 
     # --- solar-surplus diverter: full battery + export -> the chosen switch goes on, then off when importing
     calls = []
-    hass.services.async_register("homeassistant", "turn_on", lambda call: calls.append(("on", call.data["entity_id"])))
-    hass.services.async_register("homeassistant", "turn_off", lambda call: calls.append(("off", call.data["entity_id"])))
+    hass.services.async_register("homeassistant", "turn_on", callback(lambda call: calls.append(("on", call.data["entity_id"]))))
+    hass.services.async_register("homeassistant", "turn_off", callback(lambda call: calls.append(("off", call.data["entity_id"]))))
     coord.apply_settings({"divert_entity": "switch.immersion", "divert_export_w": 500, "divert_min_soc": 50})
     acts = {"a": coord._snap.devices["a"].actual}
     await coord._divert(1000.0, acts, -900.0); await coord._divert(1130.0, acts, -900.0)
