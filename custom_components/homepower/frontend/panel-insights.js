@@ -190,6 +190,14 @@ export default (U) => {
       <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Your recorded usage (${t.import_kwh} kWh imported, ${t.export_kwh} kWh exported) priced on each tariff. It is what your battery and house did, so a tariff that suits a different battery schedule could do better than shown.</p></div>`;
   },
 
+  _solarStringsCard() {
+    const devs = this.data.devices.filter((d) => ((this.live.devices || {})[d.device_id] || {}).pv);
+    const blocks = devs.map((d) => { const h = this._pvHtml(this.live.devices[d.device_id].pv); return h ? `<h3>${esc(d.name)}</h3>${h}` : ""; }).join("");
+    if (!blocks) return "";
+    return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:solar-panel"></ha-icon>Solar strings</h2>${blocks}
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Each string is compared with the others on the same inverter, so the weather cancels out. A string that gives almost nothing for half an hour while the others produce, or a clearly smaller share of the day's solar than usual two days running, raises an alert.</p></div>`;
+  },
+
   _insightsView() {
     const L = this.live, E = L.energy || {}, cur = esc(L.currency || "£"), ids = this.data.entity_ids || {}, H = this._hist2 || {};
     const pts = (eid) => (H[eid] || []).filter((r) => r.mean != null).map((r) => ({ t: typeof r.start === "number" ? r.start : Date.parse(r.start), v: r.mean }));
@@ -212,7 +220,8 @@ export default (U) => {
         ${tile("Solar", `${kwh("pv_in")} kWh`, "As reported by your batteries")}
         ${L.daily && L.daily.self_consumption != null ? tile("Solar used at home today", `${L.daily.self_consumption}%`, "Not exported to the grid") : ""}
         ${L.daily && L.daily.cheap_share != null ? tile("Cheap-rate share today", `${L.daily.cheap_share}%`, "Of the grid energy you imported") : ""}
-      </div>${this._tariffCard(cur)}${this._healthCard()}${this._ecoflowCard()}${this._planCard()}${this._trendCard()}${this._gridEventsCard()}${this._whatifCard()}
+        ${L.export && L.export.price_now != null && L.export.buyback != null ? tile("Exporting now pays", `${cur}${L.export.price_now.toFixed(3)}`, `Buying back costs ${cur}${L.export.buyback.toFixed(3)}${L.export.pays ? ": worth exporting" : ""}${L.export.on ? "" : " (paid export is off)"}`) : ""}
+      </div>${this._tariffCard(cur)}${this._solarStringsCard()}${this._healthCard()}${this._ecoflowCard()}${this._planCard()}${this._trendCard()}${this._gridEventsCard()}${this._whatifCard()}
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:battery-sync"></ha-icon>Batteries (since HomePower started recording)</h2>
         <table class="tbl"><tr><th>Battery</th><th>Charged</th><th>Discharged</th><th>Round-trip</th><th>Cycles</th></tr>${rows || ""}</table>
         <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">These are also Home Assistant sensors, so you can add them to the Energy dashboard.</p></div>

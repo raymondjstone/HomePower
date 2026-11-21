@@ -7,6 +7,7 @@ import asyncio, sys, tempfile, datetime as dtm
 import pytest
 from types import SimpleNamespace
 import conftest  # noqa: F401
+import _harness  # noqa: F401 - Python 3.12+ server shutdown (see _harness.py)
 from test_drivers import FakeAnker
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.config_entries import ConfigEntry
@@ -105,6 +106,7 @@ async def main():
 
     # --- alerts: the battery disappears -> raised (no debounce here) with a notification
     C.OFFLINE_ALERT_AFTER_S = 0
+    sys.modules["custom_components.homepower.coord_alerts"].OFFLINE_ALERT_AFTER_S = 0   # where the alert check reads it
     coord2.adapters, coord2.schedules, coord2.goals = mgr2.build()
     coord2.set_config(coord2.adapters, [], [])
     hass2.services.async_register("persistent_notification", "create", lambda call: sent.append(("create", call.data["notification_id"])))
@@ -112,7 +114,14 @@ async def main():
     await coord2._async_update_data()
     await asyncio.sleep(0.2)   # service calls are scheduled, not instant
     print("alerts   :", coord2.view()["alerts"], "| notifications", sent[-1:])
-    assert "offline:a" in coord2.view()["alerts"] and ("create", "homepower_alert_offline:a") in sent
+    # a lasting problem goes to Settings > Repairs (a notification only when Repairs is not available)
+    from homeassistant.helpers import issue_registry as ir
+    try:
+        filed = any(d == "homepower" and i.startswith("offline_a_") for d, i in ir.async_get(hass2).issues)
+    except Exception:  # noqa: BLE001 - issue registry not loaded in this bare instance
+        filed = False
+    assert "offline:a" in coord2.view()["alerts"] and (filed or ("create", "homepower_alert_offline:a") in sent), (filed, sent)
+    print("repairs  :", "filed under Repairs" if filed else "notification (Repairs not loaded here)")
     await coord2.async_close()
     print("E2E4 OK")
 

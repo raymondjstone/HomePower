@@ -48,6 +48,9 @@ class AnkerModbusDriver:
         self._limits: tuple | None = None
         self._pack_v: tuple = ()
         self._packs_at = 0.0
+        self._pv: tuple = ()                   # X1: ((V, A) x 8) from 10167-10182
+        self._pv_total: float | None = None    # X1: total PV power, 10183
+        self._pv_at = 0.0
         self.last_error: str | None = None     # why the last read failed, in plain words (None while it answers)
         self.outages: list[dict] = []          # the last few times it stopped answering: {"at": when it went quiet, "seconds": for how long}
         self._down_since: float | None = None
@@ -103,6 +106,7 @@ class AnkerModbusDriver:
         off_grid = (plant == 2) if plant in (1, 2) else None
         return Actual(
             online=True, off_grid=off_grid, protected=bool(off_grid), alarms=alarms, firmware=self._firmware, temp_c=self._temp, limits=self._limits, pack_v=self._pack_v,
+            pv_strings=self._pv, pv_total_w=self._pv_total,
             soc=float(inp[14]),
             power_w=float(-self._i32(inp, 10008)),  # register: negative = charging; we use + charging
             mode=mode, set_power_w=set_w,
@@ -147,6 +151,23 @@ class AnkerModbusDriver:
             except ModbusError:
                 pass
 
+    async def _refresh_pv(self) -> None:
+        """X1: each PV string's voltage (0.1 V) and current (0.01 A), 10167-10182, and the total PV power (10183, 32-bit),
+        at most every 15 s. A failure keeps the last values; they are extras, not needed for control."""
+        now = time.monotonic()
+        if now < self._pv_at or not self.config.extra.get("house_meter"):
+            return
+        self._pv_at = now + 15
+        try:
+            regs = await self.client.read_input(10167, 18)
+        except ModbusError:
+            return
+
+        def s16(w: int) -> int:
+            return w - 0x10000 if w & 0x8000 else w
+        self._pv = tuple((max(0, s16(regs[2 * i])) / 10, max(0, s16(regs[2 * i + 1])) / 100) for i in range(8))
+        self._pv_total = float(max(0, to_i32(regs[16], regs[17], self._order or "big")))
+
     def _note_down(self, err: ModbusError) -> None:
         self.last_error = describe_failure(err)
         if self._down_since is None:
@@ -164,6 +185,7 @@ class AnkerModbusDriver:
     async def read(self) -> Actual:
         try:
             await self._refresh_extras()
+            await self._refresh_pv()
             actual = self._decode(*await self._blocks())
         except ModbusError as err:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)

@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfEnergy, UnitOfPower
+from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .coord_base import MONEY_EXPORT, MONEY_SAVED
 from .coordinator import HomePowerCoordinator
 
 
@@ -25,6 +26,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     add([BatteryFlow(coord, entry), StoredEnergy(coord, entry), GridPower(coord, entry),
          EnergyTotal(coord, entry, "grid_in", "Grid energy imported"), EnergyTotal(coord, entry, "grid_out", "Grid energy exported"),
          EnergyTotal(coord, entry, "pv_in", "Solar energy"), Savings(coord, entry, "today"), Savings(coord, entry, "month"), PriceNow(coord, entry),
+         MoneyTotal(coord, entry, MONEY_EXPORT, "Export earnings", "mdi:cash-plus"), MoneyTotal(coord, entry, MONEY_SAVED, "Battery savings", "mdi:piggy-bank-outline"),
          HomeBattery(coord, entry), DailyShare(coord, entry, "self_consumption", "Solar self-consumption today"),
          DailyShare(coord, entry, "cheap_share", "Cheap-rate share of grid import today")])
     known: set[str] = set()
@@ -40,6 +42,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
                      EnergyTotal(coord, entry, f"bat:{c.device_id}_in", f"{c.name} energy charged"),
                      EnergyTotal(coord, entry, f"bat:{c.device_id}_out", f"{c.name} energy discharged"),
                      Efficiency(coord, entry, c.device_id, c.name), Cycles(coord, entry, c.device_id, c.name, c.caps.capacity_wh)]
+            if c.extra.get("house_meter"):     # Anker X1: the inverter's own PV inputs
+                ents.append(PvTotal(coord, entry, c.device_id, c.name))
+                for i in range(8):
+                    ents += [PvString(coord, entry, c.device_id, c.name, i, kind) for kind in ("voltage", "current", "power")]
         add(ents)
 
     _sync()
@@ -181,6 +187,45 @@ class BatteryDevicePower(_BatteryBase):
         return None if a is None or a.power_w is None else round(a.power_w)
 
 
+class PvTotal(_BatteryBase):
+    """X1: total solar power at the inverter's PV inputs (register 10183)."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+
+    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+        super().__init__(coord, entry, device_id, name, "pv_total", "PV input power")
+
+    @property
+    def native_value(self):
+        a = self._actual()
+        return None if a is None or a.pv_total_w is None else round(a.pv_total_w)
+
+
+class PvString(_BatteryBase):
+    """X1: one PV string's voltage, current or power (V x A). Strings 5-8 are off until you enable them."""
+
+    _KINDS = {"voltage": (SensorDeviceClass.VOLTAGE, UnitOfElectricPotential.VOLT, 1),
+              "current": (SensorDeviceClass.CURRENT, UnitOfElectricCurrent.AMPERE, 2),
+              "power": (SensorDeviceClass.POWER, UnitOfPower.WATT, 0)}
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coord, entry, device_id: str, name: str, index: int, kind: str) -> None:
+        super().__init__(coord, entry, device_id, name, f"pv{index + 1}_{kind}", f"PV{index + 1} {kind}")
+        self._i, self._kind = index, kind
+        self._attr_device_class, self._attr_native_unit_of_measurement, self._digits = self._KINDS[kind]
+        self._attr_entity_registry_enabled_default = index < 4
+
+    @property
+    def native_value(self):
+        a = self._actual()
+        if a is None or len(a.pv_strings) <= self._i:
+            return None
+        v, amps = a.pv_strings[self._i]
+        return round({"voltage": v, "current": amps, "power": v * amps}[self._kind], self._digits)
+
+
 class EnergyTotal(_Base):
     """Lifetime kWh. Add these to the HA Energy dashboard (battery charged / discharged, grid, solar)."""
 
@@ -223,6 +268,30 @@ class Savings(_Base):
         now = dt_util.now()
         key = now.strftime("%Y-%m-%d") if self._period == "today" else now.strftime("%Y-%m")
         return round(self.coordinator.ledger.saved(key), 2) + 0.0   # + 0.0 turns -0.0 into 0.0
+
+
+class MoneyTotal(_Base):
+    """A lifetime money total Home Assistant keeps long-term statistics of: export earnings (every kWh sent to the grid at the
+    export price then: usable as the Energy dashboard's export compensation) or the batteries' estimated savings. In Home
+    Assistant's own currency (Settings > System > General), so the Energy dashboard accepts it."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coord, entry, key: str, name: str, icon: str) -> None:
+        super().__init__(coord, entry)
+        self._key = key
+        self._attr_name, self._attr_icon = name, icon
+        self._attr_unique_id = f"{entry.entry_id}_{key.replace(':', '_')}_total"
+
+    @property
+    def native_unit_of_measurement(self):
+        return getattr(self.coordinator.hass.config, "currency", None) or "GBP"
+
+    @property
+    def native_value(self):
+        return round(self.coordinator.meter.totals.get(self._key, 0.0), 4) + 0.0
 
 
 class PriceNow(_Base):

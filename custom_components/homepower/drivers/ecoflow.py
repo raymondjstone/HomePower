@@ -295,7 +295,25 @@ class EcoFlowStreamDriver:
             mode=EcoFlowStreamDriver._mode(reserve, soc, min_soc),
             grid_w=_first(q, "powGetSysGrid", "gridPwr", "gridConnectionPower"),
             pv_w=_first(q, "powGetPvSum", "pvPwr"), load_w=_first(q, "powGetSysLoad", "loadPwr"),
+            pv_strings=EcoFlowStreamDriver._strings(q),
         )
+
+    @staticmethod
+    def _strings(q: dict) -> tuple:
+        """Each solar input's (volts, amps): plugInInfoPvVol / Amp for input 1, plugInInfoPv2Vol ... for 2-4 (named as the
+        Ecoflow-Cloud integration names them). () when the battery sends none of them; missing inputs read as (0, 0)."""
+        out, seen = [], False
+        for n in ("", "2", "3", "4"):
+            v, a = q.get(f"plugInInfoPv{n}Vol"), q.get(f"plugInInfoPv{n}Amp")
+            try:
+                v, a = float(v), float(a)
+                if v != v or a != a or abs(v) == float("inf") or abs(a) == float("inf"):
+                    raise ValueError
+                seen = True
+            except (TypeError, ValueError):
+                v, a = 0.0, 0.0
+            out.append((max(0.0, v), max(0.0, a)))
+        return tuple(out + [(0.0, 0.0)] * 4) if seen else ()
 
     def _held_at_floor(self, actual: Actual) -> Actual:
         """A battery HomePower is holding that sits at its own floor reads as Auto (its reserve cannot go lower), but it cannot

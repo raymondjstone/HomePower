@@ -20,6 +20,8 @@ from .core.settings import DEFAULTS, SettingsError, clean
 FLOW_SETTING_KEYS = ("import_limit_w", "peak_shaving", "export_limit_w", "grid_import_entity", "grid_export_entity", "rates_entity", "price_peak",
                      "price_offpeak", "offpeak_start", "offpeak_end", "offpeak_auto", "forecast_entity", "backup_reserve_pct", "storm_entity",
                      "away_entity", "notify_service")
+MONEY_SETTING_KEYS = ("export_price", "export_rates_entity", "export_discharge", "export_keep_pct", "hold_for_dearer", "wear_cost",
+                      "event_entity", "event_charge_pct")
 DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 MODE_OPTIONS = [
     {"value": "auto", "label": "Auto (hand back to the battery)"},
@@ -82,7 +84,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         mgr = self._mgr()
         if mgr is None:
             return self.async_abort(reason="not_loaded")
-        menu = ["add_battery", "add_schedule", "add_goal", "settings"]
+        menu = ["add_battery", "add_schedule", "add_goal", "settings", "money"]
         if mgr.devices:
             menu += ["control_battery", "remove_battery"]
         if mgr.schedules:
@@ -400,6 +402,38 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             opt("storm_entity", ent(["binary_sensor", "input_boolean", "switch"])): ent(["binary_sensor", "input_boolean", "switch"]),
             opt("away_entity", ent(["binary_sensor", "input_boolean", "person", "device_tracker"])): ent(["binary_sensor", "input_boolean", "person", "device_tracker"]),
             opt("notify_service", str): str,
+        }))
+
+    async def async_step_money(self, user_input=None):
+        """Paid export, battery wear, keeping energy for dearer hours, and grid events (saving sessions)."""
+        cur = {**DEFAULTS, **self.config_entry.options}
+        if user_input is not None:
+            try:
+                full = {k: user_input.get(k, False if isinstance(DEFAULTS[k], bool) else "") for k in MONEY_SETTING_KEYS}
+                ev = full.get("event_entity")
+                if isinstance(ev, list):                  # the entity picker gives a list; HomePower keeps them comma-separated
+                    full["event_entity"] = ", ".join(str(e) for e in ev if e)
+                new = clean({k: ("" if v is None else v) for k, v in full.items()})
+            except SettingsError as err:
+                return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
+            return self.async_create_entry(data={**self.config_entry.options, **new})
+
+        def opt(key, default=None):
+            d = cur.get(key)
+            if key == "event_entity":
+                d = [e.strip() for e in str(d or "").split(",") if e.strip()]
+            return vol.Optional(key, description={"suggested_value": d if d not in (None, "", []) else default})
+
+        events = sel.EntitySelector(sel.EntitySelectorConfig(domain=["binary_sensor", "calendar", "event", "input_boolean"], multiple=True))
+        return self.async_show_form(step_id="money", data_schema=vol.Schema({
+            opt("export_price"): _num(0, 1000, None, 0.01),
+            opt("export_rates_entity"): sel.EntitySelector(sel.EntitySelectorConfig(domain=["sensor", "event"])),
+            opt("export_discharge"): bool,
+            opt("export_keep_pct"): _num(0, 100, "%"),
+            opt("hold_for_dearer"): bool,
+            opt("wear_cost"): _num(0, 1000, None, 0.001),
+            opt("event_entity"): events,
+            opt("event_charge_pct"): _num(0, 100, "%"),
         }))
 
     # ---------------------------------------------------------------- remove

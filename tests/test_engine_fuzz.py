@@ -2,6 +2,7 @@
 import random
 from datetime import datetime, time, timedelta, timezone
 
+from core.dayplan import DayPlan
 from core.engine import DevIn, Settings, World, compute
 from core.goals import Goal
 from core.models import Actual, Capabilities, Desired, DeviceConfig, Mode
@@ -45,7 +46,8 @@ def rand_world(rng: random.Random) -> World:
     st = Settings(charge_cap_w=rng.choice([None, 2000, 6000]), discharge_cap_w=rng.choice([None, 2500]),
                   import_limit_w=rng.choice([None, 7000, 3000]), export_limit_w=rng.choice([None, 2000]),
                   zero_import_device=rng.choice([None] + ids), peak_shaving=rng.random() < 0.5,
-                  backup_pct=rng.choice([30, 50]), save_for_peak=rng.random() < 0.4)
+                  backup_pct=rng.choice([30, 50]), save_for_peak=rng.random() < 0.4,
+                  export_discharge=rng.random() < 0.4, wear_cost=rng.choice([0.0, 0.05]))
     return World(
         now=now, devices=devs, settings=st, schedules=scheds, goals=goals,
         overrides={rng.choice(ids): Desired(rng.choice(list(Mode)), rng.choice([None, 800]))} if rng.random() < 0.15 else {},
@@ -56,6 +58,9 @@ def rand_world(rng: random.Random) -> World:
         rates=rng.choice([None, RateTable(peak=30.0, offpeak=7.5, offpeak_start=time(23, 30), offpeak_end=time(5, 30))]),
         forecast_kwh=rng.choice([None, 4.0, 20.0]),
         solar_ceiling={i: rng.randint(10, 99) for i in ids if rng.random() < 0.4},
+        export_price_now=rng.choice([None, 0.04, 0.3]), buyback_price=rng.choice([None, -0.02, 0.07, 0.3]),
+        export_keep_pct=rng.choice([0, 30, 60]), grid_event=rng.random() < 0.15,
+        day_plan=rng.choice([None, None, DayPlan(export_now_w=rng.choice([0, 800, 9000]), hold_now=rng.random() < 0.5)]),
     )
 
 
@@ -83,6 +88,15 @@ def test_engine_invariants_hold_for_random_worlds():
                     assert d.actual.soc > floor, f"{ctx}: discharge at soc {d.actual.soc} <= floor {floor} ({reason})"
                 if "discharge" in w.load_blocks:
                     assert reason in ("manual override", "backup reserve"), f"{ctx}: discharge despite load rule ({reason})"
+                if reason.startswith("paid export"):
+                    assert w.settings.export_discharge and d.controllable and caps.power_control, f"{ctx}: paid export on an unusable battery"
+                    assert d.actual.soc > max(caps.min_soc, w.export_keep_pct), f"{ctx}: paid export below the keep level"
+                if reason.startswith("grid event"):
+                    assert w.grid_event and d.controllable, f"{ctx}: grid event discharge without an event"
+            if w.grid_event and want.mode is Mode.CHARGE:
+                # the export limit charges from power that would otherwise go out over the limit, never from the grid
+                assert r.reasons[did] in ("manual override", "backup reserve", "export limit") or not d.controllable or not d.actual.online, \
+                    f"{ctx}: charging during a grid event ({r.reasons[did]})"
             if want.mode is Mode.CHARGE and "charge" in w.load_blocks:
                 assert r.reasons[did] in ("manual override", "backup reserve"), f"{ctx}: charge despite load rule"
             if want.mode is not Mode.AUTO and r.reasons[did] in ("peak shaving", "export limit"):

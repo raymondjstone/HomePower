@@ -14,3 +14,15 @@ jobs:
           python-version: "3.13"
       - run: python -m pip install pytest pillow pyyaml
       - run: python -m pytest -q
+
+  # The same code against the real Home Assistant classes and a simulated battery (tests/ha_harness/README.md).
+  ha-harness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: python -m pip install homeassistant pytest paho-mqtt
+      - run: python tests/ha_harness/run_all.py

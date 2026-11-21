@@ -61,16 +61,16 @@ class Ledger:
 
     def add(self, day: str, device_id: str, charged_kwh: float, grid_share: float, discharged_kwh: float,
             export_share: float, price: float | None, export_price: float, stored_kwh: float | None,
-            first_cost: float | None = None) -> None:
+            first_cost: float | None = None) -> float:
         """One step for one battery. `grid_share` = fraction of the charging that came from the grid (the rest was solar);
         `export_share` = fraction of the discharge that went out to the grid rather than into the house; `stored_kwh` =
         energy in the battery now, from its charge level (None if unknown); `first_cost` = what to assume the energy
-        already in a battery cost when it is first seen (the cheapest rate around)."""
+        already in a battery cost when it is first seen (the cheapest rate around). Returns the savings this step added."""
         st = self.stores.get(device_id)
         if price is None:
             if st is not None and stored_kwh is not None:
                 st[0] = stored_kwh             # follow the level; the cost per kWh is unchanged
-            return
+            return 0.0
         if st is None:
             st = self.stores[device_id] = [stored_kwh or 0.0, price if first_cost is None else first_cost]
         kwh, avg = st
@@ -86,15 +86,18 @@ class Ledger:
             st[1] = price * share              # empty battery: the next energy in sets the cost
         st[0] = new_kwh
         if charged_kwh <= 0 and discharged_kwh <= 0:
-            return
+            return 0.0
         d = self.days.setdefault(day, {"charged": 0.0, "discharged": 0.0, "cost": 0.0, "value": 0.0})
+        cost = discharged_kwh * avg                                               # what the energy used had cost to store
+        value = discharged_kwh * ((1 - exp) * price + exp * export_price)        # the import it replaced, or export earnings
         d["charged"] += charged_kwh
         d["discharged"] += discharged_kwh
-        d["cost"] += discharged_kwh * avg                                         # what the energy used had cost to store
-        d["value"] += discharged_kwh * ((1 - exp) * price + exp * export_price)   # the import it replaced, or export earnings
+        d["cost"] += cost
+        d["value"] += value
         d["bought"] = d.get("bought", 0.0) + charged_kwh * share * price          # spent on grid charging (shown, not netted)
         for old in sorted(self.days)[:-self.KEEP_DAYS]:
             del self.days[old]
+        return value - cost
 
     def forget(self, keep: set[str]) -> None:
         for did in [d for d in self.stores if d not in keep]:

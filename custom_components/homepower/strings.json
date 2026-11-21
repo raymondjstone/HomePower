@@ -25,7 +25,8 @@
           "add_goal": "Add a goal (be at X% by a time)",
           "remove_goal": "Remove a goal",
           "settings": "Settings (limits, tariff, forecast, backup)",
-          "edit_schedule": "Change a schedule"
+          "edit_schedule": "Change a schedule",
+          "money": "Prices, export and grid events"
         }
       },
       "add_battery": {
@@ -216,6 +217,20 @@
           "source": "Charge from (charge schedules only)",
           "enabled": "Schedule is switched on"
         }
+      },
+      "money": {
+        "title": "Prices, export and grid events",
+        "description": "Paid export and the day plan, battery wear, and saving sessions. Prices are in the same unit as your tariff. The HomePower panel's Plan tab shows what is planned.",
+        "data": {
+          "export_price": "Export price (what you are paid per kWh, used when there is no export price sensor)",
+          "export_rates_entity": "Export price sensor (Agile Outgoing, Flux, Nord Pool...)",
+          "export_discharge": "Discharge to the grid in the best-paid half-hours when exporting pays more than buying the energy back",
+          "export_keep_pct": "...but never below (%)",
+          "hold_for_dearer": "Keep stored energy for dearer hours (hold while the plan keeps it for later)",
+          "wear_cost": "Battery wear per kWh (battery price / (capacity kWh x rated cycles))",
+          "event_entity": "Grid events: run the house from the batteries while any of these is on (saving sessions)",
+          "event_charge_pct": "Charge up to (%) before the next event starts (0 = don't; needs a calendar or the Octopus Energy saving-session sensor)"
+        }
       }
     },
     "error": {
@@ -276,6 +291,45 @@
         "name": {
           "name": "Scene",
           "description": "The scene's name."
+        }
+      }
+    }
+  },
+  "issues": {
+    "alert": {
+      "title": "HomePower: {title}",
+      "description": "{message}\n\nThis clears by itself once the problem is gone. HomePower's panel (Diagnostics) has more detail."
+    },
+    "alert_fix_battery": {
+      "title": "HomePower: {title}",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Fix: {title}",
+            "description": "{message}\n\nRun HomePower's control test on this battery (a small charge or discharge, then it is handed back), or stop HomePower sending it commands (it keeps being read).",
+            "menu_options": {
+              "test": "Run Test control now",
+              "monitor": "Switch this battery to monitor-only"
+            }
+          }
+        },
+        "abort": {
+          "test_failed": "The control test did not pass: {steps}. Check the battery's own app for a mode or schedule overriding HomePower, or switch it to monitor-only.",
+          "not_ready": "HomePower is still starting, or the battery is gone. Try again in a minute."
+        }
+      }
+    },
+    "alert_fix_tariff": {
+      "title": "HomePower: {title}",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Use the cheap hours from the price history?",
+            "description": "{message}\n\nSubmit to clear the cheap-rate start and end typed in HomePower's settings, so the hours found in your tariff's price history are used instead. You can type them again at any time."
+          }
+        },
+        "abort": {
+          "not_ready": "HomePower is not set up."
         }
       }
     }

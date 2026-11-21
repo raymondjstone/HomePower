@@ -185,6 +185,22 @@ def test_x1_grid_limits_only_ever_tighten_and_skip_what_is_already_right():
     asyncio.run(go())
 
 
+def test_x1_pv_strings_voltage_current_and_total_power():
+    async def go():
+        async with fake_anker() as dev:
+            dev.inp[10167], dev.inp[10168] = 3652, 512            # PV1: 365.2 V, 5.12 A
+            dev.inp[10169], dev.inp[10170] = 3010, 250            # PV2: 301.0 V, 2.50 A
+            dev.inp[10183], dev.inp[10184] = 0, 2623              # total 2623 W (word order is learned from the real registers)
+            d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            try:
+                a = await d.read()
+                assert a.pv_strings[0] == (365.2, 5.12) and a.pv_strings[1] == (301.0, 2.5) and a.pv_strings[2] == (0.0, 0.0)
+                assert len(a.pv_strings) == 8 and a.pv_total_w == 2623.0
+            finally:
+                await d.close()
+    asyncio.run(go())
+
+
 def test_x1_extras_from_anker_register_document():
     from core.anker_x1_map import alarm_texts, describe_all
     async def go():

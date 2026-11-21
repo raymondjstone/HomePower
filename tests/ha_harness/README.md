@@ -5,6 +5,11 @@ coordinator/manager, Home Assistant's own form and websocket machinery) and a si
 socket. They are not part of the normal `pytest` run because they need Home Assistant installed:
 
     pip install homeassistant pytest      # Linux / macOS / WSL; on Windows the classes import and run too
+    python tests/ha_harness/run_all.py    # every script below, one line each (also run by GitHub Actions on each push)
+
+Each script imports `_harness.py`, which stops Python 3.12+'s `Server.wait_closed()` waiting for the connection HomePower keeps
+open to the simulated battery (without it most scripts hang at the end). The scripts one by one:
+
     python tests/ha_harness/check_imports.py
     python tests/ha_harness/configure_flows.py
     python tests/ha_harness/e2e_control_loop.py
@@ -24,6 +29,7 @@ socket. They are not part of the normal `pytest` run because they need Home Assi
     python tests/ha_harness/e2e_handback_retry.py   # a forced battery is always handed back, even after failures
     python tests/ha_harness/e2e_restore_junk.py   # a damaged or hostile backup file restores safely
     python tests/ha_harness/e2e_soak.py        # a simulated day of cycles: speed and growth (SOAK_CYCLES=... to change)
+    python tests/ha_harness/e2e_export_events_repairs.py   # paid export, wear cost, a saving session, Repairs, the hardware report, X1 solar strings
 
 What they cover: every module imports and every Home Assistant function used has the signature HomePower calls;
 the Configure flow for every battery model; the whole control loop (monitor-only, control, hand-back, override,

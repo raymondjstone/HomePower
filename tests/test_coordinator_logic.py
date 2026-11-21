@@ -24,6 +24,7 @@ def _stub_homeassistant():
     dt = mods["homeassistant.util.dt"]
     dt.now = lambda: datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
     dt.UTC = timezone.utc
+    dt.DEFAULT_TIME_ZONE = timezone.utc
     mods["homeassistant.util"].dt = dt
     sys.modules.update(mods)
 
@@ -33,6 +34,7 @@ coordinator = pytest.importorskip("hp.coordinator")
 
 from hp.core.models import Actual, Capabilities, Desired, DeviceConfig, Mode  # noqa: E402
 from hp.core.insights import PlanLog  # noqa: E402
+from hp.core.pv_health import PvHealth  # noqa: E402
 from hp.core.sanity import CommandBudget, RateLearner  # noqa: E402
 from hp.core.traces import CommandTrace  # noqa: E402
 
@@ -68,6 +70,7 @@ def bare(manager=None):
     c.manager = manager or FakeManager()
     c.rate_learner, c.traces, c.budget = RateLearner(), CommandTrace(), CommandBudget()
     c.plan_log = PlanLog()
+    c.pv_health = PvHealth()
     c._snap = coordinator.Snapshot()
     c.last_grid = 120.0
     c._log = lambda *a, **k: None
@@ -295,3 +298,73 @@ def test_auto_price_unit_is_decided_by_the_whole_table():
 def test_a_device_reading_with_nan_is_cleaned_before_the_engine_sees_it():
     a = coordinator.HomePowerCoordinator._finite(Actual(online=True, soc=50.0, power_w=float("inf"), grid_w=float("nan"), pv_w=100.0))
     assert a.soc == 50.0 and a.power_w is None and a.grid_w is None and a.pv_w == 100.0
+
+
+def test_export_price_comes_from_the_export_sensor_then_the_fixed_price_and_counts_in_the_unit():
+    from datetime import datetime, timedelta, timezone
+    from hp.core.rates import RateTable, Slot
+    t0 = datetime(2026, 11, 18, 16, 0, tzinfo=timezone.utc)
+    c = bare()
+    c.settings = types.SimpleNamespace(rates_unit="auto", export_price=15.0, wear_cost=6.0, export_keep_pct=20)
+    imp = RateTable([Slot(t0 + timedelta(minutes=30 * i), t0 + timedelta(minutes=30 * (i + 1)), p) for i, p in enumerate([30.0, 30.0, 7.0, 7.0])])
+    c._exp_table = None
+    assert c._export_price_now(imp, t0) == 0.15                     # the fixed export price, pence -> pounds
+    c._exp_table = RateTable([Slot(t0, t0 + timedelta(minutes=30), 28.0)])
+    assert c._export_price_now(imp, t0) == 0.28                     # the export sensor's slot wins
+    assert c._export_price_now(imp, t0 + timedelta(hours=1)) == 0.15  # outside its slots: the fixed price again
+    assert abs(c._wear(imp) - 0.06) < 1e-9 and c._buyback_price(imp, t0) == 0.07
+    c.settings.wear_cost = None
+    assert c._wear(imp) == 0.0
+
+
+def test_export_keep_level_covers_the_usual_use_until_the_cheapest_price():
+    from datetime import datetime, timedelta, timezone
+    from hp.core.rates import RateTable, Slot
+    t0 = datetime(2026, 11, 18, 16, 0, tzinfo=timezone.utc)
+    c = bare()
+    c.settings = types.SimpleNamespace(rates_unit="main", export_price=None, export_keep_pct=20)
+    c.adapters = [FakeAdapter(eco_cfg(power_control=True), None)]          # 5 kWh, minimum 10 %
+    rates = RateTable([Slot(t0 + timedelta(hours=i), t0 + timedelta(hours=i + 1), 0.07 if i == 4 else 0.3) for i in range(6)])
+    c.profile = types.SimpleNamespace(expected_wh=lambda start, hours: 500.0 * hours)   # 0.5 kW until the cheap slot 4 h away
+    assert c._export_keep_pct(rates, t0) == 10 + 40                        # 2 kWh of 5 kWh, above the battery's minimum
+    c.profile = types.SimpleNamespace(expected_wh=lambda start, hours: None)          # not learned yet: the setting holds
+    assert c._export_keep_pct(rates, t0) == 20
+    assert c._export_keep_pct(None, t0) == 20
+
+
+def test_lasting_problems_get_stable_repair_ids_and_fall_back_to_notifications_without_repairs():
+    a, b = coordinator.repair_id("offline:garage"), coordinator.repair_id("offline:garage_2")
+    assert a != b and a == coordinator.repair_id("offline:garage") and a.startswith("offline_garage_")
+    assert set(coordinator.repair_id("alarm:x1:Meter 1 comms failure (A6)")) <= set("abcdefghijklmnopqrstuvwxyz0123456789_")
+    c = bare()
+    c.hass = None
+    assert c._repair("offline:garage", "Garage is offline", True) is False        # Repairs not available here: notify instead
+    assert c._repair("summary_20261118", "daily summary", True) is False           # not a lasting problem
+
+
+def test_load_rules_read_kilowatt_sensors_in_watts():
+    c = bare()
+    st = {"sensor.ohme_power": types.SimpleNamespace(state="7.2", attributes={"unit_of_measurement": "kW"}),
+          "sensor.heat_pump_power": types.SimpleNamespace(state="900", attributes={"unit_of_measurement": "W"}),
+          "sensor.broken": types.SimpleNamespace(state="unavailable", attributes={"unit_of_measurement": "kW"}),
+          "sensor.nan": types.SimpleNamespace(state="nan", attributes={})}
+    c.hass = types.SimpleNamespace(states=types.SimpleNamespace(get=st.get))
+    c.settings = types.SimpleNamespace(load_rules=[{"entity": "sensor.ohme_power", "block": "discharge", "above_w": 1000.0},
+                                                   {"entity": "sensor.heat_pump_power", "block": "charge", "above_w": 1000.0},
+                                                   {"entity": "sensor.broken", "block": "both", "above_w": 1.0},
+                                                   {"entity": "sensor.nan", "block": "both", "above_w": 1.0}])
+    assert c._load_blocks() == {"discharge"}                 # 7.2 kW is busy; 900 W is not; unreadable ones are not
+
+
+def test_grid_event_ignores_an_all_day_calendar_entry():
+    c = bare()
+    st = {"calendar.saving": types.SimpleNamespace(state="on", attributes={"all_day": True, "start_time": "2026-03-01 00:00:00", "end_time": "2026-03-02 00:00:00"}),
+          "binary_sensor.octo": types.SimpleNamespace(state="off", attributes={})}
+    c.hass = types.SimpleNamespace(states=types.SimpleNamespace(get=st.get))
+    c.settings = types.SimpleNamespace(event_entity="calendar.saving, binary_sensor.octo")
+    assert c._grid_event_on() is False
+    st["calendar.saving"] = types.SimpleNamespace(state="on", attributes={"start_time": "2026-03-01 11:30:00", "end_time": "2026-03-01 12:30:00"})
+    assert c._grid_event_on() is True
+    st["calendar.saving"] = types.SimpleNamespace(state="off", attributes={})
+    st["binary_sensor.octo"] = types.SimpleNamespace(state="on", attributes={})
+    assert c._grid_event_on() is True

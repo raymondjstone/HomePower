@@ -2,7 +2,7 @@
    The panel is split over several files (panel-*.js). Each adds its methods to the class below; they are loaded with
    this file's own ?v= tag so a new version is never mixed with cached old parts. */
 const V = new URL(import.meta.url).search;
-const FILES = ["overview", "charts", "schedules", "batteries", "plan", "insights", "diag", "settings"];
+const FILES = ["overview", "charts", "schedules", "batteries", "details", "plan", "insights", "diag", "settings"];
 const U = await import(`./panel-util.js${V}`);
 const { MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS } = U;
 const PARTS = await Promise.all(FILES.map((f) => import(`./panel-${f}.js${V}`)));
@@ -248,12 +248,14 @@ class HomePowerPanel extends HTMLElement {
         if (await this._call({ type: "homepower/safe", enabled: next }, (m) => alert(m))) { this._keepForm = true; await this._reload(); this._keepForm = false; }
         return;
       }
-      case "download-debug": {
-        const r = await this._call({ type: "homepower/debug" }, (m) => alert(m), true);
+      case "download-debug":
+      case "download-hw-report": {
+        const hw = act === "download-hw-report";
+        const r = await this._call({ type: hw ? "homepower/hardware_report" : "homepower/debug" }, (m) => alert(m), true);
         if (!r) return;
         const a = document.createElement("a");
         a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" }));
-        a.download = `homepower-debug-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `homepower-${hw ? "hardware-report" : "debug"}-${new Date().toISOString().slice(0, 10)}.json`;
         a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
         return;
       }
