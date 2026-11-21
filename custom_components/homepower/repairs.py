@@ -29,6 +29,7 @@ class BatteryFix(RepairsFlow):
         steps = "; ".join(f"{s['name']}: {'ok' if s['ok'] else 'failed'}" + (f" ({s['detail']})" if s.get("detail") and not s["ok"] else "")
                           for s in res.get("steps", []))
         if res.get("ok"):
+            mgr.coordinator.repair_done(self._did, tested_ok=True)     # Home Assistant drops the issue: raise it again if it carries on
             return self.async_create_entry(data={})
         return self.async_abort(reason="test_failed", description_placeholders={"steps": steps or "no steps ran"})
 
@@ -38,6 +39,8 @@ class BatteryFix(RepairsFlow):
         if dev is None:
             return self.async_abort(reason="not_ready")
         await mgr.save_device({**dev, "control_enabled": False})       # hands it back to its own control and sends nothing more
+        if mgr.coordinator is not None:
+            mgr.coordinator.repair_done(self._did)
         return self.async_create_entry(data={})
 
 

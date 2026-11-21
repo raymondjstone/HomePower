@@ -507,6 +507,17 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         clearly above the house's own ups and downs; 300 W for a few seconds either way is harmless)."""
         return 300 if a.config.extra.get("driver") == "ecoflow_modbus" else 100
 
+    def repair_done(self, device_id: str, tested_ok: bool = False) -> None:
+        """A Repairs fix for this battery finished, and Home Assistant removed the issue. Its alerts are forgotten so they are
+        raised again (with a new issue) if the problem carries on; after a passed test the old count of missed commands goes."""
+        for kind in ("unconfirmed", "stuck"):
+            self.alerts.forget(f"{kind}:{device_id}")
+        if tested_ok:
+            st = self._snap.devices.get(device_id)
+            if st is not None:
+                st.unconfirmed = 0
+            self.charge_watch.forget(device_id)
+
     async def test_control(self, device_id: str) -> dict:
         """Send a tiny safe command, check the battery follows it, then hand it back. Pauses normal control of it."""
         a = next((x for x in self.adapters if x.config.device_id == device_id), None)

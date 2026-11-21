@@ -210,12 +210,15 @@ p.live.alerts = [];
   const t0 = Date.now() - 600e3, iso = (i) => new Date(t0 + i * 1800e3).toISOString();
   p._preview = { segments: {}, conflicts: [], notes: [], plan: [],
     prices: Array.from({ length: 12 }, (_, i) => ({ start: iso(i), end: iso(i + 1), price: i === 4 ? 0.35 : 0.2, cheap: false })),
-    day_plan: { until: iso(8), budget_wh: 3000, used_wh: 1800, threshold: 0.082, export_now_w: 0, hold_now: true,
+    day_plan: { until: iso(8), budget_wh: 3000, used_wh: 1800, threshold: 0.082, export_now_w: 0, hold_now: true, holds: true,
       slots: Array.from({ length: 8 }, (_, i) => ({ start: iso(i), end: iso(i + 1), import: 0.2, export: 0.15, load_wh: 200, house_wh: i === 0 ? 0 : 200, export_wh: i === 4 ? 1500 : 0 })) },
     events: [{ start: iso(6), end: iso(8) }] };
   const ch = p._priceChart();
   must("price chart shows planned export, kept energy and the grid event", ch.includes("Exporting planned") && ch.includes("exporting about") && ch.includes("kept for dearer hours")
     && ch.includes("Grid event (saving session)") && ch.includes("Stored energy:"));
+  p._preview.day_plan.holds = false;                    // export only: the half-hours left out are not held, so nothing says 'kept'
+  const ch2 = p._priceChart();
+  must("without 'keep for dearer hours' nothing is shown as kept", ch2.includes("Exporting planned") && !ch2.includes("kept for dearer hours") && !ch2.includes("Kept for dearer hours"));
   const pvh = p._pvHtml({ total_w: 3600, strings: [{ string: 1, state: "ok", volts: 360, amps: 5, watts: 1800, today_share: 50, usual_share: 50 },
     { string: 2, state: "dead", volts: 301, amps: 0, watts: 0, note: "PV2 has given almost nothing" }, { string: 3, state: "unused" }] });
   must("solar strings table (details sheet part)", pvh.includes("PV1") && pvh.includes("Not producing") && !pvh.includes("PV3") && pvh.includes("All strings"));

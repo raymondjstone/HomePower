@@ -204,6 +204,7 @@ async def main():
     print("configure: prices, export and events form saves")
 
     # ---- a fix from Repairs: 'not following commands' -> switch the battery to monitor-only
+    assert coord.alerts.observe("unconfirmed:a", True, 0.0) == "raised"
     await coord._notify("unconfirmed:a", "A is not following HomePower's commands.", True)
     iss = next(i for (d, k), i in ir.async_get(hass).issues.items() if d == "homepower" and k.startswith("unconfirmed_a_"))
     assert iss.is_fixable and iss.data["device_id"] == "a" and iss.translation_key == "alert_fix_battery", iss
@@ -214,6 +215,9 @@ async def main():
     assert menu["type"] == "menu" and menu["menu_options"] == ["test", "monitor"]
     done = await flow.async_step_monitor()
     assert done["type"] == "create_entry" and mgr.devices["a"]["control_enabled"] is False
+    # Home Assistant removes the issue when the fix finishes: the alert is forgotten too, so it is raised again if it carries on
+    assert "unconfirmed:a" not in mgr.coordinator.alerts.active(), mgr.coordinator.alerts.active()
+    assert mgr.coordinator.alerts.observe("unconfirmed:a", True, 1.0) == "raised"
     tflow = await repairs.async_create_fix_flow(hass, "t", {"fix": "tariff", "message": "m"})
     tflow.hass = hass
     entry_opts = {}

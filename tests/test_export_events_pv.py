@@ -247,3 +247,29 @@ def test_a_dead_string_stays_flagged_through_a_cloud_and_clears_only_when_it_pro
     assert list(pv.warnings("x1", "2026-06-05", t)) == [3]                     # still flagged, not cleared by the cloud
     pv.observe("x1", "2026-06-05", _strings(1000, 1000, 500), t)
     assert pv.warnings("x1", "2026-06-05", t) == {}
+
+
+def test_a_string_quiet_at_dusk_is_not_called_dead_through_the_night():
+    """Only quiet time in good light counts: ten minutes of nothing at dusk, then darkness all night, is not 'dead'."""
+    pv, t = PvHealth(), 0.0
+    for d in range(1, 5):
+        t = _sunny_day(pv, "x1", f"2026-06-0{d}", (1000, 1000, 500), t + 3600)
+    t += 3600
+    quiet = ((300.0, 1000 / 300), (300.0, 1000 / 300), (301.0, 0.0)) + ((0.0, 0.0),) * 5
+    for _ in range(10):
+        pv.observe("x1", "2026-06-05", quiet, t)
+        t += 60
+    dark = ((0.0, 0.0),) * 8
+    for _ in range(600):                                   # ten hours of night
+        pv.observe("x1", "2026-06-05", dark, t)
+        t += 60
+    assert pv.warnings("x1", "2026-06-05", t) == {}
+    for _ in range(15):                                    # quiet again next morning: 9 + 14 counted minutes, still under half an hour
+        pv.observe("x1", "2026-06-06", quiet, t)
+        t += 60
+    assert pv.warnings("x1", "2026-06-06", t) == {}
+    for _ in range(10):
+        pv.observe("x1", "2026-06-06", quiet, t)
+        t += 60
+    assert list(pv.warnings("x1", "2026-06-06", t)) == [3]
+    assert "for 33 min" in pv.warnings("x1", "2026-06-06", t)[3]

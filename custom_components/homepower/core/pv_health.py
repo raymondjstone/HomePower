@@ -54,7 +54,9 @@ class PvHealth:
                         continue
                 self.days[did] = good
         self._last: dict[str, float] = {}           # monotonic time of the last reading per battery
-        self._quiet: dict[tuple[str, int], float] = {}   # (battery, string) -> since when it has given nothing
+        # (battery, string) -> [seconds it has given nothing while the others produced, when that was last seen]. Only time in
+        # good light counts: a string that went quiet at dusk must not count the whole night as 'dead'.
+        self._quiet: dict[tuple[str, int], list[float]] = {}
 
     def dump(self) -> dict:
         return {did: {"used": self.used.get(did, [False] * 8), "days": self.days.get(did, {})}
@@ -99,7 +101,14 @@ class PvHealth:
             elif total < MIN_TOTAL_W:
                 continue                 # too little light to tell: a string already quiet stays quiet (no clear-and-raise with each cloud)
             elif power[i] < DEAD_SHARE * total:
-                self._quiet.setdefault(key, now_s)
+                q = self._quiet.get(key)
+                if q is None:
+                    self._quiet[key] = [0.0, now_s]
+                else:
+                    gap = now_s - q[1]
+                    if 0 < gap <= MAX_STEP_S:          # a longer gap (night, restart, offline) is not counted
+                        q[0] += gap
+                    q[1] = now_s
             else:
                 self._quiet.pop(key, None)
 
@@ -134,10 +143,10 @@ class PvHealth:
                 continue
             item = {"string": i + 1, "today_wh": round(now_row[i]), "today_share": None if now_shares is None else round(now_shares[i] * 100, 1),
                     "usual_share": None if usual[i] is None else round(usual[i] * 100, 1), "state": "ok", "note": ""}
-            since = self._quiet.get((did, i))
-            if since is not None and now_s - since >= DEAD_AFTER_S:
+            quiet = self._quiet.get((did, i))
+            if quiet is not None and quiet[0] >= DEAD_AFTER_S:
                 item["state"] = "dead"
-                item["note"] = f"PV{i + 1} has given almost nothing for {int((now_s - since) // 60)} min while the other strings produce"
+                item["note"] = f"PV{i + 1} has given almost nothing for {int(quiet[0] // 60)} min while the other strings produce"
             elif usual[i] is None:
                 item["state"] = "learning"
             elif (base[i] is not None and base[i] >= MIN_SHARE and len(recent) == 2

@@ -182,7 +182,9 @@ class ReportsMixin:
                       "power_w": p.power_w, "price": p.price} for p in self.last_result.allocs],
             "notes": self.last_result.notes,
             "prices": self._price_slots(now, hours),
-            "day_plan": self.day_plan.as_dict() if getattr(self, "day_plan", None) else None,
+            # 'holds': whether 'keep stored energy for dearer hours' is on, i.e. whether the half-hours left out are really kept
+            "day_plan": ({**self.day_plan.as_dict(), "holds": bool(self.settings.engine.hold_for_dearer)}
+                         if getattr(self, "day_plan", None) else None),
             "events": [{"start": s.isoformat(), "end": e.isoformat()} for s, e in self._event_windows()
                        if e > now and s < now + timedelta(hours=hours)],
         }
