@@ -40,6 +40,16 @@ must("after recovering it subscribes to the live feed", subs.at(-1) === "ok" && 
   must("with the panel's code loaded and the data still coming it still says Loading", /Loading HomePower/.test(slow.shadowRoot.textContent) && !!slow.shadowRoot.querySelector("ha-menu-button"));
   slow.remove();
 }
+{   // a tab that throws while drawing shows what went wrong instead of a blank page, and the tabs stay usable
+  const orig = el._insightsView; el._insightsView = () => { throw new Error("boom in insights"); };
+  const errs = []; const ce = console.error; console.error = (...a) => errs.push(a.join(" "));
+  el.tab = "insights"; el._lastHtml = null; el._render(); el._lastHtml = null; el._render();
+  console.error = ce;
+  const t = el.shadowRoot.getElementById("app").textContent;
+  must("a drawing error shows a message, not a blank page", /could not be shown/.test(t) && /boom in insights/.test(t) && !!el.shadowRoot.querySelector('[data-tab="overview"]'), t.slice(0, 200));
+  must("and it is logged once, not on every refresh", errs.length === 1, String(errs.length));
+  el._insightsView = orig;
+}
 el.tab = "overview"; el._render();
 must("a hostile currency symbol is not injected into the overview", el.shadowRoot.querySelectorAll("#pwn").length === 0);
 el.tab = "batteries"; el._render();

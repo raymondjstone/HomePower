@@ -58,9 +58,10 @@ class HomePowerPanel extends HTMLElement {
 
   // Home Assistant may detach the panel (a hidden tab) and attach the same element again later: pick the live feed up again.
   connectedCallback() {
-    if (!this._loaded || !this._parts || this._unsub || this._timer || !this._hass) return;
-    this._subscribe();
+    if (!this._parts || this._timer || !this._hass) return;          // still starting (_init sets it all up) or never left
     this._timer = setInterval(() => this._tick(false), 2000);
+    if (!this._loaded) return;            // left before the first load worked: the timer retries it, then subscribes
+    this._subscribeIfNeeded();
     this._reload().then(() => this._render());
   }
 
@@ -208,15 +209,25 @@ class HomePowerPanel extends HTMLElement {
     this._lastRender = Date.now();
     const tabs = [["overview", "mdi:view-dashboard", "Overview"], ["plan", "mdi:target", "Plan"], ["schedules", "mdi:calendar-clock", "Schedules"], ["batteries", "mdi:home-battery", "Batteries"], ["insights", "mdi:chart-line", "Insights"], ["settings", "mdi:cog", "Settings"], ["diagnostics", "mdi:stethoscope", "Diagnostics"]];
     let body = "";
-    if (!this._loaded && !this._loadError) body = `<div class="card empty"><h3>Loading HomePower…</h3></div>`;
-    else if (this._loadError) body = `<div class="card empty"><ha-icon icon="mdi:alert-circle"></ha-icon><h3>Couldn't load HomePower</h3>${esc(this._loadError)}</div>`;
-    else if (this.tab === "overview") body = this._overview();
-    else if (this.tab === "schedules") body = this._schedules();
-    else if (this.tab === "batteries") body = this._batteries();
-    else if (this.tab === "plan") body = this._planView();
-    else if (this.tab === "insights") body = this._insightsView();
-    else if (this.tab === "diagnostics") body = this._diagView();
-    else body = this._settingsView();
+    try {
+      if (!this._loaded && !this._loadError) body = `<div class="card empty"><h3>Loading HomePower…</h3></div>`;
+      else if (this._loadError) body = `<div class="card empty"><ha-icon icon="mdi:alert-circle"></ha-icon><h3>Couldn't load HomePower</h3>${esc(this._loadError)}</div>`;
+      else if (this.tab === "overview") body = this._overview();
+      else if (this.tab === "schedules") body = this._schedules();
+      else if (this.tab === "batteries") body = this._batteries();
+      else if (this.tab === "plan") body = this._planView();
+      else if (this.tab === "insights") body = this._insightsView();
+      else if (this.tab === "diagnostics") body = this._diagView();
+      else body = this._settingsView();
+    } catch (e) {
+      // A drawing error must never leave a blank page (it would repeat on every refresh): say what failed, keep the tabs usable.
+      if (String(e) !== this._lastDrawError) { this._lastDrawError = String(e); console.error("HomePower: could not draw the", this.tab, "tab", e); }
+      const where = ((e && e.stack) || "").split("\n").slice(0, 3).join("\n");
+      body = `<div class="card empty"><ha-icon icon="mdi:alert-circle"></ha-icon><h3>This tab could not be shown</h3>
+        <p>Something in the current readings tripped up the ${esc(this.tab)} tab. The other tabs still work, and it is tried again with each update.
+        Please report this message:</p><pre style="white-space:pre-wrap;text-align:left;font-size:12px">${esc(String((e && e.message) || e))}
+${esc(where)}</pre></div>`;
+    }
     const paused = !!this.data.paused;
     const html = `<header><ha-menu-button></ha-menu-button><h1><ha-icon icon="mdi:home-battery"></ha-icon>Home Power</h1>
       <button class="btn sm" data-act="flag" data-flag="backup" data-on="${this.live.backup ? 0 : 1}" title="Keep a reserve for power cuts">${this.live.backup ? "Backup: ON" : "Backup mode"}</button>

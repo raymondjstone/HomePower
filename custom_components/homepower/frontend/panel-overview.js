@@ -95,7 +95,7 @@ export default (U) => {
       ${tile("Stored energy", fmtKwh(stored), `${cap ? Math.round((stored / cap) * 100) : 0}% of ${fmtKwh(cap)}`)}
       ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid sensor set (Settings)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? "#dc2626" : grid < -20 ? MODES.charge.color : "")}
       ${tile("Batteries online", `${online} / ${ds.length}`, "Reading directly from the batteries")}
-      ${this.live.savings ? tile("Saved today", `${esc(this.live.currency || "£")}${(this.live.savings.today).toFixed(2)}`, `This month ${esc(this.live.currency || "£")}${this.live.savings.month.toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? MODES.charge.color : "#dc2626") : ""}
+      ${this.live.savings ? tile("Saved today", `${esc(this.live.currency || "£")}${(+this.live.savings.today || 0).toFixed(2)}`, `This month ${esc(this.live.currency || "£")}${(+this.live.savings.month || 0).toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? MODES.charge.color : "#dc2626") : ""}
       ${this.live.price_now != null ? tile("Price now", `${esc(this.live.currency || "£")}${this.live.price_now.toFixed(3)}/kWh`, "From your rates") : ""}
     </div>`;
     const cards = ds.map((d, i) => this._batCard(d, rd[i], i)).join("");
