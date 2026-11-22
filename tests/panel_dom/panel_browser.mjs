@@ -56,8 +56,9 @@ const server = http.createServer((req, res) => {
   }
   const file = path.join(FRONT, path.basename(url.pathname));
   if (fs.existsSync(file) && fs.statSync(file).isFile()) {
-    res.writeHead(200, { "content-type": types[path.extname(file)] || "application/octet-stream" });
-    return res.end(fs.readFileSync(file));
+    const send = () => { res.writeHead(200, { "content-type": types[path.extname(file)] || "application/octet-stream" }); res.end(fs.readFileSync(file)); };
+    if (/^\/panel-/.test(url.pathname)) return void setTimeout(send, 700);     // a slow connection: the parts arrive late
+    return send();
   }
   res.writeHead(404); res.end("not found");
 });
@@ -77,6 +78,8 @@ page.on("response", (r) => { if (r.status() >= 400) errors.push(`http ${r.status
 
 await page.goto(base);
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 15000 });
+const early = await page.evaluate(() => { const r = window.__panel.shadowRoot; return { text: r.textContent, menu: !!r.querySelector("ha-menu-button") }; });
+must("while the parts are still arriving the panel shows 'Loading' and the sidebar button, not a blank page", /Loading HomePower/.test(early.text) && early.menu, JSON.stringify(early));
 await page.waitForFunction(() => window.__panel._loaded === true, null, { timeout: 15000 });
 
 const parts = ["homepower-panel.js", "panel-util.js", ...["overview", "charts", "schedules", "batteries", "details", "plan", "insights", "diag", "settings"].map((f) => `panel-${f}.js`)];

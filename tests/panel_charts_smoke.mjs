@@ -2,7 +2,7 @@ const els = {};
 globalThis.HTMLElement = class { attachShadow(){ this.shadowRoot = { innerHTML:"", addEventListener(){}, getElementById:(i)=>(els[i] ||= {}), querySelector(){return null}, querySelectorAll(){return []} }; } };
 globalThis.localStorage = { getItem:()=>null, setItem(){} };
 let cls; globalThis.customElements = { define:(n,c)=>cls=c };
-await import("../custom_components/homepower/frontend/homepower-panel.js");
+await import("../custom_components/homepower/frontend/homepower-panel.js"); await cls.ready;
 const p = new cls();
 const now = Date.now();
 p.data = { devices:[{device_id:"a",name:"A"},{device_id:"b",name:"B"}], entity_ids:{devices:{a:{power:"sensor.a_p"}}}, settings:{} };

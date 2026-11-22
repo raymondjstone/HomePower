@@ -3,7 +3,7 @@ const els = {};
 globalThis.HTMLElement = class { attachShadow(){ this.shadowRoot = { innerHTML:"", addEventListener(){}, getElementById:(i)=>(els[i] ||= { innerHTML:"", style:{}, value:"", checked:false, textContent:"" }), querySelector(){return {value:"charge"}}, querySelectorAll(){return []} }; } };
 globalThis.localStorage = { getItem:()=>null, setItem(){} };
 let cls; globalThis.customElements = { define:(n,c)=>cls=c };
-await import("../custom_components/homepower/frontend/homepower-panel.js");
+await import("../custom_components/homepower/frontend/homepower-panel.js"); await cls.ready;
 const p = new cls();
 const dev = (id, n) => ({ device_id: id, name: n, supported_modes: ["auto", "hold"], max_charge_w: 3000, max_discharge_w: 3000, capacity_wh: 10000, min_soc: 10, entities: {} });
 p.data = { devices: [dev("a", "A"), dev("b", "B")], schedules: [], goals: [], settings: {}, scenes: [{ name: "Holiday", backup: false, away: true, paused: false, settings: {} }, { name: "Normal", backup: false, away: false, paused: false, settings: {} }],

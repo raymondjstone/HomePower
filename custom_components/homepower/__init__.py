@@ -156,8 +156,10 @@ async def _async_setup_ui_api(hass: HomeAssistant, domain_data: dict) -> None:
         from . import websocket_api
 
         websocket_api.async_register(hass)
+        # Cached by the browser: every URL carries ASSET_TAG (the version and a hash of the files), so a changed file gets a
+        # new URL. Without caching, each visit to the sidebar panel re-fetched all its files before showing anything.
         await hass.http.async_register_static_paths(
-            [StaticPathConfig(STATIC_URL, str(Path(__file__).parent / "frontend"), cache_headers=False)]
+            [StaticPathConfig(STATIC_URL, str(Path(__file__).parent / "frontend"), cache_headers=True)]
         )
         domain_data["ui_api"] = True
     except Exception as err:  # noqa: BLE001 - UI is optional
