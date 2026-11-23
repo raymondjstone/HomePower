@@ -3,7 +3,7 @@ const els = {};
 globalThis.HTMLElement = class { attachShadow(){ this.shadowRoot = { innerHTML:"", addEventListener(){}, getElementById:(i)=>(els[i] ||= { innerHTML:"", style:{}, value:"", checked:false, addEventListener(){} }), querySelector(){return { innerHTML:"" }}, querySelectorAll(){return []} }; } };
 globalThis.localStorage = { getItem:()=>null, setItem(){} };
 let cls; globalThis.customElements = { define:(n,c)=>cls=c };
-await import("../custom_components/homepower/frontend/homepower-panel.js");
+await import("../custom_components/homepower/frontend/homepower-panel.js"); await cls.ready;
 const p = new cls();
 p.data = { devices: [{ device_id: "x1", name: "My X1" }] };
 p._hass = { callWS: async () => ({ holding: { 10064: 3, 10112: 11825 }, input: { 10014: 100, 10112: 11825, 10113: 11824, 10999: 7 },

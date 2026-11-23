@@ -214,8 +214,8 @@ export default (U) => {
     const tile = (l, v, sub) => `<div class="card tile"><div class="lbl">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`;
     return `<div class="bar-actions"><h2>Insights</h2></div>
       <div class="grid g-tiles">
-        ${tile("Saved today", `${cur}${(L.savings ? L.savings.today : 0).toFixed(2)}`, "Estimate: avoided import minus grid-charging cost")}
-        ${tile("Saved this month", `${cur}${(L.savings ? L.savings.month : 0).toFixed(2)}`, "Needs prices set in Settings")}
+        ${tile("Saved today", `${cur}${(+(L.savings && L.savings.today) || 0).toFixed(2)}`, "Estimate: avoided import minus grid-charging cost")}
+        ${tile("Saved this month", `${cur}${(+(L.savings && L.savings.month) || 0).toFixed(2)}`, "Needs prices set in Settings")}
         ${tile("Grid imported", `${kwh("grid_in")} kWh`, `Exported ${kwh("grid_out")} kWh`)}
         ${tile("Solar", `${kwh("pv_in")} kWh`, "As reported by your batteries")}
         ${L.daily && L.daily.self_consumption != null ? tile("Solar used at home today", `${L.daily.self_consumption}%`, "Not exported to the grid") : ""}

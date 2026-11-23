@@ -19,16 +19,37 @@ let failures = 0;
 const must = (n, ok, x = "") => { console.log(ok ? "ok  " : "FAIL", n, ok ? "" : x); if (!ok) failures++; };
 const evil = '<img src=x id=pwn onerror="window.PWN=1">';
 const get = clone(payload.get); get.live.currency = evil; get.settings.currency = evil; get.live.savings = { today: 1.5, month: 3 };
+const subs = [];
 let fail = true, deleteError = "could not be handed back";
 const el = document.createElement("homepower-panel"); document.body.appendChild(el);
 el.hass = { states: {}, callWS: async (m) => {
   if (m.type === "homepower/get") { if (fail) throw new Error("still starting"); return clone(get); }
   if (m.type === "homepower/device/delete") throw new Error(deleteError);
-  return {}; }, connection: { subscribeMessage: () => Promise.resolve(() => {}) } };
+  return {}; }, connection: { subscribeMessage: () => { subs.push(fail ? "refused" : "ok"); return fail ? Promise.reject(new Error("unknown command")) : Promise.resolve(() => {}); } } };
 await wait(150);
 must("the first load failed and says so", /Couldn't load/.test(el.shadowRoot.textContent));
 fail = false; el._lastTry = 0; el._tick(true); await wait(150);
 must("it retries by itself and recovers", el._loaded === true && !/Couldn't load/.test(el.shadowRoot.textContent), String(el._loadError));
+must("after recovering it subscribes to the live feed", subs.at(-1) === "ok" && !!el._unsub, JSON.stringify(subs));
+{   // while the first data is on its way the page shows the sidebar button and 'Loading', never a blank page
+  const slow = document.createElement("homepower-panel"); document.body.appendChild(slow);
+  slow.hass = { states: {}, callWS: () => new Promise(() => {}), connection: { subscribeMessage: () => Promise.resolve(() => {}) } };
+  const shell = slow.shadowRoot.textContent;
+  must("before anything has loaded it shows a loading page at once", /Loading HomePower/.test(shell) && !!slow.shadowRoot.querySelector("ha-menu-button"), shell);
+  await wait(100);
+  must("with the panel's code loaded and the data still coming it still says Loading", /Loading HomePower/.test(slow.shadowRoot.textContent) && !!slow.shadowRoot.querySelector("ha-menu-button"));
+  slow.remove();
+}
+{   // a tab that throws while drawing shows what went wrong instead of a blank page, and the tabs stay usable
+  const orig = el._insightsView; el._insightsView = () => { throw new Error("boom in insights"); };
+  const errs = []; const ce = console.error; console.error = (...a) => errs.push(a.join(" "));
+  el.tab = "insights"; el._lastHtml = null; el._render(); el._lastHtml = null; el._render();
+  console.error = ce;
+  const t = el.shadowRoot.getElementById("app").textContent;
+  must("a drawing error shows a message, not a blank page", /could not be shown/.test(t) && /boom in insights/.test(t) && !!el.shadowRoot.querySelector('[data-tab="overview"]'), t.slice(0, 200));
+  must("and it is logged once, not on every refresh", errs.length === 1, String(errs.length));
+  el._insightsView = orig;
+}
 el.tab = "overview"; el._render();
 must("a hostile currency symbol is not injected into the overview", el.shadowRoot.querySelectorAll("#pwn").length === 0);
 el.tab = "batteries"; el._render();

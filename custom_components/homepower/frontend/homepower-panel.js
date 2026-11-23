@@ -3,9 +3,26 @@
    this file's own ?v= tag so a new version is never mixed with cached old parts. */
 const V = new URL(import.meta.url).search;
 const FILES = ["overview", "charts", "schedules", "batteries", "details", "plan", "insights", "diag", "settings"];
-const U = await import(`./panel-util.js${V}`);
-const { MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS } = U;
-const PARTS = await Promise.all(FILES.map((f) => import(`./panel-${f}.js${V}`)));
+// The parts are fetched in the background: the panel element exists at once and shows a loading page with the sidebar
+// button, instead of Home Assistant showing a blank page until every file has arrived.
+let U, MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS;
+const READY = (async () => {
+  const [u, ...parts] = await Promise.all([import(`./panel-util.js${V}`), ...FILES.map((f) => import(`./panel-${f}.js${V}`))]);
+  U = u;
+  ({ MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS } = U);
+  // Add each part's methods (and getters) to the class.
+  for (const part of parts) Object.defineProperties(HomePowerPanel.prototype, Object.getOwnPropertyDescriptors(part.default(U)));
+})();
+READY.catch(() => {});      // shown on the page by _init
+
+// What shows while the parts and the first data load (no dependency on the parts' styles).
+const SHELL_CSS = `:host{display:block;background:var(--primary-background-color);color:var(--primary-text-color);min-height:100vh;font-family:var(--paper-font-body1_-_font-family,Roboto,sans-serif)}
+header{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--app-header-background-color,var(--primary-color));color:var(--app-header-text-color,#fff)}
+h1{font-size:20px;font-weight:500;margin:0;display:flex;align-items:center;gap:8px}
+.wait{display:flex;flex-direction:column;align-items:center;gap:14px;padding:64px 16px;color:var(--secondary-text-color);text-align:center}
+.spin{width:36px;height:36px;border-radius:50%;border:4px solid var(--divider-color,#ddd);border-top-color:var(--primary-color,#03a9f4);animation:r 1s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+button{font:inherit;padding:8px 16px;border-radius:8px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);cursor:pointer}`;
 
 class HomePowerPanel extends HTMLElement {
   constructor() {
@@ -28,45 +45,74 @@ class HomePowerPanel extends HTMLElement {
     this._sample();
   }
 
-  set narrow(v) { this._narrow = v; }
-
   set panel(v) {}
 
   set route(v) {}
 
   disconnectedCallback() {
     if (this._watchStop) this._watchStop();         // a register watch must not keep reading the battery while the panel is not shown
-    if (this._unsub) { this._unsub.then?.((u) => u()); this._unsub = null; }
+    if (this._unsub) { this._unsub.then?.((u) => u(), () => {}); this._unsub = null; }
     clearInterval(this._timer);
     this._timer = null;
   }
 
   // Home Assistant may detach the panel (a hidden tab) and attach the same element again later: pick the live feed up again.
   connectedCallback() {
-    if (!this._loaded || this._unsub || this._timer || !this._hass) return;
-    this._subscribe();
+    if (!this._parts || this._timer || !this._hass) return;          // still starting (_init sets it all up) or never left
     this._timer = setInterval(() => this._tick(false), 2000);
+    if (!this._loaded) return;            // left before the first load worked: the timer retries it, then subscribes
+    this._subscribeIfNeeded();
     this._reload().then(() => this._render());
   }
 
+  set narrow(v) { this._narrow = v; const mb = this.shadowRoot && this.shadowRoot.querySelector("ha-menu-button"); if (mb) mb.narrow = v; }
+
+  // A page with the sidebar button and a spinner (or what went wrong), drawn before the parts have loaded.
+  _shell(msg, failed) {
+    this.shadowRoot.innerHTML = `<style>${SHELL_CSS}</style><header><ha-menu-button></ha-menu-button><h1>Home Power</h1></header>
+      <div class="wait">${failed ? "" : `<div class="spin"></div>`}<div id="msg"></div>${failed ? `<button id="again">Try again</button>` : ""}</div>`;
+    this.shadowRoot.getElementById("msg").textContent = msg;
+    const mb = this.shadowRoot.querySelector("ha-menu-button");
+    if (mb) { mb.hass = this._hass; mb.narrow = this._narrow; }
+    const again = this.shadowRoot.getElementById("again");
+    if (again) again.addEventListener("click", () => location.reload());
+  }
+
   async _init() {
+    this._shell("Loading HomePower…");
+    const first = this._hass.callWS({ type: "homepower/get" });     // the data is fetched while the parts load, not after
+    first.catch(() => {});
+    try {
+      await READY;
+    } catch (e) {
+      this._shell(`HomePower's panel could not load (${e.message || e}). This usually clears after a refresh; if not, restart Home Assistant.`, true);
+      return;
+    }
     this.shadowRoot.innerHTML = `<style>${CSS}</style><div id="app"></div><div id="modal"></div>`;
     this.shadowRoot.addEventListener("click", (e) => this._click(e));
     this.shadowRoot.addEventListener("change", (e) => this._change(e));
     this.shadowRoot.addEventListener("input", (e) => this._input(e));
-    await this._reload();
-    this._subscribe();
+    this._parts = true;
+    this._render();                                  // the page with 'Loading' until the data arrives, never a blank one
+    await this._reload(first);
+    if (this._loaded) this._subscribe();             // otherwise the retry in _tick subscribes once a load works
     this._timer = setInterval(() => this._tick(false), 2000);
   }
 
   _subscribe() {
-    if (this._unsub) this._unsub.then?.((u) => u());
-    this._unsub = this._hass.connection.subscribeMessage((ev) => { this.live = ev; if (ev.paused !== undefined) this.data.paused = ev.paused; this._tick(true); }, { type: "homepower/subscribe" });
+    if (this._unsub) this._unsub.then?.((u) => u(), () => {});
+    const p = this._hass.connection.subscribeMessage((ev) => { this.live = ev; if (ev.paused !== undefined) this.data.paused = ev.paused; this._tick(true); }, { type: "homepower/subscribe" });
+    this._unsub = p;
+    Promise.resolve(p).catch(() => { if (this._unsub === p) this._unsub = null; });   // refused (still starting): subscribe again later
   }
 
-  async _reload() {
+  _subscribeIfNeeded() {
+    if (!this._unsub) this._subscribe();
+  }
+
+  async _reload(pending) {
     try {
-      this.data = await this._hass.callWS({ type: "homepower/get" });
+      this.data = await (pending || this._hass.callWS({ type: "homepower/get" }));
       this.live = this.data.live || this.live;
       this._loaded = true;
       this._loadError = null;                       // a later success clears an earlier failure
@@ -131,7 +177,7 @@ class HomePowerPanel extends HTMLElement {
     if (!this._loaded) {                            // the first load failed (Home Assistant still starting, a reload): keep trying
       if (!this._retrying && Date.now() - (this._lastTry || 0) > 8000) {
         this._retrying = true; this._lastTry = Date.now();
-        this._reload().then(() => this._subscribeIfNeeded?.()).finally(() => { this._retrying = false; });
+        this._reload().then(() => { if (this._loaded) this._subscribeIfNeeded(); }).finally(() => { this._retrying = false; });
       }
       return;
     }
@@ -163,14 +209,25 @@ class HomePowerPanel extends HTMLElement {
     this._lastRender = Date.now();
     const tabs = [["overview", "mdi:view-dashboard", "Overview"], ["plan", "mdi:target", "Plan"], ["schedules", "mdi:calendar-clock", "Schedules"], ["batteries", "mdi:home-battery", "Batteries"], ["insights", "mdi:chart-line", "Insights"], ["settings", "mdi:cog", "Settings"], ["diagnostics", "mdi:stethoscope", "Diagnostics"]];
     let body = "";
-    if (this._loadError) body = `<div class="card empty"><ha-icon icon="mdi:alert-circle"></ha-icon><h3>Couldn't load HomePower</h3>${esc(this._loadError)}</div>`;
-    else if (this.tab === "overview") body = this._overview();
-    else if (this.tab === "schedules") body = this._schedules();
-    else if (this.tab === "batteries") body = this._batteries();
-    else if (this.tab === "plan") body = this._planView();
-    else if (this.tab === "insights") body = this._insightsView();
-    else if (this.tab === "diagnostics") body = this._diagView();
-    else body = this._settingsView();
+    try {
+      if (!this._loaded && !this._loadError) body = `<div class="card empty"><h3>Loading HomePower…</h3></div>`;
+      else if (this._loadError) body = `<div class="card empty"><ha-icon icon="mdi:alert-circle"></ha-icon><h3>Couldn't load HomePower</h3>${esc(this._loadError)}</div>`;
+      else if (this.tab === "overview") body = this._overview();
+      else if (this.tab === "schedules") body = this._schedules();
+      else if (this.tab === "batteries") body = this._batteries();
+      else if (this.tab === "plan") body = this._planView();
+      else if (this.tab === "insights") body = this._insightsView();
+      else if (this.tab === "diagnostics") body = this._diagView();
+      else body = this._settingsView();
+    } catch (e) {
+      // A drawing error must never leave a blank page (it would repeat on every refresh): say what failed, keep the tabs usable.
+      if (String(e) !== this._lastDrawError) { this._lastDrawError = String(e); console.error("HomePower: could not draw the", this.tab, "tab", e); }
+      const where = ((e && e.stack) || "").split("\n").slice(0, 3).join("\n");
+      body = `<div class="card empty"><ha-icon icon="mdi:alert-circle"></ha-icon><h3>This tab could not be shown</h3>
+        <p>Something in the current readings tripped up the ${esc(this.tab)} tab. The other tabs still work, and it is tried again with each update.
+        Please report this message:</p><pre style="white-space:pre-wrap;text-align:left;font-size:12px">${esc(String((e && e.message) || e))}
+${esc(where)}</pre></div>`;
+    }
     const paused = !!this.data.paused;
     const html = `<header><ha-menu-button></ha-menu-button><h1><ha-icon icon="mdi:home-battery"></ha-icon>Home Power</h1>
       <button class="btn sm" data-act="flag" data-flag="backup" data-on="${this.live.backup ? 0 : 1}" title="Keep a reserve for power cuts">${this.live.backup ? "Backup: ON" : "Backup mode"}</button>
@@ -510,8 +567,6 @@ class HomePowerPanel extends HTMLElement {
 
 }
 
-// Add each part's methods (and getters) to the class.
-for (const part of PARTS) Object.defineProperties(HomePowerPanel.prototype, Object.getOwnPropertyDescriptors(part.default(U)));
 
-
+HomePowerPanel.ready = READY;        // resolves once every part has been added (tests wait on it)
 customElements.define("homepower-panel", HomePowerPanel);
