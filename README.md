@@ -379,7 +379,8 @@ been tested against a live EcoFlow account.
 - Money totals Home Assistant keeps long-term statistics of, in Home Assistant's own currency: **Export earnings** (every
   kWh sent to the grid at the export price then; pick it as the export's *entity tracking the total compensation* in the
   Energy dashboard) and **Battery savings** (the running total of the estimate below).
-- Per battery: charge, power, target (what HomePower wants it to do, with the reason in its attributes), energy charged,
+- Per battery: charge, power, solar power (the battery's own reading, the same figure as the side panel's *Solar* chip;
+  Anker register 10002), target (what HomePower wants it to do, with the reason in its attributes), energy charged,
   energy discharged, round-trip efficiency, cycles. In the Energy dashboard, add each battery under *Battery systems* with
   its *energy charged* as "energy going in" and *energy discharged* as "energy coming out".
 - Anker X1: total PV input power, and each PV string's voltage, current and power (strings 5-8 are off until you enable them).

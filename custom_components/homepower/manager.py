@@ -39,7 +39,7 @@ from .manager_backup import BackupMixin
 _LOGGER = logging.getLogger(__name__)
 
 
-BATTERY_SENSOR_SUFFIXES = ("soc", "power", "target", "efficiency", "cycles", "pv_total") + tuple(   # sensor.py's per-battery unique ids
+BATTERY_SENSOR_SUFFIXES = ("soc", "power", "solar", "target", "efficiency", "cycles", "pv_total") + tuple(   # sensor.py's per-battery unique ids
     f"pv{i}_{kind}" for i in range(1, 9) for kind in ("voltage", "current", "power"))                  # (the PV ones: Anker X1 only)
 
 

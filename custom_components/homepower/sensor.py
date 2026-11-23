@@ -38,6 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         ents = []
         for c in new:
             ents += [BatterySoc(coord, entry, c.device_id, c.name), BatteryDevicePower(coord, entry, c.device_id, c.name),
+                     BatterySolarPower(coord, entry, c.device_id, c.name),
                      BatteryTarget(coord, entry, c.device_id, c.name),
                      EnergyTotal(coord, entry, f"bat:{c.device_id}_in", f"{c.name} energy charged"),
                      EnergyTotal(coord, entry, f"bat:{c.device_id}_out", f"{c.name} energy discharged"),
@@ -185,6 +186,25 @@ class BatteryDevicePower(_BatteryBase):
     def native_value(self):
         a = self._actual()
         return None if a is None or a.power_w is None else round(a.power_w)
+
+
+class BatterySolarPower(_BatteryBase):
+    """The solar power the battery itself reports: the "Solar" figure on the side panel's battery cards
+    (Anker: register 10002, PV power; EcoFlow: its PV sum). On an X1 "PV input power" below is the
+    inverter's separate total (10183), so the two can be compared."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_icon = "mdi:solar-power"
+
+    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+        super().__init__(coord, entry, device_id, name, "solar", "solar power")
+
+    @property
+    def native_value(self):
+        a = self._actual()
+        return None if a is None or a.pv_w is None else round(a.pv_w)
 
 
 class PvTotal(_BatteryBase):
