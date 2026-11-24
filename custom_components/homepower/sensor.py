@@ -76,8 +76,7 @@ class BatteryFlow(_Base):
 
     @property
     def native_value(self):
-        vals = [s.actual.power_w for s in self.coordinator._snap.devices.values()
-                if s.actual and s.actual.online and s.actual.power_w is not None]
+        vals = [a.power_w for a in self.coordinator.shown_actuals().values() if a.online and a.power_w is not None]
         return round(sum(vals)) if vals else None
 
 
@@ -95,9 +94,9 @@ class StoredEnergy(_Base):
     def native_value(self):
         total, seen = 0.0, False
         for a in self.coordinator.adapters:
-            st = self.coordinator._snap.devices.get(a.config.device_id)
-            if st and st.actual and st.actual.online and st.actual.soc is not None:
-                total += st.actual.soc / 100 * a.config.caps.capacity_wh
+            act = self.coordinator.shown_actual(a.config.device_id)
+            if act and act.online and act.soc is not None:
+                total += act.soc / 100 * a.config.caps.capacity_wh
                 seen = True
         return round(total / 1000, 2) if seen else None
 
@@ -124,7 +123,7 @@ class BatteryTarget(_Base):
     @property
     def extra_state_attributes(self):
         v = self.coordinator.devices_view().get(self._did, {})
-        return {k: v.get(k) for k in ("decision", "desired_power_w", "mode", "soc", "power_w", "online",
+        return {k: v.get(k) for k in ("decision", "desired_power_w", "mode", "soc", "power_w", "online", "stale",
                                      "active_schedules", "override", "last_error", "reason")}
 
 
@@ -154,8 +153,7 @@ class _BatteryBase(_Base):
         self._attr_unique_id = f"{entry.entry_id}_{device_id}_{suffix}"
 
     def _actual(self):
-        st = self.coordinator._snap.devices.get(self._did)
-        return st.actual if st and st.actual and st.actual.online else None
+        return self.coordinator.shown_actual(self._did)     # the last reading while the readings are only stale
 
 
 class BatterySoc(_BatteryBase):
@@ -382,8 +380,7 @@ class HomeBattery(_Base):
         self._attr_unique_id = f"{entry.entry_id}_home_battery"
 
     def _fig(self) -> dict:
-        actuals = {did: s.actual for did, s in self.coordinator._snap.devices.items() if s.actual}
-        return self.coordinator._combined(actuals)
+        return self.coordinator._combined(self.coordinator.shown_actuals())
 
     @property
     def native_value(self):

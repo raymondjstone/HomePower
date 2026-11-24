@@ -21,7 +21,7 @@ import struct
 import time
 
 from ..core.models import Actual, Desired, DeviceConfig, Mode
-from .modbus import ModbusError, ModbusTcpClient, to_text
+from .modbus import ModbusError, ModbusTcpClient, known_down, to_text
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class EcoFlowModbusDriver:
         except ModbusError as err:
             self.last_error = str(err)
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
-            return Actual(online=False)
+            return Actual(online=False, gone=known_down(err))
         self.last_error = None
         load, grid, pv, batt = (_clean(_float(flow[i], flow[i + 1])) for i in (0, 2, 4, 6))
         soc = float(flow[8]) if flow[8] <= 100 else None
@@ -124,7 +124,7 @@ class EcoFlowModbusDriver:
         except ModbusError as err:
             if err.code is None:                             # the link dropped mid-cycle: do not guess a mode, report offline
                 self.last_error = str(err)
-                return Actual(online=False)
+                return Actual(online=False, gone=known_down(err))
             # the device refused this block (an exception reply): the control registers are optional for reading
         self.last_quota = {"consumption_w": load, "grid_w": grid, "pv_w": pv, "battery_w": batt, "soc": soc}
         return Actual(online=True, soc=soc, power_w=batt, mode=mode, set_power_w=set_w,

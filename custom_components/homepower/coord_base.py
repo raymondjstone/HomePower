@@ -22,7 +22,7 @@ FORECAST_PLATFORMS = {   # solar forecast integrations found automatically: plat
 }
 GLOW_DOMAIN = "hildebrandglow_dcc"  # ha-hildebrandglow-dcc (raymondjstone fork and HandyHat original)
 KEEPALIVE_EVERY_S = 60
-OFFLINE_ALERT_AFTER_S = 180
+OFFLINE_ALERT_AFTER_S = 60       # after the battery is shown offline (itself only after the offline-after setting, or known off the network)
 PROTECT_ALERT_AFTER_S = 60
 UNCONFIRMED_ALERT_AFTER = 3
 GRID_SLOW_AFTER_S = 120     # setup check: warn that the grid reading is not live
@@ -57,6 +57,8 @@ class DeviceStatus:
     release_pending: bool = False   # we forced this device; hand it back when no longer managed
     guard_held: bool = False        # software SOC limit is currently holding this device
     last_read_ok: float | None = None
+    last_good: Actual | None = None       # the last reading that worked (shown while the readings are only stale)
+    link: str = "online"                  # online | stale (reads failing for less than the offline-after time) | offline
     unconfirmed: int = 0
     awaiting_confirm: bool = False  # the first command to an unproven battery is waiting for the user
     waited: int = 0                 # cycles a slow (cloud) battery has been given to show a command's effect

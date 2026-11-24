@@ -17,7 +17,8 @@ export default (U) => {
         { k: "peak_shaving", t: "bool", label: "Peak shaving: discharge to keep import under the limit" },
         num("export_limit_w", "Export limit (W, 0 = none)", "For grid connection rules (G98/G99): charge or trim discharge to stay under it."),
         num("total_charge_limit_w", "Max total charge (W, 0 = none)"), num("total_discharge_limit_w", "Max total discharge (W, 0 = none)"),
-        num("cooldown_s", "Re-apply cooldown (s)", "Stops the same command being re-sent too often.")]],
+        num("cooldown_s", "Re-apply cooldown (s)", "Stops the same command being re-sent too often."),
+        num("offline_after_min", "Show a battery offline after (minutes)", "A failed read is often just another app (another integration) holding the battery's Modbus connection for a moment. Until reads have failed for this long the battery shows \"Readings stale\" with its last values, not Offline. A battery the network reports as not there is shown offline at once.")]],
       ["Zero-import battery", "mdi:scale-balance", [{ k: "zero_import_device", t: "device", label: "Keeps grid import at 0 W when nothing else applies" }]],
       ["Tariff & prices", "mdi:cash", [
         { k: "tariff_presets", t: "presets", label: "Quick fill the cheap-rate hours" },

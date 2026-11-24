@@ -23,7 +23,17 @@ _WHY = {
     "no_reply": "connected, but the battery did not answer in time",
     "closed": "the battery closed the connection",
     "garbage": "something answered that is not a Modbus device",
+    "unreachable": "the network reports the battery is not there (host unreachable)",
 }
+
+# errno values for "no route to the host / network" on Linux, macOS and Windows: the network itself says nothing is there.
+_UNREACHABLE = {113, 101, 65, 51, 10065, 10051}
+
+
+def known_down(err: Exception) -> bool:
+    """True when a failure shows the battery is off the network, not merely busy (another Modbus client holding it, a slow
+    reply): only then is it shown offline straight away; other failures are shown as stale readings for a while first."""
+    return getattr(err, "reason", None) == "unreachable"
 
 
 def describe_failure(err: Exception) -> str:
@@ -139,6 +149,8 @@ class ModbusTcpClient:
                         reason = "garbage"
                     elif isinstance(err, ConnectionRefusedError):
                         reason = "refused"
+                    elif getattr(err, "errno", None) in _UNREACHABLE or getattr(err, "winerror", None) in _UNREACHABLE:
+                        reason = "unreachable"
                     elif isinstance(err, asyncio.TimeoutError):
                         reason = "no_connect" if phase == "connect" else "no_reply"
                     else:

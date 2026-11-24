@@ -20,7 +20,7 @@ from ..core.models import Actual, Desired, DeviceConfig, Mode
 import time
 
 from ..core.anker_x1_map import alarm_texts
-from .modbus import ModbusError, ModbusTcpClient, describe_failure, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
+from .modbus import ModbusError, ModbusTcpClient, describe_failure, known_down, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -190,7 +190,7 @@ class AnkerModbusDriver:
         except ModbusError as err:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
             self._note_down(err)
-            return Actual(online=False)
+            return Actual(online=False, gone=known_down(err))
         self._note_up()
         return actual
 

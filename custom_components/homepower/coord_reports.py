@@ -288,6 +288,7 @@ class ReportsMixin:
                 "control_enabled": bool(a.config.extra.get("control_enabled", True)),
                 "last_read_ok": datetime.fromtimestamp(st.last_read_ok, dt_util.UTC).isoformat() if st and st.last_read_ok else None,
                 "online": bool(st and st.actual and st.actual.online),
+                "link": self.link(did),
                 "actual_mode": st.actual.mode.value if st and st.actual and st.actual.mode else None,
                 "desired": ({"mode": st.desired.mode.value, "power_w": st.desired.power_w} if st and st.desired else None),
                 "reason": st.reason if st else "", "decision": st.decision.value if st and st.decision else None,
@@ -311,12 +312,17 @@ class ReportsMixin:
         for a in self.adapters:
             did = a.config.device_id
             st = self._snap.devices.get(did) or DeviceStatus()
-            act, want = st.actual, st.desired
+            # while reads have only failed for a short time (another Modbus client may hold the battery) the last reading is shown
+            act, want, link = self.shown_actual(did) or st.actual, st.desired, self.link(did)
+            stale = link == "stale" and act is not None and act.online
             active = [s.id for s in self.schedules if s.applies(did, now)
                       and (not s.condition_entity or self._condition_ok(s.condition_entity))]
             ov = self.overrides.get(did)
             out[did] = {
                 "online": bool(act and act.online),
+                "stale": stale,                 # shown as online with the last reading, but this cycle's read failed
+                "link": link,
+                "stale_reason": getattr(getattr(a, "driver", None), "last_error", None) if stale else None,
                 "soc": act.soc if act else None,
                 "power_w": act.power_w if act else None,
                 "pv_w": act.pv_w if act and act.online else None, "has_solar": self._has_solar(a.config),
@@ -359,7 +365,7 @@ class ReportsMixin:
         now = dt_util.now()
         day_key = now.strftime("%Y-%m-%d")
         out = self.devices_view(now)
-        actuals = {did: st.actual for did, st in self._snap.devices.items() if st.actual}
+        actuals = self.shown_actuals()
         day, month = now.strftime("%Y-%m-%d"), now.strftime("%Y-%m")
         rates = self._rates()
         return {

@@ -129,11 +129,24 @@ class HomePowerPanel extends HTMLElement {
     return Number.isFinite(v) ? v : null;
   }
 
+  // Online / Readings stale / Waiting for readings / Offline, as a chip. Offline only once reads have failed for the
+  // "offline after" time (Settings > Limits), or the network says the battery is not there.
+  _linkChip(r) {
+    const mins = (this.data.settings || {}).offline_after_min || 5;
+    const why = `HomePower could not read it just now. This is often another app holding its Modbus connection for a moment, so it is only shown offline after ${mins} min of failed reads.`;
+    const last = r.lv && r.lv.last_read_ok ? ` Last good read ${new Date(r.lv.last_read_ok).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit", second: "2-digit" }))}.` : "";
+    if (r.online && r.stale) return `<span class="chip warn" title="${esc(why + last)}">Readings stale</span>`;
+    if (r.online) return `<span class="chip">Online</span>`;
+    if (r.waiting) return `<span class="chip warn" title="${esc(why)}">Waiting for readings</span>`;
+    return `<span class="chip bad">Offline</span>`;
+  }
+
   _reading(d) {
     const e = d.entities || {};
     const lv = (this.live.devices || {})[d.device_id] || {};
     if (d.driver && d.driver !== "entities") {  // HomePower talks to this battery itself
-      return { soc: lv.soc ?? null, power: lv.power_w ?? null, online: !!lv.online, lv };
+      // stale: this cycle's read failed but not for long (another Modbus client may hold the battery): the last reading is shown
+      return { soc: lv.soc ?? null, power: lv.power_w ?? null, online: !!lv.online, stale: !!lv.stale, waiting: !lv.online && lv.link === "stale", lv };
     }
     const bad = (k) => { const st = e[k] && this._hass.states[e[k]]; return !st || ["unavailable", "unknown"].includes(st.state); };
     // Whichever control entity this battery family has tells us whether it is reachable.

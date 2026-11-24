@@ -170,7 +170,8 @@ This is sent to the battery now.`)) return;
       ...(d.invert_power ? [["Power sign flipped", "Yes"]] : []),
     ]);
     const live = rows([
-      ["Status", r.online ? "Online" : "Offline"], ["Why offline", !r.online ? t(lv.offline_hint) : null], ["Last failure", !r.online ? t(lv.offline_reason) : null], ["Last read", !r.online ? when(lv.last_read_ok) : null], ["Charge", r.soc != null ? Math.round(r.soc) + "%" : null],
+      ["Status", r.stale ? "Readings stale (showing the last good read)" : r.online ? "Online" : r.waiting ? "Waiting for readings" : "Offline"], ["Why offline", !r.online && !r.waiting ? t(lv.offline_hint) : null],
+      ["Last failure", r.stale ? t(lv.stale_reason) : !r.online ? t(lv.offline_reason) : null], ["Last read", r.stale || !r.online ? when(lv.last_read_ok) : null], ["Charge", r.soc != null ? Math.round(r.soc) + "%" : null],
       ["Stored energy", r.soc != null && d.capacity_wh ? fmtKwh((r.soc / 100) * d.capacity_wh) : null],
       ["Power", p == null ? null : Math.abs(p) < 20 ? "Idle" : (p > 0 ? "Charging " : "Discharging ") + fmtW(Math.abs(p))],
       ["Solar input", lv.pv_w != null ? fmtW(lv.pv_w) : w(A.pv_w)], ["House load", w(A.load_w)],
@@ -242,7 +243,7 @@ This is sent to the battery now.`)) return;
       ha = found.length ? found.map((f) => this._haDeviceHtml(f.dev, f.why)).join("") : none("No Home Assistant device was found for this battery. If you also use the vendor's Home Assistant integration, its device is matched by serial number or by having the same name as this battery.");
     } catch (e) { ha = none("Could not read the Home Assistant devices."); }
     return `<div class="overlay" data-close-bg><div class="modal" role="dialog" aria-label="Battery details" id="bd-${esc(id)}" style="max-width:760px">
-      <h2>${esc(d.name)} <span class="chip ${r.online ? "" : "bad"}">${r.online ? "Online" : "Offline"}</span></h2>
+      <h2>${esc(d.name)} ${this._linkChip(r)}</h2>
       <div style="display:flex;gap:16px;align-items:center;margin-bottom:8px">${this._ring(r.soc, 80)}<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">${esc(prof.label)}${info.length ? `<br>${info.map(esc).join(" · ")}` : ""}</div></div>
       <h3>Readings now</h3>${live}
       ${this._pvHtml((det && det.pv) || lv.pv) ? `<h3>Solar strings</h3>${this._pvHtml((det && det.pv) || lv.pv)}` : ""}

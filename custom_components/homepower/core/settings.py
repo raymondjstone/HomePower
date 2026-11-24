@@ -20,9 +20,11 @@ DEFAULTS: dict = {
     "ecoflow_live": False, "dry_run": False, "erase_on_remove": False, "solar_room": True, "base_load_w": 0, "notify_full": False, "offpeak_extra": "", "save_for_peak": False, "hold_for_dearer": False,
     "weather_boost": False, "weather_entity": "", "temp_sensor_entity": "", "forecast_temp_entity": "", "weather_online": False,
     "compare_tariffs": "", "weekly_digest": False, "export_rates_entity": "", "export_discharge": False, "export_keep_pct": 0, "wear_cost": None, "event_entity": "", "event_charge_pct": 0, "forecast_reserve_kwh": 0, "forecast_reserve_pct": 50, "divert_cheap": False, "x1_grid_limits": False, "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
+    "offline_after_min": 5,
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
-            "notify_low_pct", "cheap_soon_below_pct", "forecast_reserve_kwh", "forecast_reserve_pct", "divert_export_w", "divert_min_soc", "base_load_w", "export_keep_pct", "event_charge_pct")
+            "notify_low_pct", "cheap_soon_below_pct", "forecast_reserve_kwh", "forecast_reserve_pct", "divert_export_w", "divert_min_soc", "base_load_w", "export_keep_pct", "event_charge_pct",
+            "offline_after_min")
 FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price", "wear_cost")
 BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "hold_for_dearer", "weather_boost", "weather_online", "notify_full", "notify_cheap_soon", "export_discharge")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
@@ -114,6 +116,8 @@ def clean(raw: dict) -> dict:
         out["grid_order"] = ",".join(parse_grid_order(out["grid_order"]))
     if "offpeak_extra" in out:
         parse_windows(out["offpeak_extra"])
+    if "offline_after_min" in out and not 1 <= out["offline_after_min"] <= 1440:
+        raise SettingsError("offline after must be 1-1440 minutes")
     if "base_load_w" in out and not 0 <= out["base_load_w"] <= 50000:
         raise SettingsError("base load must be 0-50000 W")
     if "divert_min_soc" in out and out["divert_min_soc"] > 100:
@@ -226,6 +230,7 @@ class AppSettings:
     wear_cost: float | None = None    # what a kWh through the battery costs in wear (same unit as the prices)
     event_entity: str = ""            # on while a demand-flexibility event runs (saving-session calendar / binary sensor)
     event_charge_pct: int = 0         # charge to this before the next event starts (0 = off; needs an entity that gives the times)
+    offline_after_min: int = 5        # a battery whose reads keep failing is shown offline after this long (stale readings before)
 
 
 def _int_or(v, default: int) -> int:
@@ -253,4 +258,5 @@ def build(cfg: dict) -> AppSettings:
         notify_cheap_soon=bool(c["notify_cheap_soon"]), cheap_soon_below_pct=_int_or(c["cheap_soon_below_pct"], 60),
         export_rates_entity=c["export_rates_entity"] or "", export_keep_pct=int(c["export_keep_pct"] or 0),
         wear_cost=c["wear_cost"], event_entity=c["event_entity"] or "", event_charge_pct=int(c["event_charge_pct"] or 0),
+        offline_after_min=max(1, _int_or(c["offline_after_min"], 5)),
     )

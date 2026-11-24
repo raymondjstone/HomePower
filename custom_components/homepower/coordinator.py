@@ -78,6 +78,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         self.weather: dict = {}                                                  # tomorrow's temperature and what it means, for the panel
         self._weather_at, self._weather_busy = -1e9, False
         self._started = False
+        self._began = _time.time()     # a battery not read since start-up counts its failed reads from here
         self.rate_learner = RateLearner(manager.charge_rates)   # real charge rate of batteries that pick their own
         self.budget = CommandBudget()                       # daily cap on commands to cloud batteries
         self.charge_watch = ChargeWatch()                    # told to charge but nothing happens
@@ -241,6 +242,33 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             _LOGGER.debug("read failed for %s", a.config.device_id, exc_info=True)
             return Actual(online=False)
 
+    def _note_link(self, st: DeviceStatus, act: Actual, wall: float) -> None:
+        """Online, stale or offline. A failed read is often only another Modbus client holding the battery for a moment, so it
+        is shown offline only once reads have failed for the offline-after time, or when the failure shows it is off the network.
+        (Control is unchanged: nothing is commanded and nothing is counted from a battery that was not read this cycle.)"""
+        if act.online:
+            st.last_read_ok, st.last_good, st.link = wall, act, "online"
+            return
+        since = st.last_read_ok or self._began
+        st.link = "offline" if act.gone or wall - since >= 60 * self.settings.offline_after_min else "stale"
+
+    def link(self, did: str) -> str:
+        st = self._snap.devices.get(did)
+        return "offline" if st is None or st.actual is None else st.link
+
+    def shown_actual(self, did: str) -> Actual | None:
+        """The reading to show for a battery: this cycle's, or while the readings are only stale, the last one that worked."""
+        st = self._snap.devices.get(did)
+        if st is None or st.actual is None:
+            return None
+        if st.actual.online:
+            return st.actual
+        return st.last_good if st.link == "stale" else None
+
+    def shown_actuals(self) -> dict[str, Actual]:
+        """Every battery's reading as shown (see shown_actual), for the panel's and the sensors' totals."""
+        return {did: self.shown_actual(did) or st.actual for did, st in self._snap.devices.items() if st.actual}
+
     def _commanded(self, did: str) -> Mode | None:
         """What HomePower last told this battery to do, if it was sent (a paused, monitor-only or tested battery was told nothing)."""
         st = self._snap.devices.get(did)
@@ -264,8 +292,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         adapters = [a for a in adapters if a.config.device_id in self._snap.devices]
         actuals = {k: v for k, v in actuals.items() if k in self._snap.devices}
         for did, act in actuals.items():
-            if act.online:
-                self._snap.devices[did].last_read_ok = wall
+            self._note_link(self._snap.devices[did], act, wall)
 
         self._observe_temp(now)
         self.hass.async_create_task(self._refresh_tariff())

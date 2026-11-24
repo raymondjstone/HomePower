@@ -120,13 +120,14 @@ export default (U) => {
   _batCard(d, r, i) {
     const lv = r.lv || {};
     const p = r.power;
-    const state = !r.online ? "Offline" : p == null ? "–" : Math.abs(p) < 20 ? "Idle" : p > 0 ? "Charging" : "Discharging";
+    const state = r.waiting ? "Waiting for readings" : !r.online ? "Offline" : p == null ? "–" : Math.abs(p) < 20 ? "Idle" : p > 0 ? "Charging" : "Discharging";
     const col = !r.online ? "#9ca3af" : p > 20 ? MODES.charge.color : p < -20 ? MODES.discharge.color : "var(--secondary-text-color)";
     const mode = lv.mode && MODES[lv.mode];
     const want = lv.desired_mode && MODES[lv.desired_mode];
     const chips = [];
     if (want) chips.push(`<span class="chip m" style="background:${want.color}" title="${esc(want.help)}">Target: ${want.label}${lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : ""}</span>`);
     else if (r.online) chips.push(`<span class="chip">Device's own control</span>`);
+    if (r.stale || r.waiting) chips.push(this._linkChip(r));
     if (mode) chips.push(`<span class="chip"><span class="dot" style="background:${mode.color}"></span>Mode: ${mode.label}</span>`);
     const room = ((this.live.solar_room || {}).batteries || {})[d.device_id];
     if (room && room.ceiling < 100) chips.push(`<span class="chip" title="Overnight charging stops here so the solar forecast (${room.solar_kwh} kWh for this battery) has room">Room for solar: up to ${room.ceiling}%</span>`);

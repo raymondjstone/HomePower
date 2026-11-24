@@ -368,3 +368,41 @@ def test_grid_event_ignores_an_all_day_calendar_entry():
     st["calendar.saving"] = types.SimpleNamespace(state="off", attributes={})
     st["binary_sensor.octo"] = types.SimpleNamespace(state="on", attributes={})
     assert c._grid_event_on() is True
+
+
+def test_a_failed_read_shows_stale_readings_until_the_offline_after_time():
+    """Another Modbus client holding the battery for a moment must not make it look offline: the last reading is shown,
+    marked stale, until reads have failed for the offline-after time (or the network says the battery is not there)."""
+    c = bare()
+    c.settings.offline_after_min = 5
+    c._began = 0.0
+    st = c._snap.devices["e"] = coordinator.DeviceStatus()
+    good = Actual(online=True, soc=55.0, power_w=-300.0)
+    c._note_link(st, good, 1000.0)
+    st.actual = good
+    assert c.link("e") == "online" and c.shown_actual("e") is good
+
+    st.actual = Actual(online=False)
+    c._note_link(st, st.actual, 1000.0 + 299)
+    assert c.link("e") == "stale" and c.shown_actual("e") is good and c.shown_actuals()["e"] is good
+    assert st.last_read_ok == 1000.0                      # a failed read does not move the last good read on
+
+    c._note_link(st, st.actual, 1000.0 + 300)
+    assert c.link("e") == "offline" and c.shown_actual("e") is None
+
+    c._note_link(st, good, 1400.0)                        # answers again
+    assert c.link("e") == "online"
+    st.actual = Actual(online=False, gone=True)           # the network says it is not there: offline at once
+    c._note_link(st, st.actual, 1401.0)
+    assert c.link("e") == "offline"
+
+
+def test_a_battery_never_read_since_start_up_waits_before_showing_offline():
+    c = bare()
+    c.settings.offline_after_min = 1
+    c._began = 500.0
+    st = c._snap.devices["e"] = coordinator.DeviceStatus(actual=Actual(online=False))
+    c._note_link(st, st.actual, 530.0)
+    assert c.link("e") == "stale" and c.shown_actual("e") is None    # nothing to show yet, but not called offline
+    c._note_link(st, st.actual, 560.0)
+    assert c.link("e") == "offline"

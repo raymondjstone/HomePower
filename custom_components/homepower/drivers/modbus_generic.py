@@ -5,7 +5,7 @@ import logging
 
 from ..core.modbus_map import has_control, parse_map
 from ..core.models import Actual, Desired, DeviceConfig, Mode
-from .modbus import ModbusError, ModbusTcpClient, from_i32, to_i32, to_u32
+from .modbus import ModbusError, ModbusTcpClient, from_i32, known_down, to_i32, to_u32
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class GenericModbusDriver:
             return Actual(online=True, mode=mode, set_power_w=set_w, **s)
         except (ModbusError, IndexError) as err:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
-            return Actual(online=False)
+            return Actual(online=False, gone=known_down(err))
 
     async def probe(self) -> dict:
         s = await self._snapshot()

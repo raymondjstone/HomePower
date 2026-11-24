@@ -59,6 +59,7 @@ class Actual:
     pv_strings: tuple = ()          # X1: (volts, amps) of each of PV1-PV8 (registers 10167-10182); () = not read yet
     pv_total_w: float | None = None  # X1: the inverter's own total PV power (register 10183)
     pack_v: tuple = ()              # X1: raw voltage reading of each battery pack (for the health trend)
+    gone: bool = False              # not read, and known to be off the network (not just a refused or unanswered request)
 
 
 @dataclass(slots=True)

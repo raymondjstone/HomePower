@@ -164,3 +164,10 @@ def test_failure_reasons_refused_closed_and_garbage():
         srv.close()
         assert describe_failure(ModbusError("device returned exception 2", code=2)) == "device returned exception 2"      # an answer with a Modbus exception keeps its own text
     asyncio.run(go())
+
+
+def test_only_an_unreachable_host_counts_as_known_offline():
+    from hp.drivers.modbus import ModbusError, known_down
+    assert known_down(ModbusError("x", reason="unreachable"))
+    for r in ("refused", "no_connect", "no_reply", "closed", "garbage", None):
+        assert not known_down(ModbusError("x", reason=r))     # these can be another client holding the connection
