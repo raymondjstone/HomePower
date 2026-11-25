@@ -2,13 +2,15 @@
 
 Loads the real panel (all of its parts, with a `?v=` tag like Home Assistant does) in jsdom, feeds it the payloads the real
 backend produces, renders every tab and presses every button. Not part of the normal `pytest` run: it needs Home Assistant
-(for the payloads) and jsdom.
+(for the payloads) and jsdom. CI runs all of these except the browser test (the `panel` job in `.github/workflows/tests.yml`).
 
     pip install homeassistant
     npm install jsdom                       # in this folder
     python tests/ha_harness/dump_panel_payload.py tests/panel_dom/payload.json
     node tests/panel_dom/panel_dom.mjs      # every tab renders; every button works
     node tests/panel_dom/save_warn.mjs      # "Saved, but note: ..." after saving a schedule
+    node tests/panel_dom/link_states.mjs    # "Readings stale" / "Waiting for readings" / "Offline" on every tab and the details sheet
+    node tests/panel_dom/solar_forecast.mjs # today's solar forecast tile, and forecast against measured solar in Insights
 
     npm install playwright && npx playwright install chromium
     node tests/panel_dom/panel_browser.mjs  # the same in real headless Chromium: module loading with the ?v= tag, console errors,

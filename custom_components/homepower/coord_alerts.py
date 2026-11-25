@@ -113,7 +113,7 @@ class AlertsMixin:
     async def _check_events(self, now: datetime, now_s: float, actuals: dict[str, Actual], rates: RateTable | None) -> None:
         """Optional heads-up messages: battery full, battery low, cheap rate starting soon with a low battery."""
         s = self.settings
-        fig = self._combined(actuals)
+        fig = self._combined(self.shown_actuals())    # a battery whose read failed a moment ago still counts (no false "low")
         soc = fig["soc"]
 
         async def edge(key: str, active: bool, clear: bool, msg: str) -> None:

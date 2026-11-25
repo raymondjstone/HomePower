@@ -23,8 +23,7 @@ class ReportsMixin:
         Ignores solar, so it is the cautious figure."""
         now, wh, n = dt_util.now(), 0.0, 0
         for a in self.adapters:
-            st = self._snap.devices.get(a.config.device_id)
-            act = st.actual if st else None
+            act = self.shown_actual(a.config.device_id)       # a battery read a moment ago still counts
             if act and act.online and act.soc is not None:
                 wh += max(0.0, act.soc - a.config.caps.min_soc) / 100 * a.config.caps.capacity_wh
                 n += 1
@@ -44,7 +43,7 @@ class ReportsMixin:
             t += timedelta(minutes=30)
             hours += 0.5
         if hours is None:
-            loads = [s.actual.load_w for s in self._snap.devices.values() if s.actual and s.actual.online and s.actual.load_w]
+            loads = [x.load_w for x in self.shown_actuals().values() if x.online and x.load_w]
             basis = "the load right now"
             hours = wh / max(loads) if loads else None
         return {"usable_kwh": round(wh / 1000, 1), "hours": None if hours is None else round(min(hours, 72.0), 1),
@@ -85,7 +84,7 @@ class ReportsMixin:
         add("batteries", bool(self.adapters), "At least one battery added", "" if self.adapters else "Add your first battery.", "tab", "batteries")
         for a in self.adapters:
             did, name, st = a.config.device_id, a.config.name, self._snap.devices.get(a.config.device_id)
-            act = st.actual if st else None
+            act = self.shown_actual(did) or (st.actual if st else None)     # readings only stale: still reporting
             reading = bool(act and act.online and act.soc is not None)
             add(f"reading:{did}", reading, f"{name} is reporting", "" if reading else
                 ("It is offline or unreachable." if not (act and act.online) else "It is online but sends no charge level."), "tab", "diagnostics")
@@ -155,7 +154,7 @@ class ReportsMixin:
     def pv_view(self, did: str) -> dict | None:
         """One X1's solar strings for the panel: live volts, amps and watts with each string's health."""
         st = self._snap.devices.get(did)
-        act = st.actual if st else None
+        act = self.shown_actual(did) or (st.actual if st else None)     # the last reading while only stale, like the card
         if did not in self.pv_health.used and not (act and act.pv_strings):
             return None
         now = dt_util.now()
@@ -242,7 +241,7 @@ class ReportsMixin:
         for n, a in enumerate(self.adapters, 1):
             did, c = a.config.device_id, a.config.caps
             st = self._snap.devices.get(did) or DeviceStatus()
-            act = st.actual
+            act = self.shown_actual(did) or st.actual          # what it reports (the last good read while only stale)
             test = self.manager.tests.get(did) or {}
             results = self.traces.results.get(did, [])
             plan = self.plan_log.view(did, now)
@@ -253,7 +252,7 @@ class ReportsMixin:
                 "model": conn.get("model") or a.config.extra.get("model"), "firmware": act.firmware if act else None,
                 "limits": {"capacity_wh": c.capacity_wh, "max_charge_w": c.max_charge_w, "max_discharge_w": c.max_discharge_w,
                            "min_soc": c.min_soc, "modes": sorted(m.value for m in c.supported_modes), "sets_watts": c.power_control},
-                "reading": {"online_now": bool(act and act.online), "reports_mode": bool(act and act.mode is not None),
+                "reading": {"online_now": bool(st.actual and st.actual.online), "reports_mode": bool(act and act.mode is not None),
                             "reports_set_power": bool(act and act.set_power_w is not None), "reports_solar": did in self.manager.pv_seen,
                             "recent_outages": len(getattr(drv, "outages", None) or [])},
                 "control_allowed": bool(a.config.extra.get("control_enabled", True)),
@@ -377,7 +376,7 @@ class ReportsMixin:
             "alerts": sorted(self.alerts.active()), "notes": self.last_result.notes,
             "price_now": self._price_now(rates, now),
             "meter_entity": self.grid_source, "rates_entity": self._rates_entity(),
-            "combined": self._combined(actuals), "setup": self.setup_check(), "solar_room": self.solar_room, "export_better": self._export_better(rates, now),
+            "combined": self._combined(actuals), "solar_forecast": self.solar_view(now), "setup": self.setup_check(), "solar_room": self.solar_room, "export_better": self._export_better(rates, now),
             "export": self._export_view(rates, now), "grid_event": self.grid_event,
             "divert": {"entity": self.settings.divert_entity, "on": self.diverter.on} if self.settings.divert_entity else None,
             "daily": {"self_consumption": self.daily.self_consumption(day_key), "cheap_share": self.daily.cheap_share(day_key)},

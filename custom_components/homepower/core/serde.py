@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, time
 from typing import Any
 
@@ -9,6 +10,9 @@ from .models import Capabilities, Desired, DeviceConfig, Mode
 from .modbus_map import MapError, has_control, parse_map
 from .profiles import DRIVERS, PROFILE_BY_ID
 from .schedule import ALL_DAYS, ScheduleEntry
+
+
+_ENTITY_ID = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")      # Home Assistant's own entity id form
 
 
 class ValidationError(ValueError):
@@ -68,6 +72,8 @@ def _time(s: Any, name: str) -> time:
 
 def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
     raw = raw or {}
+    if not isinstance(raw, dict):
+        raise ValidationError("the connection settings are not valid")
     profile = profile or {}
     if driver == "modbus_generic":
         host = str(raw.get("host") or "").strip()
@@ -101,6 +107,17 @@ def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
             out[k] = v
         return out
     return {}
+
+
+def check_new_device(raw: dict, existing) -> None:
+    """A new battery's id becomes part of entity ids and saved keys ("x1lim:<id>:..."): the panel and Configure always make
+    it from the name (a-z, 0-9, _), so anything else comes from a hand-made request or file and is refused. A battery saved
+    before keeps its id. A very long name would make entity ids Home Assistant cannot register."""
+    did = str(raw.get("device_id") or "").strip()
+    if did not in existing and not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", did):
+        raise ValidationError("the battery id may only use letters, digits, _ and - (96 at most)")
+    if len(str(raw.get("name") or "")) > 80:
+        raise ValidationError("the battery name is too long (80 characters at most)")
 
 
 def fill_from_probe(raw: dict, info: dict) -> dict:
@@ -145,12 +162,21 @@ def device_from_dict(d: dict) -> DeviceConfig:
     extra: dict = {"driver": driver}
     if driver == "entities":
         valid_keys = {f["k"] for f in spec["entities"]}
-        ents = {k: str(v).strip() for k, v in (d.get("entities") or {}).items() if k in valid_keys and v}
+        raw_ents, raw_mm = d.get("entities") or {}, d.get("mode_map") or {}
+        if not isinstance(raw_ents, dict) or not isinstance(raw_mm, dict):
+            raise ValidationError("the entities and mode names must be given as name: value pairs")
+        ents = {k: v.strip() for k, v in raw_ents.items() if k in valid_keys and isinstance(v, str) and v.strip()}
+        for k, v in ents.items():
+            if not _ENTITY_ID.fullmatch(v):
+                raise ValidationError(f"'{v[:60]}' is not an entity id (like sensor.battery_level)")
         for f in spec["entities"]:
             if f["req"] and f["k"] not in ents:
                 raise ValidationError(f"entity '{f['label']}' is required")
         valid_mm = {m["k"] for m in spec["mode_map"]}
-        mode_map = {k: v for k, v in (d.get("mode_map") or {}).items() if k in valid_mm and v}
+        # kept exactly as given: it is sent back to the select entity, whose option may really end in a space
+        mode_map = {k: v for k, v in raw_mm.items() if k in valid_mm and isinstance(v, str) and v.strip()}
+        if any(len(v) > 255 for v in mode_map.values()):
+            raise ValidationError("a mode name is too long")
         for m in spec["mode_map"]:
             if not m["optional"] and m["k"] not in mode_map:
                 raise ValidationError(f"select option for '{m['label']}' is required")
@@ -158,7 +184,7 @@ def device_from_dict(d: dict) -> DeviceConfig:
                      invert_power=_flag(d.get("invert_power"), "invert power", False), control_enabled=_flag(d.get("control_enabled"), "control enabled", True))
     else:
         extra.update(connection=connection,
-                     restore_mode=int(profile.get("restore_mode", 0)), watchdog=bool(profile.get("watchdog", False)),
+                     watchdog=bool(profile.get("watchdog", False)),
                      control_enabled=_flag(d.get("control_enabled"), "control enabled", False))  # monitor-only until the user opts in
     grid_meter = str(d.get("grid_meter") or "auto")
     if grid_meter not in ("auto", "yes", "no"):
@@ -197,6 +223,8 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
     sid = str(d.get("id") or "").strip()
     if not sid:
         raise ValidationError("id is required")
+    if len(sid) > 120:
+        raise ValidationError("the name is too long (120 characters at most)")
     try:
         mode = Mode(d.get("mode"))
     except ValueError as e:
@@ -282,6 +310,8 @@ def goal_from_dict(d: dict) -> Goal:
     gid = str(d.get("id") or "").strip()
     if not gid:
         raise ValidationError("id is required")
+    if len(gid) > 120:
+        raise ValidationError("the name is too long (120 characters at most)")
     try:
         days = frozenset(int(x) for x in d.get("days", ALL_DAYS))
     except (TypeError, ValueError) as e:

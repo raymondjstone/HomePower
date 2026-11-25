@@ -109,7 +109,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             return await self.async_step_entity_details()
         options = [{"value": p["id"], "label": p["label"]} for p in PROFILES]
         return self.async_show_form(step_id="add_battery", data_schema=vol.Schema({
-            vol.Required("name"): str,
+            vol.Required("name"): vol.All(str, vol.Length(min=1, max=80)),
             vol.Required("kind", default=PROFILES[0]["id"]): _dropdown(options),
         }))
 
@@ -283,7 +283,9 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
     async def async_step_control_battery(self, user_input=None):
         mgr = self._mgr()
         if user_input is not None:
-            dev = mgr.devices[user_input["device"]]
+            dev = mgr.devices.get(user_input["device"])
+            if dev is None:                 # deleted (in the panel) while this form was open
+                return self.async_abort(reason="invalid", description_placeholders={"error": "that battery no longer exists"})
             await mgr.save_device({**dev, "control_enabled": bool(user_input["enabled"])})
             return self._done()
         opts = [{"value": d["device_id"], "label": f"{d['name']} - {'control ON' if d.get('control_enabled', True) else 'monitor only'}"} for d in mgr.devices.values()]
@@ -313,7 +315,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             return self._done()
         devices = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
         fields: dict = {
-            vol.Required("name"): str,
+            vol.Required("name"): vol.All(str, vol.Length(min=1, max=120)),
             vol.Optional("devices", default=[]): sel.SelectSelector(sel.SelectSelectorConfig(options=devices, multiple=True, mode=sel.SelectSelectorMode.DROPDOWN)),
             vol.Required("mode", default="charge"): _dropdown(MODE_OPTIONS),
             vol.Required("start", default="23:30:00"): sel.TimeSelector(),
@@ -347,7 +349,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             return self._done()
         devices = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
         return self.async_show_form(step_id="add_goal", data_schema=vol.Schema({
-            vol.Required("name"): str,
+            vol.Required("name"): vol.All(str, vol.Length(min=1, max=120)),
             vol.Optional("devices", default=[]): sel.SelectSelector(sel.SelectSelectorConfig(options=devices, multiple=True, mode=sel.SelectSelectorMode.DROPDOWN)),
             vol.Required("target_soc", default=90): _num(1, 100, "%"),
             vol.Required("by", default="07:00:00"): sel.TimeSelector(),

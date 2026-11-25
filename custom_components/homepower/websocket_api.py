@@ -52,7 +52,7 @@ def _payload(hass: HomeAssistant) -> dict:
 
 @callback
 def async_register(hass: HomeAssistant) -> None:
-    for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device, ws_reorder_devices, ws_scan_registers, ws_read_registers, ws_register_notes, ws_whatif, ws_backups, ws_backup_now, ws_restore_backup, ws_compare_tariffs,
+    for cmd in (ws_get, ws_subscribe, ws_save_device, ws_delete_device, ws_reorder_devices, ws_scan_registers, ws_read_registers, ws_register_notes, ws_whatif, ws_backups, ws_backup_now, ws_restore_backup, ws_compare_tariffs, ws_solar_forecast,
                 ws_save_schedule, ws_delete_schedule, ws_save_settings, ws_pause,
                 ws_override, ws_clear_override,
                 ws_discover_anker, ws_discover_ecoflow, ws_probe, ws_control, ws_confirm, ws_safe, ws_debug, ws_scan_ports,
@@ -457,6 +457,16 @@ async def ws_diagnostics(hass, msg):
     return c.scrub({"devices": c.diagnostics(), "events": [list(e) for e in list(c._snap.events)[-100:]],
                     "alerts": sorted(c.alerts.active()), "notes": c.last_result.notes,
                     "decisions": list(reversed(c.why))[:40]})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "homepower/solar_forecast",
+                                  vol.Optional("days", default=30): vol.All(int, vol.Range(min=7, max=120)),
+                                  vol.Optional("day"): vol.All(str, vol.Match(r"^\d{4}-\d\d-\d\d$"))})
+@websocket_api.require_admin
+@websocket_api.async_response
+@_guard
+async def ws_solar_forecast(hass, msg):
+    return _coord(hass).solar_comparison(msg["days"], msg.get("day"))
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/tariffs/compare", vol.Optional("days", default=30): vol.All(int, vol.Range(min=1, max=90))})

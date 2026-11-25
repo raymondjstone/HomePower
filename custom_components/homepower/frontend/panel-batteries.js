@@ -44,7 +44,7 @@ export default (U) => {
       <div id="b-conn"></div>
       <div id="b-test"></div>
       <h3>3 · Name</h3>
-      <div class="f"><label>Name</label><input type="text" id="b-name" value="${esc(d.name)}" placeholder="e.g. Garage battery"></div>
+      <div class="f"><label>Name</label><input type="text" id="b-name" maxlength="80" value="${esc(d.name)}" placeholder="e.g. Garage battery"></div>
       <p class="hint" style="font-size:13px;color:var(--secondary-text-color);margin:6px 0">Capacity, power limits and minimum charge are read from the battery itself. Open "Limits" only to override them.</p>
       <details ${isNew ? "" : "open"}><summary>Limits (read from the battery; override only if needed)</summary>
         <div class="three"><div class="f"><label>Capacity (Wh)</label><input type="number" id="b-cap" value="${d.capacity_wh ?? ""}" placeholder="from the battery"></div>

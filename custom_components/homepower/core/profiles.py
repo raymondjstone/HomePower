@@ -126,7 +126,7 @@ VENDORS: dict[str, dict] = {
 
 _ANKER = ("Connects directly over Modbus TCP. Control uses the device's third-party control mode and a signed power "
           "setpoint; HomePower hands the battery back to its previous mode when no schedule applies.")
-_EF = ("Uses EcoFlow's developer API. Auto = self-powered; Hold = backup reserve raised to the current charge level so the battery will "
+_EF = ("Uses EcoFlow's developer API. Auto = the battery's own settings, exactly as they were before HomePower changed them; Hold = backup reserve raised to the current charge level so the battery will "
        "not discharge (solar can still charge it); Charge = backup reserve raised to the target so it charges from the grid at its own "
        "rate (the power cannot be set, and it is not tested on hardware yet). Force discharge is not available.")
 
@@ -136,14 +136,14 @@ def _p(pid, vendor, label, driver, notes="", **extra):
 
 
 PROFILES: list[dict] = [
-    _p("anker_solarbank_max_ac", "Anker", "Anker SOLIX Solarbank Max AC", "anker_modbus", _ANKER, restore_mode=0, watchdog=False),
-    _p("anker_solarbank_max", "Anker", "Anker SOLIX Solarbank Max", "anker_modbus", _ANKER, restore_mode=0, watchdog=False),
-    _p("anker_xe_ac", "Anker", "Anker SOLIX XE AC", "anker_modbus", _ANKER, restore_mode=0, watchdog=False),
-    _p("anker_xe", "Anker", "Anker SOLIX XE", "anker_modbus", _ANKER, restore_mode=0, watchdog=False),
-    _p("anker_e5000_pro", "Anker", "Anker SOLIX Solarbank 4 E5000 Pro", "anker_modbus", _ANKER, restore_mode=0, watchdog=False),
+    _p("anker_solarbank_max_ac", "Anker", "Anker SOLIX Solarbank Max AC", "anker_modbus", _ANKER, watchdog=False),
+    _p("anker_solarbank_max", "Anker", "Anker SOLIX Solarbank Max", "anker_modbus", _ANKER, watchdog=False),
+    _p("anker_xe_ac", "Anker", "Anker SOLIX XE AC", "anker_modbus", _ANKER, watchdog=False),
+    _p("anker_xe", "Anker", "Anker SOLIX XE", "anker_modbus", _ANKER, watchdog=False),
+    _p("anker_e5000_pro", "Anker", "Anker SOLIX Solarbank 4 E5000 Pro", "anker_modbus", _ANKER, watchdog=False),
     _p("anker_x1", "Anker", "Anker SOLIX X1", "anker_modbus",
        _ANKER + " X1 also gets a comms watchdog so it reverts to the app's mode if HomePower stops talking to it.",
-       restore_mode=20, watchdog=True, house_meter=True),   # installed at the grid connection: its meter sees the whole house
+       watchdog=True, house_meter=True),   # installed at the grid connection: its meter sees the whole house
     _p("ecoflow_stream_ac", "EcoFlow", "EcoFlow STREAM AC", "ecoflow_stream", _EF, default_charge_w=1200),
     _p("ecoflow_stream_pro", "EcoFlow", "EcoFlow STREAM Pro", "ecoflow_stream", _EF, default_charge_w=1500),
     _p("ecoflow_stream_ultra", "EcoFlow", "EcoFlow STREAM Ultra", "ecoflow_stream", _EF, default_charge_w=2300),
@@ -157,7 +157,7 @@ PROFILES: list[dict] = [
        "Talks to the battery directly over Modbus TCP (EcoFlow's \"third-party control\", firmware 1.1.7.28 or later) instead of the cloud: "
        "readings every few seconds, no rate limit, and Charge/Discharge are set in watts. Switch Modbus TCP on in the EcoFlow app first. "
        "The register map is EcoFlow's own; the sign of the power setpoint is assumed (+ charging) until confirmed on hardware, so use "
-       "Test control and, if it does the opposite, tick \"Reverse the charge/discharge sign\".", restore_mode=0),
+       "Test control and, if it does the opposite, tick \"Reverse the charge/discharge sign\"."),
     _p("victron_gx", "Other", "Victron GX system (read-only)", "modbus_generic",
        "Reads the GX system registers over Modbus TCP (enable it in the GX device: Settings > Services > Modbus/TCP). "
        "Read-only: shown and recorded, never controlled. Unverified on hardware.",

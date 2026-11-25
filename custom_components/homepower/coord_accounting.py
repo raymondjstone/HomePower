@@ -25,7 +25,7 @@ class AccountingMixin:
         if not s.divert_entity:
             return
         # While paused HomePower switches nothing on, and lets go of the load if it is running.
-        soc = None if self.paused else self._combined(actuals)["soc"]
+        soc = None if self.paused else self._combined(self.shown_actuals())["soc"]   # a short read failure does not flip the load
         act = self.diverter.decide(now_s, soc, grid, s.divert_export_w, s.divert_min_soc, cheap=bool(s.divert_cheap and self._cheap_now and not self.paused))
         if act:
             await self._switch(s.divert_entity, act == "on")

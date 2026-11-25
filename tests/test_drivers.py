@@ -265,7 +265,7 @@ def test_charge_takes_control_then_release_restores_mode():
     async def go():
         async with fake_anker() as dev:
             dev.hold[10064] = 20                                       # app-managed
-            d = AnkerModbusDriver(cfg(dev.port, restore_mode=0, watchdog=True))
+            d = AnkerModbusDriver(cfg(dev.port, watchdog=True))
             await d.apply(Desired(Mode.CHARGE, 2000))
             assert dev.hold[10064] == 3 and sp(dev) == -2000 and dev.hold[10080] == 600
             a = await d.read()
@@ -288,6 +288,33 @@ def test_auto_when_not_ours_writes_nothing():
             await d.apply(Desired(Mode.AUTO))
             assert dev.writes == []
             await d.close()
+    asyncio.run(go())
+
+
+def test_anker_hand_back_with_an_unknown_original_mode_leaves_the_battery_alone():
+    async def go():
+        async with fake_anker() as dev:
+            dev.hold[10064] = 3                                        # third-party control, but nothing saved about the mode before
+            d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            await d.apply(Desired(Mode.AUTO))
+            assert dev.writes == [] and dev.hold[10064] == 3           # no made-up mode (the X1 used to get 20)
+            await d.close()
+    asyncio.run(go())
+
+
+def test_anker_hand_back_after_a_restart_restores_the_saved_mode():
+    async def go():
+        async with fake_anker() as dev:
+            saved = []
+            dev.hold[10064] = 1                                        # the user's time-of-use mode
+            d = AnkerModbusDriver(cfg(dev.port), on_orig=saved.append)
+            await d.apply(Desired(Mode.HOLD))
+            assert saved[-1] == {"restore": 1} and dev.hold[10064] == 3
+            await d.close()
+            again = AnkerModbusDriver(cfg(dev.port), orig=saved[-1], on_orig=saved.append)   # Home Assistant restarted
+            await again.apply(Desired(Mode.AUTO))
+            assert dev.hold[10064] == 1 and saved[-1] is None
+            await again.close()
     asyncio.run(go())
 
 
@@ -360,8 +387,7 @@ def test_ecoflow_read_and_commands():
         assert d.api.sent == [{"cfgBackupReverseSoc": 71}]        # held at its current level: no grid top-up
         d.api.sent.clear()
         await d.apply(Desired(Mode.AUTO))
-        assert d.api.sent == [{"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}},
-                              {"cfgBackupReverseSoc": 10}]
+        assert d.api.sent == [{"cfgBackupReverseSoc": 10}]        # only the reserve: the energy strategy is never touched
         with pytest.raises(ValueError):
             await d.apply(Desired(Mode.DISCHARGE, 1000))     # no discharge setpoint exists
         d.api._q = {"backupReverseSoc": 95}
@@ -757,7 +783,7 @@ def test_ultra_x_auto_puts_back_the_reserve_the_user_had_not_the_minimum():
         d._on_orig = saved.append
         await d.read()
         await d.apply(Desired(Mode.HOLD))
-        assert d.api.sent == [{"cfgBackupReverseSoc": 50}] and saved[-1] == {"reserve": 30}
+        assert d.api.sent == [{"cfgBackupReverseSoc": 50}] and saved[-1] == {"reserve": 30, "wrote": [50]}
         d.api.sent.clear()
         await d.apply(Desired(Mode.AUTO))
         assert d.api.sent[-1] == {"cfgBackupReverseSoc": 30} and saved[-1] is None
@@ -779,13 +805,18 @@ def test_ultra_x_original_reserve_survives_a_restart_and_a_raised_reserve_is_not
         await again.read()
         await again.apply(Desired(Mode.AUTO))
         assert again.api.sent[-1] == {"cfgBackupReverseSoc": 30}
-        h = eco({"soc": 60, "backupReverseSoc": 95})                               # left at 95 by something earlier
+        h = eco({"soc": 60, "backupReverseSoc": 95})                               # found at 95 (the user's, or left by something)
         await h.read()
         await h.apply(Desired(Mode.HOLD))
-        assert h._orig == {"reserve": None}
+        assert h._orig == {"reserve": 95, "wrote": [60]}
         h.api.sent.clear()
         await h.apply(Desired(Mode.AUTO))
-        assert h.api.sent[-1] == {"cfgBackupReverseSoc": 10}                       # unknown original: the battery's minimum
+        assert h.api.sent == [{"cfgBackupReverseSoc": 95}]                         # put back as it was found, never a made-up minimum
+        old = EcoFlowStreamDriver(c.config, session=None, orig={"reserve": None})  # saved by an older version: the original is unknown
+        old.api = FakeApi({"soc": 60, "backupReverseSoc": 95})
+        await old.read()
+        await old.apply(Desired(Mode.AUTO))
+        assert old.api.sent == [] and old._orig is None                            # left alone
     asyncio.run(go())
 
 
@@ -823,7 +854,7 @@ def test_a_failed_ecoflow_hand_back_keeps_the_users_original_reserve_for_the_ret
         d = eco({"cmsBattSoc": 0.0, "soc": 60, "powGetBpCms": 0.0, "backupReverseSoc": 30, "powGetSysGrid": 0})
         await d.read()
         await d.apply(Desired(Mode.HOLD))                       # remembers the user's own reserve (30)
-        assert d._orig == {"reserve": 30}
+        assert d._orig == {"reserve": 30, "wrote": [60]}
         real = d.api.command
 
         async def failing(sn, params, cmd_id=17):
@@ -831,7 +862,7 @@ def test_a_failed_ecoflow_hand_back_keeps_the_users_original_reserve_for_the_ret
         d.api.command = failing
         with pytest.raises(ValueError):
             await d.apply(Desired(Mode.AUTO))
-        assert d._orig == {"reserve": 30}                       # not forgotten by the failure
+        assert d._orig == {"reserve": 30, "wrote": [60]}              # not forgotten by the failure
         d.api.command = real
         d.api.sent.clear()
         d._state = {**d._state, "backupReverseSoc": 60}
@@ -924,12 +955,47 @@ def test_ecoflow_retry_never_overwrites_the_users_own_reserve():
     asyncio.run(go())
 
 
-def test_ecoflow_hand_back_still_clears_a_clearly_raised_reserve_when_originals_were_lost():
+def test_ecoflow_hand_back_leaves_a_raised_reserve_alone_when_nothing_was_saved():
     async def go():
         d = eco({"cmsBattSoc": 0.0, "soc": 60, "powGetBpCms": 0.0, "backupReverseSoc": 95, "powGetSysGrid": 0})
         await d.read()
-        await d.apply(Desired(Mode.AUTO))                        # no saved original, reserve at the top and not just handed back
-        assert {"cfgBackupReverseSoc": 10} in d.api.sent
+        await d.apply(Desired(Mode.AUTO))                        # no saved original: it may be the user's own, so never a made-up value
+        assert d.api.sent == [] and d._warned_unknown            # (and it is logged, once)
+        e = eco({**ES5000, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 95})
+        await e.read()
+        await e.apply(Desired(Mode.AUTO))
+        assert e.api.sent == []                                  # the 5000 series too: not switched off
+    asyncio.run(go())
+
+
+def test_ecoflow_takes_the_originals_from_a_fresh_reading_not_the_cached_one():
+    async def go():
+        d = eco({"soc": 50, "backupReverseSoc": 30})
+        await d.read()
+        d.api._q = {"soc": 50, "backupReverseSoc": 40}           # changed in the app since the cached reading
+        await d.apply(Desired(Mode.HOLD))
+        assert d._orig == {"reserve": 40, "wrote": [50]}
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 40}]
+        e = eco(dict(ES5000))
+        await e.read()
+        e.api._q = {**ES5000, "workMode": "AI_MODE", "backupSocOnOff": True, "backupSoc": 25}
+        await e.apply(Desired(Mode.HOLD))
+        assert e._orig == {"on": True, "level": 25, "mode": "AI_MODE", "wrote": [40]}
+        e.api.sent.clear()
+        await e.apply(Desired(Mode.AUTO))
+        assert e.api.sent == [{"bpBackupConfig": {"backupSocOnOff": True, "backupSoc": 25}}, {"workMode": "AI_MODE"}]
+    asyncio.run(go())
+
+
+def test_es5000_reserve_on_at_an_unknown_level_is_not_switched_off_on_hand_back():
+    async def go():
+        d = EcoFlowStreamDriver(eco(dict(ES5000)).config, session=None, orig={"on": True, "level": None, "mode": "TIMER_TASK"})
+        d.api = FakeApi({**ES5000, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 40})
+        await d.read()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == [{"workMode": "TIMER_TASK"}] and d._orig is None   # the mode goes back; the level is left as it is
     asyncio.run(go())
 
 
@@ -1447,3 +1513,152 @@ def test_a_battery_that_answers_nothing_is_not_told_it_lacks_the_setting():
 
     with pytest.raises(ValueError, match="did not answer"):
         asyncio.run(apply_change(Mute(), "charge_limit", 90, False))
+
+
+def test_ultra_x_hand_back_keeps_a_reserve_changed_in_the_app_while_held():
+    async def go():
+        saved = []
+        d = eco({"soc": 50, "backupReverseSoc": 30})
+        d._on_orig = saved.append
+        await d.read()
+        await d.apply(Desired(Mode.HOLD))                          # HomePower raises the reserve to 50
+        assert saved[-1] == {"reserve": 30, "wrote": [50]}         # what it wrote is saved with the original (survives a restart)
+        d.api._q = {"soc": 50, "backupReverseSoc": 40}             # the user sets 40 in the EcoFlow app meanwhile
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == [] and d._orig is None                # their 40 stays: the older 30 is not put back over it
+        # HomePower's own raise, still showing (or rounded up to the battery's floor), is handed back as usual
+        e = eco({"soc": 50, "backupReverseSoc": 30})
+        await e.read()
+        await e.apply(Desired(Mode.CHARGE, 1000, target_soc=80))
+        e.api._q = {"soc": 60, "backupReverseSoc": 80}
+        e.api.sent.clear()
+        await e.apply(Desired(Mode.AUTO))
+        assert e.api.sent == [{"cfgBackupReverseSoc": 30}]
+        f = eco({"soc": 5, "backupReverseSoc": 30})
+        await f.read()
+        await f.apply(Desired(Mode.HOLD))                          # writes 5; the battery keeps it at its floor (min 10 + 3)
+        f.api._q = {"soc": 5, "backupReverseSoc": 13}
+        f.api.sent.clear()
+        await f.apply(Desired(Mode.AUTO))
+        assert f.api.sent == [{"cfgBackupReverseSoc": 30}]
+        # an entry saved by the previous version (no record of what was written) still hands back the saved reserve
+        g = EcoFlowStreamDriver(eco({}).config, session=None, orig={"reserve": 30})
+        g.api = FakeApi({"soc": 50, "backupReverseSoc": 40})
+        await g.read()
+        await g.apply(Desired(Mode.AUTO))
+        assert g.api.sent == [{"cfgBackupReverseSoc": 30}]
+    asyncio.run(go())
+
+
+def test_es5000_hand_back_keeps_a_reserve_or_mode_changed_in_the_app_while_held():
+    async def go():
+        d = eco(dict(ES5000))                                       # reserve off, timer-task mode
+        await d.read()
+        await d.apply(Desired(Mode.HOLD))                           # self-consumption, reserve on at 40
+        d.api._q = {**ES5000, "workMode": "AI_MODE", "backupSocOnOff": True, "backupSoc": 20}   # both changed in the app
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == [] and d._orig is None                 # neither is overwritten
+        e = eco(dict(ES5000))
+        await e.read()
+        await e.apply(Desired(Mode.HOLD))
+        e.api._q = {**ES5000, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 40}   # still as HomePower left it
+        e.api.sent.clear()
+        await e.apply(Desired(Mode.AUTO))
+        assert e.api.sent == [{"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, {"workMode": "TIMER_TASK"}]
+    asyncio.run(go())
+
+
+def test_anker_forgets_the_saved_mode_when_someone_else_leaves_third_party_control():
+    async def go():
+        async with fake_anker() as dev:
+            saved = []
+            dev.hold[10064] = 1
+            d = AnkerModbusDriver(cfg(dev.port), on_orig=saved.append)
+            await d.apply(Desired(Mode.HOLD))
+            dev.hold[10064] = 4                                        # the user picks another mode in the Anker app meanwhile
+            n = len(dev.writes)
+            await d.apply(Desired(Mode.AUTO))
+            assert dev.hold[10064] == 4 and len(dev.writes) == n and saved[-1] is None
+            await d.close()
+    asyncio.run(go())
+
+
+def test_a_reserve_the_battery_clamped_to_its_charge_limit_still_counts_as_homepowers_own():
+    async def go():
+        d = eco({"soc": 50, "backupReverseSoc": 30, "cmsMaxChgSoc": 80, "cmsMinDsgSoc": 10})
+        await d.read()
+        await d.apply(Desired(Mode.CHARGE, 1000, target_soc=95))   # writes 95; the battery keeps it at its 80 % charge limit
+        d.api._q = {"soc": 60, "backupReverseSoc": 80, "cmsMaxChgSoc": 80, "cmsMinDsgSoc": 10}
+        d.api.sent.clear()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == [{"cfgBackupReverseSoc": 30}]          # not mistaken for the user's change (it would stay stuck at 80)
+    asyncio.run(go())
+
+
+def test_x1_clearing_homepowers_limit_puts_back_an_installers_looser_limit_not_off():
+    async def go():
+        async with fake_anker() as dev:
+            for a in range(10060, 10085):
+                dev.hold.setdefault(a, 0)
+            dev.hold[10074], dev.hold[10075], dev.hold[10076] = 2, 0, 6000      # an installer's 6000 W export limit
+            d = AnkerModbusDriver(cfg(dev.port, house_meter=True))
+            d._order = "big"
+            exp = lambda: (dev.hold[10074], dev.hold[10075] << 16 | dev.hold[10076])
+            try:
+                mine, orig = {}, {}
+                assert await d.set_grid_limits(None, 3000, mine, orig) == ["export limit 3000 W"]   # tightened
+                assert orig == {"export": [2, 6000]} and mine == {"export": 3000}
+                assert await d.set_grid_limits(None, 4000, mine, orig) == ["export limit 4000 W"] and orig == {"export": [2, 6000]}
+                assert await d.set_grid_limits(None, None, mine, orig) == ["export limit back to 6000 W"]
+                assert exp() == (2, 6000) and mine == {} and orig == {}             # the installer's limit, not off
+                dev.hold[10074] = 0                                                # was off: HomePower's limit goes off again
+                assert await d.set_grid_limits(None, 3000, mine, orig) == ["export limit 3000 W"] and orig == {"export": [0, 6000]}
+                assert await d.set_grid_limits(None, None, mine, orig) == ["export limit off"] and exp()[0] == 0
+            finally:
+                await d.close()
+    asyncio.run(go())
+
+
+def test_x1_watchdog_is_saved_on_takeover_and_put_back_on_hand_back():
+    async def go():
+        async with fake_anker() as dev:
+            saved = []
+            dev.hold[10064], dev.hold[10080] = 0, 1800                        # the user's own watchdog: 1800 s
+            d = AnkerModbusDriver(cfg(dev.port, watchdog=True), on_orig=saved.append)
+            await d.apply(Desired(Mode.HOLD))
+            assert dev.hold[10080] == 600 and saved[-1] == {"restore": 0, "watchdog": 1800}
+            await d.close()
+            again = AnkerModbusDriver(cfg(dev.port, watchdog=True), orig=saved[-1], on_orig=saved.append)   # after a restart
+            await again.apply(Desired(Mode.AUTO))
+            assert dev.hold[10080] == 1800 and dev.hold[10064] == 0 and saved[-1] is None
+            await again.apply(Desired(Mode.HOLD))
+            dev.hold[10080] = 900                                              # changed in the Anker app while held
+            await again.apply(Desired(Mode.AUTO))
+            assert dev.hold[10080] == 900                                      # theirs is kept
+            await again.close()
+    asyncio.run(go())
+
+
+def test_x1_watchdog_is_put_back_even_when_someone_else_left_third_party_control():
+    async def go():
+        async with fake_anker() as dev:
+            dev.hold[10064], dev.hold[10080] = 0, 1800
+            d = AnkerModbusDriver(cfg(dev.port, watchdog=True))
+            await d.apply(Desired(Mode.HOLD))
+            dev.hold[10064] = 1                                                # the user picked time-of-use in the app
+            await d.apply(Desired(Mode.AUTO))
+            assert dev.hold[10064] == 1 and dev.hold[10080] == 1800            # their mode kept, HomePower's watchdog undone
+            await d.close()
+    asyncio.run(go())
+
+
+def test_es5000_reserve_switch_missing_from_the_reading_is_unknown_not_off():
+    async def go():
+        d = EcoFlowStreamDriver(eco(dict(ES5000)).config, session=None, orig={"on": None, "level": 40, "mode": "TIMER_TASK", "wrote": [40]})
+        d.api = FakeApi({**ES5000, "workMode": "SELF_CONSUMPTION", "backupSocOnOff": True, "backupSoc": 40})
+        await d.read()
+        await d.apply(Desired(Mode.AUTO))
+        assert d.api.sent == [{"workMode": "TIMER_TASK"}]          # the mode goes back; the reserve is not switched off
+    asyncio.run(go())

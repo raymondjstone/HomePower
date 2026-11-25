@@ -53,9 +53,9 @@ class HomePowerCard extends HTMLElement {
     } else {
       const a = st.attributes, flow = a.flow_w || 0, kind = Math.abs(flow) < 20 ? "Idle" : flow > 0 ? "Charging" : "Discharging";
       const n = (v, l) => `<div><b>${v}</b><span>${l}</span></div>`;
-      const bats = this._config.show_batteries === false ? "" : `<div class="bats">${(a.batteries || []).map((b) => `<div class="bat${b.online ? "" : " off"}">
+      const bats = this._config.show_batteries === false ? "" : `<div class="bats">${(a.batteries || []).map((b) => `<div class="bat${b.online ? "" : " off"}"${b.stale ? ' title="Readings stale: showing the last good read"' : ""}>
           <span>${esc(b.name)}</span><div class="bar"><i style="width:${b.soc == null ? 0 : Math.max(0, Math.min(100, b.soc))}%"></i></div>
-          <span>${b.soc == null ? "–" : Math.round(b.soc) + "%"}${b.power_w == null ? "" : " · " + fmtW(b.power_w)}</span></div>`).join("")}</div>`;
+          <span>${b.soc == null ? "–" : Math.round(b.soc) + "%"}${b.power_w == null ? "" : " · " + fmtW(b.power_w)}${b.stale ? " (stale)" : ""}</span></div>`).join("")}</div>`;
       body = `<div class="top">${this._ring(a.soc)}<div class="nums">
           ${a.stored_kwh == null ? n("–", "stored (no battery online)") : n(`${a.stored_kwh.toFixed(1)} kWh`, `stored of ${(a.capacity_kwh ?? 0).toFixed(1)}`)}
           ${n(`${kind} ${fmtW(Math.abs(flow))}`, "now")}

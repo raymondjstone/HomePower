@@ -179,7 +179,7 @@ export default (U) => {
 
   _tariffCard(cur) {
     const t = this._tariffs;
-    if (!t) return "";
+    if (!t || (!t.error && !Array.isArray(t.tariffs))) return "";      // nothing (or an unexpected answer): no card, not a broken tab
     if (t.error) return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:scale-balance"></ha-icon>Tariff comparison</h2><div class="err">${esc(t.error)}</div></div>`;
     if (!t.tariffs.length) return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:scale-balance"></ha-icon>Tariff comparison</h2><p class="sub" style="color:var(--secondary-text-color)">List other tariffs in Settings > Compare tariffs and this shows what your recorded usage would have cost on each.</p></div>`;
     const best = t.tariffs[0].total;
@@ -188,6 +188,60 @@ export default (U) => {
       <table class="tbl"><tr><th>Tariff</th><th>Import</th><th>Export</th><th>Standing</th><th>Total</th><th>vs cheapest</th></tr>${rows}</table>
       ${this._monthChart(t.monthly, cur)}${this._tariffCsv(t)}
       <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Your recorded usage (${t.import_kwh} kWh imported, ${t.export_kwh} kWh exported) priced on each tariff. It is what your battery and house did, so a tariff that suits a different battery schedule could do better than shown.</p></div>`;
+  },
+
+  // Bars (what was measured) with the forecast as a dashed line and dots: two charts drawn the same way, by day and by hour.
+  // Colours: the two series' validated pair (blue forecast, orange measured, passes light and dark backgrounds), and the
+  // forecast also differs by shape (dashed line + dots) so colour is never the only cue.
+  _fcChart(rows, o) {
+    const FC = "#4c8bf5", ACT = "#e26c08";
+    const vals = rows.flatMap((r) => [r.forecast, r.actual]).filter((v) => v != null);
+    if (!vals.length) return `<div class="sub" style="color:var(--secondary-text-color)">Nothing recorded yet.</div>`;
+    // drawn at about the width it is shown at, so the labels stay readable on a phone instead of shrinking with the chart
+    const W = Math.round(Math.max(340, Math.min(640, (this.offsetWidth || 680) - 72))), H = W < 480 ? 180 : 200;
+    const L = 40, B = 24, T = 8, pw = W - L - 8, ph = H - B - T, n = rows.length, gw = pw / n, bw = Math.max(2, Math.min(18, gw * 0.62));
+    const nt = this._niceTicks(0, Math.max(0.1, ...vals), 4);
+    const y = (v) => T + ph * (1 - (v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo));
+    const cx = (i) => L + i * gw + gw / 2;
+    const fmt = (v) => (v == null ? "–" : `${v < 10 ? v.toFixed(2) : v.toFixed(1)} kWh`);
+    let g = (nt.ticks || []).map((tv) => `<line x1="${L}" x2="${W - 8}" y1="${y(tv).toFixed(1)}" y2="${y(tv).toFixed(1)}" stroke="currentColor" stroke-opacity=".12"/><text x="${L - 6}" y="${(y(tv) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="currentColor" fill-opacity=".7">${tv}</text>`).join("");
+    const every = Math.ceil(n / Math.max(4, Math.floor(pw / 60)));          // about one label per 60 units of width
+    rows.forEach((r, i) => {
+      if (r.actual != null && r.actual > 0) g += `<rect x="${(cx(i) - bw / 2).toFixed(1)}" y="${y(r.actual).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, y(0) - y(r.actual)).toFixed(1)}" rx="2" fill="${ACT}"/>`;
+      if ((i % every === 0 && n - 1 - i >= every / 2) || i === n - 1) g += `<text x="${cx(i).toFixed(1)}" y="${H - 7}" text-anchor="middle" font-size="11" fill="currentColor" fill-opacity=".7">${esc(o.xlab(r, i))}</text>`;
+    });
+    let d = "", pen = false;                                     // the forecast line breaks where the forecast is not known
+    rows.forEach((r, i) => { if (r.forecast == null) { pen = false; return; } d += `${pen ? "L" : "M"}${cx(i).toFixed(1)},${y(r.forecast).toFixed(1)}`; pen = true; });
+    if (d) g += `<path d="${d}" fill="none" stroke="${FC}" stroke-width="2" stroke-dasharray="6 4" stroke-linejoin="round"/>`;
+    rows.forEach((r, i) => { if (r.forecast) g += `<circle cx="${cx(i).toFixed(1)}" cy="${y(r.forecast).toFixed(1)}" r="4" fill="${FC}" stroke="var(--card-background-color, #fff)" stroke-width="2"/>`; });
+    // hover: the whole column is the target (bigger than the marks), and says both values
+    rows.forEach((r, i) => { g += `<rect x="${(L + i * gw).toFixed(1)}" y="${T}" width="${gw.toFixed(1)}" height="${ph}" fill="transparent"><title>${esc(o.title(r))}: forecast ${fmt(r.forecast)}, measured ${fmt(r.actual)}</title></rect>`; });
+    return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;color:var(--primary-text-color)" role="img" aria-label="${esc(o.aria)}">${g}</svg>
+      <div class="legend"><span><i class="sw" style="background:${ACT}"></i>Measured solar</span><span><svg width="22" height="10" aria-hidden="true" style="vertical-align:middle;margin-right:4px"><line x1="0" x2="22" y1="5" y2="5" stroke="${FC}" stroke-width="2" stroke-dasharray="5 3"/><circle cx="11" cy="5" r="3.5" fill="${FC}"/></svg>Forecast</span><span style="color:var(--secondary-text-color)">kWh</span></div>`;
+  },
+
+  _solarForecastCard() {
+    const c = this._solarCmp, sf = this.live.solar_forecast;
+    if (!c || !Array.isArray(c.days) || !Array.isArray(c.hours) || (!sf && !c.days.some((r) => r.forecast != null))) return "";
+    const src = { forecast_solar: "Forecast.Solar", solcast_solar: "Solcast" }[c.source] || "the solar forecast";
+    const today = c.days.length ? c.days[c.days.length - 1].day : c.day;
+    // whole days only: today's measured solar is only what has come so far, against a forecast for the whole day
+    const both = c.days.filter((r) => r.day !== today && r.forecast != null && r.actual != null && r.forecast > 0);
+    const sumF = both.reduce((a, r) => a + r.forecast, 0), sumA = both.reduce((a, r) => a + r.actual, 0);
+    const verdict = both.length >= 3 && sumF > 0
+      ? `<p style="margin:4px 0">Over the last ${both.length} days with both, the solar measured was <b>${Math.round((100 * sumA) / sumF)}%</b> of what ${esc(src)} forecast.</p>` : "";
+    const yday = c.days.length > 1 ? c.days[c.days.length - 2].day : null;
+    const dayBtn = (d, label) => (d ? `<button class="btn sm ${c.day === d ? "pri" : ""}" data-act="solar-day" data-day="${esc(d)}">${label}</button>` : "");
+    const md = (s) => { const [, m, dd] = String(s).split("-"); return `${+dd}/${+m}`; };
+    const csv = this._csvLink("solar-forecast-vs-measured.csv", [["day", "forecast_kwh", "measured_kwh"], ...c.days.map((r) => [r.day, r.forecast, r.actual])]);
+    return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:weather-sunny"></ha-icon>Solar forecast against what came</h2>
+      ${c.measured ? "" : `<div class="banner">None of your batteries reports solar, so HomePower cannot measure it: only the forecast is shown.</div>`}
+      ${verdict}
+      <h3 style="margin:10px 0 4px;font-size:14px">By day</h3>
+      ${this._fcChart(c.days, { xlab: (r) => md(r.day), title: (r) => (r.day === today ? `${r.day} (today, so far)` : r.day), aria: "Solar forecast and measured solar for each day" })}
+      <h3 style="margin:14px 0 4px;font-size:14px">By hour, ${md(c.day)} <span class="durs">${dayBtn(yday, "Yesterday")} ${dayBtn(today, "Today")}</span></h3>
+      ${this._fcChart(c.hours, { xlab: (r) => String(r.hour).padStart(2, "0"), title: (r) => `${c.day} ${String(r.hour).padStart(2, "0")}:00`, aria: "Solar forecast and measured solar for each hour" })}
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Forecast from ${esc(src)}: by day, the total first seen that day (what the day was planned with); by hour, the last forecast made before each hour. Today's bar is the solar so far, so it is left out of the percentage. Measured solar is what your batteries report, so panels on a separate inverter are not included. ${csv}</p></div>`;
   },
 
   _solarStringsCard() {
@@ -221,7 +275,7 @@ export default (U) => {
         ${L.daily && L.daily.self_consumption != null ? tile("Solar used at home today", `${L.daily.self_consumption}%`, "Not exported to the grid") : ""}
         ${L.daily && L.daily.cheap_share != null ? tile("Cheap-rate share today", `${L.daily.cheap_share}%`, "Of the grid energy you imported") : ""}
         ${L.export && L.export.price_now != null && L.export.buyback != null ? tile("Exporting now pays", `${cur}${L.export.price_now.toFixed(3)}`, `Buying back costs ${cur}${L.export.buyback.toFixed(3)}${L.export.pays ? ": worth exporting" : ""}${L.export.on ? "" : " (paid export is off)"}`) : ""}
-      </div>${this._tariffCard(cur)}${this._solarStringsCard()}${this._healthCard()}${this._ecoflowCard()}${this._planCard()}${this._trendCard()}${this._gridEventsCard()}${this._whatifCard()}
+      </div>${this._solarForecastCard()}${this._tariffCard(cur)}${this._solarStringsCard()}${this._healthCard()}${this._ecoflowCard()}${this._planCard()}${this._trendCard()}${this._gridEventsCard()}${this._whatifCard()}
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:battery-sync"></ha-icon>Batteries (since HomePower started recording)</h2>
         <table class="tbl"><tr><th>Battery</th><th>Charged</th><th>Discharged</th><th>Round-trip</th><th>Cycles</th></tr>${rows || ""}</table>
         <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">These are also Home Assistant sensors, so you can add them to the Energy dashboard.</p></div>

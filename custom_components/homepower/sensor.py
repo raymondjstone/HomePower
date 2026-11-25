@@ -393,7 +393,8 @@ class HomeBattery(_Base):
         return {**fig, "homepower": True,
                 "batteries": [{"name": a.config.name, "soc": (v.get(a.config.device_id) or {}).get("soc"),
                                "power_w": (v.get(a.config.device_id) or {}).get("power_w"),
-                               "online": bool((v.get(a.config.device_id) or {}).get("online"))} for a in self.coordinator.adapters]}
+                               "online": bool((v.get(a.config.device_id) or {}).get("online")),
+                               "stale": bool((v.get(a.config.device_id) or {}).get("stale"))} for a in self.coordinator.adapters]}
 
 
 class DailyShare(_Base):

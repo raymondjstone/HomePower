@@ -16,7 +16,7 @@ LIMIT_S = int(os.environ.get("HARNESS_TIMEOUT_S", "600"))
 
 def main() -> int:
     want = sys.argv[1:]
-    scripts = [HERE / "check_imports.py", HERE / "configure_flows.py"] + sorted(HERE.glob("e2e_*.py"))
+    scripts = [HERE / "check_imports.py", HERE / "configure_flows.py", HERE / "check_form_schemas.py"] + sorted(HERE.glob("e2e_*.py"))
     if want:
         scripts = [s for s in scripts if any(w in s.stem for w in want)]
     env = {**os.environ, "SOAK_CYCLES": os.environ.get("SOAK_CYCLES", "300"), "PYTHONUNBUFFERED": "1"}

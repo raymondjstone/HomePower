@@ -4,6 +4,7 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 run on the coordinator itself and use its state."""
 from __future__ import annotations
 
+import sys
 import time as _time
 from datetime import datetime, timedelta
 
@@ -11,6 +12,7 @@ from homeassistant.util import dt as dt_util
 
 from .core.models import Actual
 from .core.rates import RateTable
+from .core.solar_forecast import compare_days, compare_hours, hours_by_day, remaining_kwh
 from .core.weather import BASE_C, cold_extra_wh, parse_open_meteo, pick_tomorrow, recent_degree_days, to_celsius
 from .core.solar_room import SolarDay, charge_ceiling_pct, split_by_capacity
 from .coord_base import _LOGGER, FORECAST_PLATFORMS, _real
@@ -18,10 +20,11 @@ from .coord_base import _LOGGER, FORECAST_PLATFORMS, _real
 
 class ForecastMixin:
     def _forecast_entities(self) -> dict[str, list[str]]:
-        """Forecast.Solar / Solcast sensors for today's and tomorrow's generation (all planes / sites, to be added up)."""
+        """Forecast.Solar / Solcast sensors for today's and tomorrow's generation: all planes / sites of ONE of them, to be
+        added up. With both installed, Forecast.Solar is used: adding the two would count the same panels twice."""
         if _time.monotonic() - self._fc_at < 60:
             return self._fc_cache
-        found: dict[str, list[str]] = {"today": [], "tomorrow": []}
+        by_platform: dict[str, dict[str, list[str]]] = {}
         try:
             from homeassistant.helpers import entity_registry as er
             for e in er.async_get(self.hass).entities.values():
@@ -29,14 +32,124 @@ class ForecastMixin:
                 if not ends or e.domain != "sensor" or e.disabled_by:
                     continue
                 uid = str(e.unique_id or "")
+                got = by_platform.setdefault(e.platform, {"today": [], "tomorrow": []})
                 if uid.endswith(ends[0]):
-                    found["today"].append(e.entity_id)
+                    got["today"].append(e.entity_id)
                 elif uid.endswith(ends[1]):
-                    found["tomorrow"].append(e.entity_id)
+                    got["tomorrow"].append(e.entity_id)
         except Exception as err:  # noqa: BLE001 - registry unavailable: nothing found
             _LOGGER.debug("forecast lookup failed: %s", err)
+        found: dict[str, list[str]] = {"today": [], "tomorrow": []}
+        self.forecast_source = None                             # (a forecast integration removed since is not still named)
+        for platform in FORECAST_PLATFORMS:                     # in order of preference
+            got = by_platform.get(platform)
+            if got and (got["today"] or got["tomorrow"]):
+                found = got
+                self.forecast_source = platform
+                break
         self._fc_cache, self._fc_at = found, _time.monotonic()
         return found
+
+    async def _refresh_solar_hours(self) -> None:
+        """Every 15 minutes: the expected solar energy for each hour, from the forecast integration's energy platform (what
+        Home Assistant's Energy dashboard draws its forecast from). The first integration in FORECAST_PLATFORMS that gives
+        an answer is used, all its planes / sites added up."""
+        if self._solar_busy or _time.monotonic() - self._solar_at < 900:
+            return
+        self._solar_busy, self._solar_at = True, _time.monotonic()
+        try:
+            from homeassistant.config_entries import ConfigEntryState
+            from homeassistant.loader import async_get_integration
+
+            tz = dt_util.now().tzinfo
+            for domain in FORECAST_PLATFORMS:
+                entries = [e for e in self.hass.config_entries.async_entries(domain) if e.state is ConfigEntryState.LOADED]
+                if not entries:
+                    continue
+                try:
+                    platform = await (await async_get_integration(self.hass, domain)).async_get_platform("energy")
+                    fetch = platform.async_get_solar_forecast
+                except Exception:  # noqa: BLE001 - an integration without an energy platform: its sensors still work
+                    _LOGGER.debug("%s has no hourly solar forecast", domain, exc_info=True)
+                    continue
+                # Forecast.Solar keyed each hour by its END until Home Assistant added energy_by_period_start: on those
+                # releases (and so in their own Energy dashboard) the forecast would land an hour late.
+                by_end = domain == "forecast_solar" and not hasattr(
+                    sys.modules.get("homeassistant.components.forecast_solar.coordinator"), "energy_by_period_start")
+                total: dict[str, list[float]] = {}
+                for e in entries:
+                    try:
+                        data = await fetch(self.hass, e.entry_id)
+                    except Exception:  # noqa: BLE001 - one plane failing must not lose the others
+                        _LOGGER.debug("solar forecast from %s failed", domain, exc_info=True)
+                        continue
+                    for day, hours in hours_by_day((data or {}).get("wh_hours") if isinstance(data, dict) else None, tz, by_end).items():
+                        acc = total.setdefault(day, [0.0] * 24)
+                        for i, v in enumerate(hours):
+                            acc[i] += v
+                if total:
+                    self.solar_hours = total
+                    return
+            self.solar_hours = {}
+        except Exception:  # noqa: BLE001 - a background task: an error must not escape as "Task exception was never retrieved"
+            _LOGGER.debug("hourly solar forecast refresh failed", exc_info=True)
+        finally:
+            self._solar_busy = False
+
+    def _note_solar(self, now: datetime) -> None:
+        """Each cycle: today's forecast total (kept as first seen) and the latest hourly profiles, for forecast-vs-actual."""
+        today = now.date().isoformat()
+        fc = self._forecast_by_day(now)
+        total = fc.get(today)
+        if total is None and self.solar_hours.get(today):
+            total = sum(self.solar_hours[today])
+        self.solar_log.note_total(today, total)
+        for day, hours in self.solar_hours.items():
+            if day >= today:          # today's hours already started stay as last forecast before they began
+                self.solar_log.note_hours(day, hours, now.hour if day == today else 0)
+        if self._solar_pruned != today:
+            self.solar_log.prune(today)
+            self._solar_pruned = today
+
+    def solar_view(self, now: datetime) -> dict | None:
+        """Today's solar forecast for the Overview (None when no forecast is set up). Never raises: it is part of the live
+        view, which must always be sent."""
+        try:
+            return self._solar_view(now)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("solar forecast view failed", exc_info=True)
+            return None
+
+    def _solar_view(self, now: datetime) -> dict | None:
+        today, tomorrow = now.date().isoformat(), (now.date() + timedelta(days=1)).isoformat()
+        fc, hours = self._forecast_by_day(now), self.solar_hours.get(today)
+        total = fc.get(today)
+        if total is None and hours:
+            total = round(sum(hours), 2)
+        if total is None and fc.get(tomorrow) is None:
+            return None
+        measured = bool(self.manager.pv_seen)
+        return {"today_kwh": None if total is None else round(total, 2),
+                "tomorrow_kwh": None if fc.get(tomorrow) is None else round(fc[tomorrow], 2),
+                "remaining_kwh": remaining_kwh(hours, now),
+                "so_far_kwh": round((self.daily.days.get(today) or {}).get("pv", 0.0), 2) if measured else None,
+                "source": self.forecast_source}
+
+    def solar_comparison(self, days: int = 30, day: str | None = None) -> dict:
+        """Forecast against the solar HomePower measured: the last `days` days, and one day hour by hour (today by default)."""
+        now = dt_util.now()
+        today = now.date().isoformat()
+        day = day if day and day <= today else today
+        measured = bool(self.manager.pv_seen)
+        actual = {d: v.get("pv") for d, v in self.daily.days.items() if isinstance(v, dict)} if measured else {}
+        hours = (self.solar_log.days.get(day) or {}).get("hours") or (self.solar_hours.get(day) if day == today else None)
+        half = (self.usage.days.get(day) or {}).get("pv") if measured else None
+        rows = compare_hours(hours, half)
+        if day == today:
+            for r in rows[now.hour + 1:]:
+                r["actual"] = None              # hours still to come have nothing measured yet (not "0 kWh")
+        return {"days": compare_days(self.solar_log, actual, today, days), "day": day,
+                "hours": rows, "measured": measured, "source": self.forecast_source}
 
     def _kwh(self, entity_id: str) -> float | None:
         st = self.hass.states.get(entity_id)

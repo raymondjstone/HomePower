@@ -29,11 +29,12 @@ from .core.sanity import ChargeWatch, CommandBudget, RateLearner, next_unconfirm
 from .core.reconcile import Decision, decide, materially_different
 from .core.schedule import ScheduleEntry
 from .core.settings import AppSettings, build as build_settings
+from .core.solar_forecast import SolarForecastLog
 from .coord_base import (  # noqa: F401 - shared names, also re-exported from coordinator.py
     _LOGGER, READ_TIMEOUT_S, HANDBACK_TIMEOUT_S, APPLY_TIMEOUT_S, PERSIST_EVERY_S, TARIFF_REFRESH_S,
     TARIFF_HISTORY_DAYS, FORECAST_PLATFORMS, GLOW_DOMAIN, KEEPALIVE_EVERY_S, OFFLINE_ALERT_AFTER_S, PROTECT_ALERT_AFTER_S,
     UNCONFIRMED_ALERT_AFTER, GRID_SLOW_AFTER_S, GRID_STALE_AFTER_S, ACTION_PAUSE, ACTION_HAND_BACK, FORCING_REASONS,
-    REPAIR_KINDS, repair_id, DeviceStatus, Snapshot, _PRIVATE_KEY, _real, MONEY_SAVED, MONEY_EXPORT,
+    REPAIR_KINDS, repair_id, DeviceStatus, x1_limits_take, x1_limits_keep, Snapshot, _PRIVATE_KEY, _real, MONEY_SAVED, MONEY_EXPORT,
 )
 from .coord_prices import PricesMixin
 from .coord_alerts import AlertsMixin
@@ -77,8 +78,12 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         self.cold_model = ColdModel((manager.weather_data or {}).get("model"))   # extra use per degree of cold
         self.weather: dict = {}                                                  # tomorrow's temperature and what it means, for the panel
         self._weather_at, self._weather_busy = -1e9, False
+        self.solar_log = SolarForecastLog(getattr(manager, "solar_forecast_data", None))   # forecast per day, for forecast vs actual
+        self.solar_hours: dict[str, list[float]] = {}    # latest hourly solar forecast (kWh per local hour) by day
+        self.forecast_source: str | None = None          # which forecast integration is used
+        self._solar_at, self._solar_busy, self._solar_pruned = -1e9, False, ""
         self._started = False
-        self._began = _time.time()     # a battery not read since start-up counts its failed reads from here
+        self._began = _time.monotonic()   # a battery not read since start-up counts its failed reads from here
         self.rate_learner = RateLearner(manager.charge_rates)   # real charge rate of batteries that pick their own
         self.budget = CommandBudget()                       # daily cap on commands to cloud batteries
         self.charge_watch = ChargeWatch()                    # told to charge but nothing happens
@@ -242,19 +247,25 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             _LOGGER.debug("read failed for %s", a.config.device_id, exc_info=True)
             return Actual(online=False)
 
-    def _note_link(self, st: DeviceStatus, act: Actual, wall: float) -> None:
+    def _note_link(self, st: DeviceStatus, act: Actual, mono: float) -> None:
         """Online, stale or offline. A failed read is often only another Modbus client holding the battery for a moment, so it
         is shown offline only once reads have failed for the offline-after time, or when the failure shows it is off the network.
         (Control is unchanged: nothing is commanded and nothing is counted from a battery that was not read this cycle.)"""
+        # The monotonic clock: a Raspberry Pi without a clock chip can jump the wall clock by years once it syncs.
         if act.online:
-            st.last_read_ok, st.last_good, st.link = wall, act, "online"
+            st.last_read_ok, st.ok_mono, st.last_good, st.link = _time.time(), mono, act, "online"
             return
-        since = st.last_read_ok or self._began
-        st.link = "offline" if act.gone or wall - since >= 60 * self.settings.offline_after_min else "stale"
+        since = st.ok_mono if st.ok_mono is not None else self._began
+        # Once offline it stays offline until a read works: a battery off the network can fail with "unreachable" one cycle
+        # and a time-out the next, and must not flip back to "stale".
+        st.link = ("offline" if st.link == "offline" or act.gone or mono - since >= 60 * self.settings.offline_after_min
+                   else "stale")
 
     def link(self, did: str) -> str:
         st = self._snap.devices.get(did)
-        return "offline" if st is None or st.actual is None else st.link
+        if st is None:
+            return "offline"
+        return "stale" if st.actual is None else st.link      # not read yet (just added): waiting, not offline
 
     def shown_actual(self, did: str) -> Actual | None:
         """The reading to show for a battery: this cycle's, or while the readings are only stale, the last one that worked."""
@@ -292,11 +303,12 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         adapters = [a for a in adapters if a.config.device_id in self._snap.devices]
         actuals = {k: v for k, v in actuals.items() if k in self._snap.devices}
         for did, act in actuals.items():
-            self._note_link(self._snap.devices[did], act, wall)
+            self._note_link(self._snap.devices[did], act, mono)
 
         self._observe_temp(now)
         self.hass.async_create_task(self._refresh_tariff())
         self.hass.async_create_task(self._refresh_weather())
+        self.hass.async_create_task(self._refresh_solar_hours())
         grid = self._grid_w(actuals)
         rates = self._rates()
         self._exp_table = self._export_table()
@@ -389,7 +401,8 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         self.last_grid = grid
         for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(mono, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals), lambda: self._check_tariff_drift(wall),
                      lambda: self._check_events(now, wall, actuals, rates), lambda: self._watch_pv(now, mono, actuals),
-                     lambda: self._divert(mono, actuals, grid), lambda: self._sync_x1_limits(mono, adapters)):
+                     lambda: self._divert(mono, actuals, grid), lambda: self._sync_x1_limits(mono, adapters),
+                     lambda: self._note_solar(now)):
             try:   # accounting / alerts are secondary: a bug there must not stop control
                 r = step()
                 if asyncio.iscoroutine(r):
@@ -417,38 +430,59 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
                     _LOGGER.debug("keepalive failed for %s", a.config.device_id, exc_info=True)
 
     async def _sync_x1_limits(self, mono: float, adapters: list[DeviceAdapter]) -> None:
-        """Optional: keep an Anker X1's own import/export limits in line with HomePower's (every few minutes)."""
+        """Optional: keep an Anker X1's own import/export limits in line with HomePower's (every few minutes). With the option
+        off, or the battery monitor-only, the limits HomePower wrote are taken back off, putting back what was there before."""
         s = self.settings
-        if not s.x1_grid_limits or self.paused or s.dry_run or mono - self._last_limit_sync < 300:
-            return
+        if self.paused or mono - self._last_limit_sync < 300:
+            return                                     # paused: batteries are left exactly as they are
         self._last_limit_sync = mono
         for a in adapters:
             drv = getattr(a, "driver", None)
-            if a.config.extra.get("house_meter") and a.config.extra.get("control_enabled", True) and hasattr(drv, "set_grid_limits"):
-                st = self._snap.devices.get(a.config.device_id)
-                if st is None or not (st.actual and st.actual.online) or (st.actual and st.actual.off_grid):
-                    continue
-                pre = f"x1lim:{a.config.device_id}:"
-                mine = {}                                      # limits HomePower itself wrote, kept across restarts as "x1lim:<id>:<label>:<W>"
-                for k in [k for k in self._event_state if k.startswith(pre)]:
-                    label, _, w = k[len(pre):].partition(":")
-                    if w.isdigit():
-                        mine[label] = int(w)
-                    del self._event_state[k]
-                try:
-                    changed = await drv.set_grid_limits(s.engine.import_limit_w, s.engine.export_limit_w, mine)
-                finally:
-                    for label, w in mine.items():
-                        self._event_state[f"{pre}{label}:{w}"] = True
-                if changed:
-                    self._log(a.config.device_id, "set the inverter's own " + " and ".join(changed))
+            if not (a.config.extra.get("house_meter") and hasattr(drv, "set_grid_limits")):
+                continue
+            did = a.config.device_id
+            mirror = s.x1_grid_limits and a.config.extra.get("control_enabled", True)
+            if mirror and s.dry_run:
+                continue                               # test run: nothing new is written (handing back still is, below)
+            if not mirror and not any(k.startswith(f"x1lim:{did}:") for k in self._event_state):
+                continue                               # nothing of HomePower's in the inverter
+            st = self._snap.devices.get(did)
+            if st is None or not (st.actual and st.actual.online) or (st.actual and st.actual.off_grid):
+                continue
+            await self._x1_limits(a, s.engine.import_limit_w if mirror else None, s.engine.export_limit_w if mirror else None)
+
+    async def _x1_limits(self, a: DeviceAdapter, import_w: int | None, export_w: int | None) -> None:
+        did = a.config.device_id
+        mine, orig = x1_limits_take(self._event_state, did)
+        try:
+            changed = await a.driver.set_grid_limits(import_w, export_w, mine, orig)
+        finally:
+            x1_limits_keep(self._event_state, did, mine, orig)
+        if changed:
+            self._log(did, "set the inverter's own " + " and ".join(changed))
+
+    async def release_x1_limits(self, device_id: str) -> None:
+        """A battery is being deleted: take HomePower's own X1 limits off it first, putting back what was there before."""
+        a = next((x for x in self.adapters if x.config.device_id == device_id), None)
+        if a is None or not hasattr(getattr(a, "driver", None), "set_grid_limits") or \
+                not any(k.startswith(f"x1lim:{device_id}:") for k in self._event_state):
+            return
+        try:
+            await asyncio.wait_for(self._x1_limits(a, None, None), HANDBACK_TIMEOUT_S)
+        except Exception as err:  # noqa: BLE001 - best effort: deleting must still work with the battery unreachable
+            from .drivers.modbus import ModbusError
+            expected = isinstance(err, (OSError, asyncio.TimeoutError, ModbusError))
+            _LOGGER.warning("could not take HomePower's limits off %s (%s); check them in the Anker app", device_id,
+                            err or type(err).__name__, exc_info=not expected)
+        for k in [k for k in self._event_state if k.startswith((f"x1lim:{device_id}:", f"x1orig:{device_id}:"))]:
+            del self._event_state[k]
 
     # ------------------------------------------------------------------ weather (cold-day target)
 
     def _startup_check(self, actuals: dict[str, Actual]) -> None:
         """Once after each start: what was picked up again, and which batteries cannot be reached."""
         m = self.manager
-        restored = {"saved EcoFlow original settings": len(m.ecoflow_orig), "learned charge rates": len(self.rate_learner.rates),
+        restored = {"saved hand-back settings": len(m.ecoflow_orig), "learned charge rates": len(self.rate_learner.rates),
                     "command results": sum(len(v) for v in self.traces.results.values()),
                     "days of plan history": len(self.plan_log.days), "batteries held from before": len(m.forced)}
         down = [a.config.name for a in self.adapters if not (actuals.get(a.config.device_id) and actuals[a.config.device_id].online)]
@@ -504,6 +538,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             except asyncio.TimeoutError as err:
                 raise RuntimeError(f"the battery did not answer the command within {APPLY_TIMEOUT_S} s") from err
             st.actual = await self._read(a)
+            self._note_link(st, st.actual, _time.monotonic())     # a failed re-read is stale readings too, not offline at once
             st.last_error = None
             if not a.config.caps.power_control and want.mode in (Mode.CHARGE, Mode.HOLD):
                 room = want.mode is Mode.HOLD or st.actual.soc is None or st.actual.soc < (want.target_soc or 95) - 3
