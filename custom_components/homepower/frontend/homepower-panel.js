@@ -41,6 +41,7 @@ class HomePowerPanel extends HTMLElement {
   set hass(h) {
     const first = !this._hass;
     this._hass = h;
+    this.toggleAttribute("dark", !!(h && h.themes && h.themes.darkMode));     // theme-aware text colours (panel-util CSS)
     if (first) this._init();
     this._sample();
   }
@@ -89,6 +90,11 @@ class HomePowerPanel extends HTMLElement {
       return;
     }
     this.shadowRoot.innerHTML = `<style>${CSS}</style><div id="app"></div><div id="modal"></div>`;
+    // Whatever is drawn (pages, dialogs, the parts of the battery form filled in later), each field's label is linked to it.
+    if (!this._labelObs && typeof MutationObserver !== "undefined") {
+      this._labelObs = new MutationObserver(() => this._linkLabels(this.shadowRoot));
+      this._labelObs.observe(this.shadowRoot, { childList: true, subtree: true });
+    }
     this.shadowRoot.addEventListener("click", (e) => this._click(e));
     this.shadowRoot.addEventListener("change", (e) => this._change(e));
     this.shadowRoot.addEventListener("input", (e) => this._input(e));
@@ -271,6 +277,18 @@ ${esc(where)}</pre></div>`;
   _hours(h) { return h == null ? "–" : h < 1 ? `${Math.round(h * 60)} min` : h >= 48 ? `${Math.round(h / 24)} days` : `${h.toFixed(1)} h`; }
 
   // ---- events --------------------------------------------------------------
+  // A field's <label> sits beside its control (<div class="f"><label>..</label><input ..>) without for=: link them, so a
+  // screen reader names the field and a click on the label focuses it. Checkboxes and radio buttons are left alone (a label
+  // there usually names the whole group), and an existing for= or aria-label is never changed.
+  _linkLabels(root) {
+    for (const lab of root.querySelectorAll(".f > label:not([for])")) {
+      const ctl = lab.parentElement.querySelector("input:not([type=checkbox]):not([type=radio]):not([type=hidden]), select, textarea");
+      if (!ctl || ctl.closest("label") || ctl.hasAttribute("aria-label") || ctl.hasAttribute("aria-labelledby")) continue;
+      if (ctl.id) lab.htmlFor = ctl.id;
+      else ctl.setAttribute("aria-label", lab.textContent.trim());
+    }
+  }
+
   _openModal(html) { this._modal = true; this.shadowRoot.getElementById("modal").innerHTML = html; }
 
   _closeModal() { this._modal = null; this.shadowRoot.getElementById("modal").innerHTML = ""; this._render(); }

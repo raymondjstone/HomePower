@@ -9,6 +9,7 @@ from pathlib import Path
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from datetime import timedelta
@@ -17,6 +18,7 @@ from . import services
 from .const import DOMAIN, SIGNAL_UPDATE, STORAGE_KEY, STORAGE_VERSION
 from .coordinator import HomePowerCoordinator
 from .manager import HomePowerManager
+from .runtime import HomePowerConfigEntry, HomePowerData
 
 _LOGGER = logging.getLogger(__name__)
 PANEL_URL = "homepower"
@@ -43,12 +45,19 @@ ASSET_TAG = _asset_tag()
 PLATFORMS = ["sensor", "switch"]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    domain_data = hass.data.setdefault(DOMAIN, {})
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)     # set up from the UI only, nothing in configuration.yaml
 
-    if not domain_data.get("registered"):
-        services.async_register(hass)
-        domain_data["registered"] = True
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """HomePower's actions are registered here, once, so they exist even while the integration is not loaded (they then
+    say so instead of doing nothing)."""
+    services.async_register(hass)
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) -> bool:
+    domain_data = hass.data.setdefault(DOMAIN, {})          # domain-wide only: whether the panel's API is registered
+
     # The control loop must not depend on the UI: the panel, its API and its static files are
     # best effort, so a missing/failed frontend never stops batteries being scheduled.
     await _async_setup_ui_api(hass, domain_data)
@@ -74,8 +83,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator.stop_listening()
         await manager.async_close()     # Home Assistant retries setup: don't leave battery connections open meanwhile
         raise
-    domain_data[entry.entry_id] = coordinator
-    domain_data["manager"] = manager
+    entry.runtime_data = HomePowerData(manager, coordinator)
 
     # The panel's live feed follows this signal rather than one coordinator, so it keeps working after a reload.
     @callback
@@ -88,14 +96,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # A daily safety copy of batteries, schedules, goals, scenes and settings (no secrets), newest 7 kept.
     async def _backup(_now=None) -> None:
         try:
+            from homeassistant.util import dt as dt_util
             await hass.async_add_executor_job(_write_backup, hass.config.path("homepower_backups"),
-                                              manager.export_all(dict(entry.options)))
+                                              manager.export_all(dict(entry.options)), dt_util.now().date().isoformat())
         except Exception:  # noqa: BLE001 - a failed safety copy must never affect control
             _LOGGER.warning("could not write the HomePower backup copy", exc_info=True)
 
     entry.async_on_unload(async_track_time_interval(hass, _backup, timedelta(days=1)))
     # A restart more often than daily would otherwise mean no copy is ever written: make today's now if it is missing.
-    hass.async_create_task(_backup_if_missing(hass, manager, entry))
+    entry.async_create_background_task(hass, _backup_if_missing(hass, manager, entry), "homepower start-up backup")
 
     await _async_register_panel(hass)
     return True
@@ -105,25 +114,29 @@ BACKUPS_KEPT = 7
 
 
 async def _backup_if_missing(hass, manager, entry) -> None:
-    from datetime import date
+    from homeassistant.util import dt as dt_util
 
-    folder = Path(hass.config.path("homepower_backups"))
+    folder = hass.config.path("homepower_backups")
+    day = dt_util.now().date().isoformat()          # Home Assistant's date, not the operating system's (a UTC container)
     try:
-        if (folder / f"homepower-{date.today().isoformat()}.json").exists():
-            return
-        await hass.async_add_executor_job(_write_backup, str(folder), manager.export_all(dict(entry.options)))
+        # everything that touches the disk runs in the executor, the check for today's copy included
+        await hass.async_add_executor_job(_write_backup, folder, manager.export_all(dict(entry.options)), day, True)
     except Exception:  # noqa: BLE001 - a failed safety copy must never affect control
         _LOGGER.warning("could not write the HomePower backup copy", exc_info=True)
 
 
-def _write_backup(folder: str, data: dict) -> None:
-    """Write today's copy and delete the oldest beyond the newest BACKUPS_KEPT."""
+def _write_backup(folder: str, data: dict, day: str | None = None, only_if_missing: bool = False) -> None:
+    """Write the copy for `day` (Home Assistant's date; the system date if not given) and delete the oldest beyond the
+    newest BACKUPS_KEPT. With only_if_missing, a copy already made that day is left as it is."""
     from datetime import date
 
     d = Path(folder)
+    day = day or date.today().isoformat()
+    target = d / f"homepower-{day}.json"
+    if only_if_missing and target.exists():
+        return
     d.mkdir(parents=True, exist_ok=True)
     # written to a temporary file and then swapped in, so a crash mid-write never leaves today's copy cut short
-    target = d / f"homepower-{date.today().isoformat()}.json"
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=1), encoding="utf8")
     os.replace(tmp, target)
@@ -191,11 +204,11 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
                 "Services > HomePower > Configure to add batteries and schedules.")
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) -> bool:
     ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if ok:
-        mgr = hass.data.get(DOMAIN, {}).get("manager")
-        coord = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+        rd = getattr(entry, "runtime_data", None)
+        mgr, coord = (rd.manager, rd.coordinator) if isinstance(rd, HomePowerData) else (None, None)
         if coord:
             coord.stop_listening()
             # Reloaded, disabled or removed: nothing will be steering the batteries, so hand back any we are forcing.
@@ -212,9 +225,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             frontend.remove_extra_js_url(hass, f"{STATIC_URL}/homepower-card.js?v={ASSET_TAG}")
         except Exception:  # noqa: BLE001
             pass
-        data = hass.data.get(DOMAIN, {})
-        data.pop(entry.entry_id, None)
-        data.pop("manager", None)
     return ok
 
 
@@ -285,9 +295,10 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     _LOGGER.info("HomePower removed; its saved batteries, keys, schedules and history were erased")
 
 
-async def _options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _options_updated(hass: HomeAssistant, entry: HomePowerConfigEntry) -> None:
     """Settings changed in the panel: apply in place, no reload (keeps live subscriptions)."""
-    coordinator = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    rd = getattr(entry, "runtime_data", None)
+    coordinator = rd.coordinator if isinstance(rd, HomePowerData) else None
     if coordinator:
         coordinator.apply_settings({**entry.data, **entry.options})
         await coordinator.async_request_refresh()

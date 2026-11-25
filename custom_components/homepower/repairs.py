@@ -5,6 +5,8 @@ from homeassistant import data_entry_flow
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
 
+from .runtime import running_manager
+
 from .const import DOMAIN
 
 
@@ -15,7 +17,7 @@ class BatteryFix(RepairsFlow):
         self._did, self._msg, self._title = device_id, message, title or "battery"
 
     def _mgr(self):
-        return self.hass.data.get(DOMAIN, {}).get("manager")
+        return running_manager(self.hass)
 
     async def async_step_init(self, user_input=None) -> data_entry_flow.FlowResult:
         return self.async_show_menu(step_id="init", menu_options=["test", "monitor"],

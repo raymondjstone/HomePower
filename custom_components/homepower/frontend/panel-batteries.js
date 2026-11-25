@@ -38,7 +38,7 @@ export default (U) => {
     const html = `<div class="overlay"><div class="modal" role="dialog" aria-label="Battery">
       <h2>${isNew ? "Add battery" : "Edit battery"}</h2><p class="lead">HomePower connects to your battery directly. It does not need any other integration.</p>
       <h3>1 · Which battery?</h3>
-      <div class="f"><select id="b-kind">${profOpts}</select></div>
+      <div class="f"><select id="b-kind" aria-label="Which battery">${profOpts}</select></div>
       <div id="b-notes"></div>
       <h3>2 · Connect</h3>
       <div id="b-conn"></div>
@@ -212,7 +212,7 @@ export default (U) => {
     try {
       const info = await this._hass.callWS({ type: "homepower/probe", device: { kind: d.kind, device_id: origId || "", connection: d.connection } });
       const p = info.power_w;
-      box.innerHTML = `<div class="card" style="margin-top:8px;border-color:#16a34a"><b style="color:#16a34a">Connected</b> · ${esc(info.model || "battery")}${info.serial ? " · " + esc(info.serial) : ""}
+      box.innerHTML = `<div class="card" style="margin-top:8px;border-color:#16a34a"><b style="color:var(--hp-ok)">Connected</b> · ${esc(info.model || "battery")}${info.serial ? " · " + esc(info.serial) : ""}
         <div class="chips">${info.capacity_wh ? `<span class="chip">${(info.capacity_wh / 1000).toFixed(1)} kWh</span>` : ""}<span class="chip">Charge ${info.soc != null ? Math.round(info.soc) + "%" : "–"}</span>${info.max_charge_w || info.max_discharge_w ? `<span class="chip">Up to ${info.max_charge_w || "?"} W in / ${info.max_discharge_w || "?"} W out</span>` : ""}<span class="chip">${p == null ? "–" : Math.abs(p) < 20 ? "Idle" : (p > 0 ? "Charging " : "Discharging ") + fmtW(Math.abs(p))}</span>${info.grid_w != null ? `<span class="chip">Grid ${fmtW(Math.abs(info.grid_w))} ${info.grid_w > 0 ? "import" : "export"}</span>` : ""}${info.pv_w != null ? `<span class="chip">Solar ${fmtW(info.pv_w)}</span>` : ""}</div></div>`;
       const fill = (id, val) => { const el = r.getElementById(id); if (el && !el.value && val) el.value = val; };
       fill("b-cap", info.capacity_wh); fill("b-mc", info.max_charge_w); fill("b-md", info.max_discharge_w); fill("b-min", info.min_soc);

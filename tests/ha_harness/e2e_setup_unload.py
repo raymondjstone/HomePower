@@ -34,11 +34,20 @@ async def main():
     await m0.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "grid_meter": "yes", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": True})
 
     entry._async_set_state(hass, ConfigEntryState.SETUP_IN_PROGRESS, None)
+    # Home Assistant calls async_setup first: the actions exist from then on, and say HomePower is not loaded until it is
+    assert await HP.async_setup(hass, {})
+    assert "pause" in hass.services.async_services().get(DOMAIN, {})
+    from homeassistant.exceptions import ServiceValidationError
+    try:
+        await hass.services.async_call(DOMAIN, "pause", {}, blocking=True)
+        raise AssertionError("an action before HomePower is loaded must not quietly do nothing")
+    except ServiceValidationError as err:
+        print("not yet  :", err)
     ok = await HP.async_setup_entry(hass, entry)          # no hass.http, no frontend, no panel_custom
     print("setup    :", ok, "| platforms", forwarded, "| services", sorted(hass.services.async_services().get(DOMAIN, {})))
     assert ok is True and forwarded == [["sensor", "switch"]]
     assert {"override", "pause", "backup", "away", "test_control"} <= set(hass.services.async_services()[DOMAIN])
-    mgr, coord = hass.data[DOMAIN]["manager"], hass.data[DOMAIN]["e1"]
+    mgr, coord = entry.runtime_data.manager, entry.runtime_data.coordinator      # kept on the entry, not in hass.data
     assert coord.view()["devices"]["a"]["soc"] == 62
 
     # the registered services work
@@ -94,8 +103,10 @@ async def main():
     assert not mgr.paused, "a stale coordinator answered a notification button after unload"
     print("unload   : mode reg", dev.hold[10064])
     assert dev.hold[10064] == 0
-    print("unload   :", ok, unloaded, "| manager gone:", "manager" not in hass.data[DOMAIN])
-    assert ok and unloaded == [["sensor", "switch"]] and "manager" not in hass.data[DOMAIN]
+    from custom_components.homepower.runtime import running_manager
+    entry._async_set_state(hass, ConfigEntryState.NOT_LOADED, None)      # what Home Assistant does once the unload returns
+    print("unload   :", ok, unloaded, "| still found:", running_manager(hass) is not None)
+    assert ok and unloaded == [["sensor", "switch"]] and running_manager(hass) is None, "an unloaded HomePower must not be found"
     # removing HomePower keeps the saved data unless the user chose to erase it
     from homeassistant.helpers.storage import Store
     from custom_components.homepower.const import STORAGE_KEY, STORAGE_VERSION

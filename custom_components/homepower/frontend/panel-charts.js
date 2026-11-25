@@ -160,7 +160,7 @@ export default (U) => {
     const rows = ds.map((d) => {
       const zi = this.data.settings.zero_import_device === d.device_id;
       const mine = this.data.schedules.filter((s) => s.enabled && (!s.device_ids.length || s.device_ids.includes(d.device_id))).sort((x, y) => x.priority - y.priority);
-      const segs = mine.flatMap((s) => this._segmentsToday(s).map(([a, b]) => `<div class="seg" title="${esc(s.id)}: ${s.start}–${s.end}" style="left:${(a / 24) * 100}%;width:${((b - a) / 24) * 100}%;background:${MODES[s.mode].color}">${b - a > 2 ? esc(s.id) : ""}</div>`));
+      const segs = mine.flatMap((s) => this._segmentsToday(s).map(([a, b]) => `<div class="seg" title="${esc(s.id)}: ${s.start}–${s.end}" style="left:${(a / 24) * 100}%;width:${((b - a) / 24) * 100}%;background:${MODES[s.mode].color};color:${U.onFill(MODES[s.mode].color)}">${b - a > 2 ? esc(s.id) : ""}</div>`));
       return `<div class="row"><div class="nm" title="${esc(d.name)}">${esc(d.name)}</div><div class="bar ${zi ? "zi" : ""}">${segs.join("")}<div class="now" style="left:${(nowH / 24) * 100}%"></div></div></div>`;
     }).join("");
     const ticks = `<div class="axis"><div></div><div><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div></div>`;

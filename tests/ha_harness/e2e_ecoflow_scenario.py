@@ -67,7 +67,7 @@ async def main():
                         title="HomePower", unique_id="homepower", version=1)
     mgr = HomePowerManager(hass); await mgr.async_load()
     coord = HomePowerCoordinator(hass, entry, mgr, *mgr.build()); mgr.coordinator = coord
-    hass.data["homepower"] = {"manager": mgr}
+    _harness.attach(hass, entry, mgr)
 
     fakes = {"good": FakeEco(40, 30), "deaf": FakeEco(40, 30, obeys=False)}
     for did in fakes:

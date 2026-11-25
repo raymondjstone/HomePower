@@ -6,11 +6,16 @@ from homeassistant.exceptions import ServiceValidationError, Unauthorized
 
 from ._schema import vol
 from .const import DOMAIN
+from .runtime import running_manager
 from .core.models import Desired, Mode
 
 
 def _mgr(hass: HomeAssistant):
-    return hass.data.get(DOMAIN, {}).get("manager")
+    """The running HomePower, or a clear error: an action called while HomePower is not loaded must not quietly do nothing."""
+    m = running_manager(hass)
+    if m is None or m.coordinator is None:
+        raise ServiceValidationError("HomePower is not loaded (it may still be starting, or be disabled)")
+    return m
 
 
 def async_register(hass: HomeAssistant) -> None:

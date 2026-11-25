@@ -26,7 +26,7 @@ async def main():
                         title="HomePower", unique_id="homepower", version=1)
     mgr = HomePowerManager(hass); await mgr.async_load()
     coord = HomePowerCoordinator(hass, entry, mgr, *mgr.build()); mgr.coordinator = coord
-    hass.data["homepower"] = {"manager": mgr}
+    _harness.attach(hass, entry, mgr)
     store = {}
     def update_entry(e, options=None, **kw):
         store["options"] = options; coord.apply_settings(options); return True

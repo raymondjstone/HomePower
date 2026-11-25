@@ -12,10 +12,10 @@ from homeassistant import config_entries
 from homeassistant.helpers import selector as sel
 
 from ._schema import vol
-from .const import DOMAIN
 from .core.profiles import DRIVERS, PROFILE_BY_ID, PROFILES
 from .core.serde import ValidationError, fill_from_probe
 from .core.settings import DEFAULTS, SettingsError, clean
+from .runtime import running_manager
 
 FLOW_SETTING_KEYS = ("import_limit_w", "peak_shaving", "export_limit_w", "grid_import_entity", "grid_export_entity", "rates_entity", "price_peak",
                      "price_offpeak", "offpeak_start", "offpeak_end", "offpeak_auto", "forecast_entity", "backup_reserve_pct", "storm_entity",
@@ -72,7 +72,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         self._eco_devices: list[dict] = []
 
     def _mgr(self):
-        return self.hass.data.get(DOMAIN, {}).get("manager")
+        return running_manager(self.hass)
 
     def _done(self):
         return self.async_create_entry(data=dict(self.config_entry.options))

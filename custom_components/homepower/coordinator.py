@@ -306,9 +306,9 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             self._note_link(self._snap.devices[did], act, mono)
 
         self._observe_temp(now)
-        self.hass.async_create_task(self._refresh_tariff())
-        self.hass.async_create_task(self._refresh_weather())
-        self.hass.async_create_task(self._refresh_solar_hours())
+        # tied to the config entry, so an unload or reload cancels a fetch still running (saves stay on hass: they must finish)
+        for name, job in (("tariff", self._refresh_tariff), ("weather", self._refresh_weather), ("solar forecast", self._refresh_solar_hours)):
+            self.config_entry.async_create_background_task(self.hass, job(), f"homepower {name} refresh")
         grid = self._grid_w(actuals)
         rates = self._rates()
         self._exp_table = self._export_table()

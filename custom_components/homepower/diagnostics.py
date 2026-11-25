@@ -5,13 +5,14 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .runtime import HomePowerData
 
 REDACT = {"secret_key", "access_key", "host", "sn", "serial", "notify_service"}
 
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:
-    coord = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    rd = getattr(entry, "runtime_data", None)
+    coord = rd.coordinator if isinstance(rd, HomePowerData) else None
     if coord is None:
         return {"loaded": False}
     data = async_redact_data({

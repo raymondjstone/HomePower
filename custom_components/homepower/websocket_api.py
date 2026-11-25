@@ -10,10 +10,11 @@ from .const import DOMAIN, SIGNAL_UPDATE
 from .core.profiles import catalogue
 from .core.serde import ValidationError
 from .core.settings import DEFAULTS, SettingsError, clean
+from .runtime import running_manager
 
 
 def _mgr(hass: HomeAssistant):
-    mgr = hass.data.get(DOMAIN, {}).get("manager")
+    mgr = running_manager(hass)
     if mgr is None:
         raise ValidationError("HomePower is still starting; try again in a moment")
     return mgr
@@ -79,7 +80,7 @@ async def ws_subscribe(hass, connection, msg):
     @callback
     def push() -> None:
         # Looked up every time: after the integration is reloaded there is a new control loop to follow.
-        mgr = hass.data.get(DOMAIN, {}).get("manager")
+        mgr = running_manager(hass)
         coord = mgr.coordinator if mgr else None
         if coord:
             connection.send_message(websocket_api.event_message(msg["id"], coord.view()))
@@ -201,7 +202,9 @@ async def ws_backup_now(hass, msg):
 
     entry = _entry(hass)
     mgr = _mgr(hass)
-    await hass.async_add_executor_job(_write_backup, mgr._backup_dir(), mgr.export_all(dict(entry.options) if entry else {}))
+    from homeassistant.util import dt as dt_util
+    await hass.async_add_executor_job(_write_backup, mgr._backup_dir(), mgr.export_all(dict(entry.options) if entry else {}),
+                                      dt_util.now().date().isoformat())
     return {"backups": await mgr.list_backups()}
 
 

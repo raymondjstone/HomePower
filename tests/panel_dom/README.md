@@ -11,6 +11,7 @@ backend produces, renders every tab and presses every button. Not part of the no
     node tests/panel_dom/save_warn.mjs      # "Saved, but note: ..." after saving a schedule
     node tests/panel_dom/link_states.mjs    # "Readings stale" / "Waiting for readings" / "Offline" on every tab and the details sheet
     node tests/panel_dom/solar_forecast.mjs # today's solar forecast tile, and forecast against measured solar in Insights
+    node tests/panel_dom/field_labels.mjs   # fields all named for screen readers, no duplicate ids, every action keyboard-reachable
 
     npm install playwright && npx playwright install chromium
     node tests/panel_dom/panel_browser.mjs  # the same in real headless Chromium: module loading with the ?v= tag, console errors,

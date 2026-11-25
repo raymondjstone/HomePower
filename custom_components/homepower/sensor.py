@@ -22,7 +22,7 @@ def _info(entry: ConfigEntry) -> DeviceInfo:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
-    coord: HomePowerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coord: HomePowerCoordinator = entry.runtime_data.coordinator
     add([BatteryFlow(coord, entry), StoredEnergy(coord, entry), GridPower(coord, entry),
          EnergyTotal(coord, entry, "grid_in", "Grid energy imported"), EnergyTotal(coord, entry, "grid_out", "Grid energy exported"),
          EnergyTotal(coord, entry, "pv_in", "Solar energy"), Savings(coord, entry, "today"), Savings(coord, entry, "month"), PriceNow(coord, entry),

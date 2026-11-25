@@ -34,7 +34,7 @@ export default (U) => {
       if (s.priority) bits.push(`priority ${s.priority}`);
       return `<div class="card sch ${s.enabled ? "" : "off"}">
         <label class="switch" title="Enable / disable"><input type="checkbox" data-toggle="${esc(s.id)}" ${s.enabled ? "checked" : ""}><i></i></label>
-        <div class="meta"><div class="when">${s.all_day ? "All day" : `${s.start} – ${s.end}`} <span class="chip m" style="background:${m.color};vertical-align:middle;margin-left:6px"><ha-icon icon="${m.icon}" style="--mdc-icon-size:14px"></ha-icon>${m.label}</span></div>
+        <div class="meta"><div class="when">${s.all_day ? "All day" : `${s.start} – ${s.end}`} <span class="chip m" style="background:${m.color};color:${U.onFill(m.color)};vertical-align:middle;margin-left:6px"><ha-icon icon="${m.icon}" style="--mdc-icon-size:14px"></ha-icon>${m.label}</span></div>
           <div style="font-weight:600;margin-top:2px">${esc(s.id)}</div>
           <div class="sub">${esc(names(s))}${bits.length ? " · " + esc(bits.join(" · ")) : ""}</div>
           <div class="dayrow">${DAYS.map((d, i) => `<span class="${s.days.includes(i) ? "on" : ""}">${d.slice(0, 2)}</span>`).join("")}</div></div>
@@ -55,8 +55,8 @@ export default (U) => {
       <div class="checks">${devs.map((d) => `<label><input type="checkbox" name="s-dev" value="${esc(d.device_id)}" ${sel.has(d.device_id) ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div>
       <div class="f"><span class="hint">Leave all unticked to apply to every battery.</span></div>
       <h3>What to do</h3>
-      <div class="seg-pick">${Object.entries(MODES).map(([k, m]) => `<label style="--c:${m.color}"><input type="radio" name="s-mode" value="${k}" ${s.mode === k ? "checked" : ""}><ha-icon icon="${m.icon}" style="color:${m.color}"></ha-icon><span>${m.label}</span></label>`).join("")}</div>
-      <div class="f"><span class="hint" id="s-modehelp"></span><span class="hint" id="s-unsup" style="color:#ef4444"></span></div>
+      <div class="seg-pick">${Object.entries(MODES).map(([k, m]) => `<label style="--c:${m.color}"><input type="radio" name="s-mode" value="${k}" ${s.mode === k ? "checked" : ""}><ha-icon icon="${m.icon}" style="color:${U.INK[k] || m.color}"></ha-icon><span>${m.label}</span></label>`).join("")}</div>
+      <div class="f"><span class="hint" id="s-modehelp"></span><span class="hint" id="s-unsup" style="color:var(--hp-err)"></span></div>
       <div id="s-power" class="f"><label>Power</label><div class="rng"><input type="range" id="s-pw" min="0" max="${maxP}" step="100" value="${s.power_w ?? Math.min(3000, maxP)}"><output id="s-pwo"></output></div></div>
       <div class="f" id="s-srcwrap"><label>Charge from</label><select id="s-source">${[["grid", "Grid: charge at the power above, whatever the sun is doing"], ["solar", "Solar only: use spare solar, never import to charge"], ["both", "Grid + solar: the power above, plus any spare solar on top"]].map(([v, l]) => `<option value="${v}" ${(s.source || "grid") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
         <span class="hint" id="s-srchelp"></span></div>
@@ -66,7 +66,7 @@ export default (U) => {
       <div class="two" id="s-times"><div class="f"><label>Start</label><input type="time" id="s-start" value="${s.start}"></div><div class="f"><label>End</label><input type="time" id="s-end" value="${s.end}"></div></div>
       <div class="f" id="s-overnight"><span class="hint">An end time earlier than the start runs overnight (e.g. 23:30 → 07:30).</span></div>
       <h3>Only while… (optional)</h3>
-      <div class="f"><input type="text" id="s-cond" list="dl-cond" value="${esc(s.condition_entity || "")}" placeholder="binary_sensor.cheap_rate" autocomplete="off"><datalist id="dl-cond">${this._entityOptions(["binary_sensor", "input_boolean", "switch"])}</datalist>
+      <div class="f"><input type="text" id="s-cond" list="dl-cond" aria-label="Only while this entity is on (optional)" value="${esc(s.condition_entity || "")}" placeholder="binary_sensor.cheap_rate" autocomplete="off"><datalist id="dl-cond">${this._entityOptions(["binary_sensor", "input_boolean", "switch"])}</datalist>
         <span class="hint">Follow a tariff or any on/off entity (e.g. an Octopus or Agile cheap-rate sensor). The schedule only runs while it is on.</span></div>
       <label style="display:flex;gap:8px;align-items:center;margin:4px 0 12px"><input type="checkbox" id="s-allday" ${s.all_day ? "checked" : ""}>Ignore the times above; follow the entity only</label>
       <div class="daypick">${DAYS.map((d, i) => `<label><input type="checkbox" name="s-day" value="${i}" ${s.days.includes(i) ? "checked" : ""}><span>${d}</span></label>`).join("")}</div>
@@ -133,7 +133,7 @@ export default (U) => {
       <h2>Manual override</h2><p class="lead">Take control for a while. This beats any schedule, then HomePower goes back to normal.</p>
       <h3>Batteries</h3><div class="checks">${devs.map((d) => `<label><input type="checkbox" name="o-dev" value="${esc(d.device_id)}" ${d.device_id === did ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div>
       <h3>What to do</h3>
-      <div class="seg-pick">${Object.entries(MODES).map(([k, m]) => `<label style="--c:${m.color}"><input type="radio" name="o-mode" value="${k}" ${k === "charge" ? "checked" : ""}><ha-icon icon="${m.icon}" style="color:${m.color}"></ha-icon><span>${m.label}</span></label>`).join("")}</div>
+      <div class="seg-pick">${Object.entries(MODES).map(([k, m]) => `<label style="--c:${m.color}"><input type="radio" name="o-mode" value="${k}" ${k === "charge" ? "checked" : ""}><ha-icon icon="${m.icon}" style="color:${U.INK[k] || m.color}"></ha-icon><span>${m.label}</span></label>`).join("")}</div>
       <div class="f"><label>Power (W) — for charge / discharge</label><input type="number" id="o-pw" min="0" step="100" value="3000"></div>
       <div class="two"><div class="f"><label>Stop charging at SOC (%)</label><input type="number" id="o-soc" min="0" max="100" value="100"></div>
         <div class="f"><label>For how long</label><select id="o-min"><option value="30">30 minutes</option><option value="60" selected>1 hour</option><option value="120">2 hours</option><option value="240">4 hours</option><option value="720">12 hours</option></select></div></div>
