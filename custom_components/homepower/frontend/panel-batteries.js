@@ -9,7 +9,7 @@ export default (U) => {
     const cards = this.data.devices.map((d, i) => {
       const r = this._reading(d);
       return `<div class="card"><div class="bat">${this._ring(r.soc, 80)}<div class="info">
-        <div class="nm"><span class="dot" style="background:${this._color(i)}"></span>${esc(d.name)} <span class="chip ${r.online ? "" : "bad"}">${r.online ? "Online" : "Offline"}</span></div>
+        <div class="nm"><span class="dot" style="background:${this._color(i)}"></span>${esc(d.name)} ${this._linkChip(r)}</div>
         <div class="sub" style="font-size:13px;color:var(--secondary-text-color);margin-top:4px">${esc(this._profile(d.kind).label)}<br>Modes: ${(d.supported_modes || []).map((m) => (MODES[m] || {}).label).join(", ")}<br>${fmtKwh(d.capacity_wh)} · ${fmtW(d.max_charge_w)} in / ${fmtW(d.max_discharge_w)} out · min SOC ${d.min_soc}%</div></div></div>
         <div style="margin-top:12px;display:flex;gap:8px;align-items:center"><button class="btn sm" title="Move earlier" data-act="move-battery" data-dir="-1" data-id="${esc(d.device_id)}" ${i === 0 ? "disabled" : ""}><ha-icon icon="mdi:arrow-left" style="--mdc-icon-size:16px"></ha-icon></button><button class="btn sm" title="Move later" data-act="move-battery" data-dir="1" data-id="${esc(d.device_id)}" ${i === this.data.devices.length - 1 ? "disabled" : ""}><ha-icon icon="mdi:arrow-right" style="--mdc-icon-size:16px"></ha-icon></button><button class="btn sm" title="All settings and readings" data-act="battery-details" data-id="${esc(d.device_id)}"><ha-icon icon="mdi:cog" style="--mdc-icon-size:16px"></ha-icon>Details</button><button class="btn sm" data-act="edit-battery" data-id="${esc(d.device_id)}"><ha-icon icon="mdi:pencil" style="--mdc-icon-size:16px"></ha-icon>Edit</button>
           <button class="btn sm" data-act="toggle-control" data-id="${esc(d.device_id)}" data-on="${d.control_enabled === false ? 1 : 0}">${d.control_enabled === false ? "Allow control" : "Stop control (monitor only)"}</button></div></div>`;
@@ -44,7 +44,7 @@ export default (U) => {
       <div id="b-conn"></div>
       <div id="b-test"></div>
       <h3>3 · Name</h3>
-      <div class="f"><label>Name</label><input type="text" id="b-name" value="${esc(d.name)}" placeholder="e.g. Garage battery"></div>
+      <div class="f"><label>Name</label><input type="text" id="b-name" maxlength="80" value="${esc(d.name)}" placeholder="e.g. Garage battery"></div>
       <p class="hint" style="font-size:13px;color:var(--secondary-text-color);margin:6px 0">Capacity, power limits and minimum charge are read from the battery itself. Open "Limits" only to override them.</p>
       <details ${isNew ? "" : "open"}><summary>Limits (read from the battery; override only if needed)</summary>
         <div class="three"><div class="f"><label>Capacity (Wh)</label><input type="number" id="b-cap" value="${d.capacity_wh ?? ""}" placeholder="from the battery"></div>

@@ -12,6 +12,7 @@ open to the simulated battery (without it most scripts hang at the end). The scr
 
     python tests/ha_harness/check_imports.py
     python tests/ha_harness/configure_flows.py
+    python tests/ha_harness/check_form_schemas.py   # every Configure / setup form converts to JSON for the browser (Probatio or voluptuous_serialize)
     python tests/ha_harness/e2e_control_loop.py
     python tests/ha_harness/e2e_flows_and_sensors.py
     python tests/ha_harness/e2e_races_and_handback.py
@@ -30,6 +31,7 @@ open to the simulated battery (without it most scripts hang at the end). The scr
     python tests/ha_harness/e2e_restore_junk.py   # a damaged or hostile backup file restores safely
     python tests/ha_harness/e2e_soak.py        # a simulated day of cycles: speed and growth (SOAK_CYCLES=... to change)
     python tests/ha_harness/e2e_export_events_repairs.py   # paid export, wear cost, a saving session, Repairs, the hardware report, X1 solar strings
+    python tests/ha_harness/e2e_x1_limits_release.py   # removing HomePower puts back the X1 limits it changed (also with the X1 unreachable)
 
 What they cover: every module imports and every Home Assistant function used has the signature HomePower calls;
 the Configure flow for every battery model; the whole control loop (monitor-only, control, hand-back, override,

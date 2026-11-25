@@ -6,7 +6,10 @@ Hosts: api-e.ecoflow.com (Europe) and api.ecoflow.com (global/US). Requests are 
 These batteries expose no charge/discharge power setpoint through this API, only the operating
 mode and the backup reserve, so HomePower offers Auto, Hold and Charge: Hold raises the backup reserve to the
 charge level so the battery will not discharge (solar can still charge it); Charge raises it to the target so the
-battery tops itself up from the grid at its own rate; Auto restores your normal reserve.
+battery tops itself up from the grid at its own rate; Auto puts back exactly the reserve (and, on the 5000 series, the
+operating mode) the battery had before HomePower first changed it. Those are read from the battery just before that first
+change and saved, so a restart does not lose them. When they are not known, Auto leaves the battery as it is: it never
+writes a made-up value. The energy strategy of the Ultra / Ultra X is never changed.
 """
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ QUOTAS = ("backupReverseSoc", "f32ShowSoc", "soc", "cmsBattSoc", "powGetBpCms", 
 RAISED_RESERVE = 85   # a reserve at or above this, with no saved original, is taken to be one HomePower raised (lower ones are the user's own)
 HANDBACK_QUIET_S = 600  # after a hand-back the cloud may still show the raised reserve for a while: no second hand-back in that time
 HOLD_RESERVE = 95  # STREAM accepts a backup reserve of 3-95 %; Hold raises the reserve to the current charge level
+WROTE_KEPT = 8   # reserve levels HomePower wrote during one takeover, kept to recognise them at hand-back
 SELF_MODE = "SELF_CONSUMPTION"   # STREAM 5000 series operating modes: SELF_CONSUMPTION, AI_MODE, TIMER_TASK, POU_MODE
 
 
@@ -201,6 +205,7 @@ class EcoFlowStreamDriver:
     _orig_val = None
     _on_orig = None
     _handed_at = -1e9
+    _warned_unknown = False   # logged once that a hand-back was skipped (original unknown)
     _pv_prev = None           # (time, pv_w) of the last solar reading accepted; see _screen_pv
     _pv_run = 0
     pv_ignored = 0            # solar readings held back because they looked like grid charging
@@ -235,6 +240,48 @@ class EcoFlowStreamDriver:
                 self._on_orig(value)
             except Exception:  # noqa: BLE001 - failing to save must never stop a command
                 _LOGGER.debug("could not save the EcoFlow originals", exc_info=True)
+
+    async def _fresh(self) -> dict:
+        """The battery's settings read now, just before HomePower first changes them (the cached reading can be 30 s old,
+        or older while live updates flow). Anything the fresh reading leaves out is taken from the cached one."""
+        q = normalise(await self.api.quota(self.sn))
+        if q:
+            self._state = {**(self._state or self.last_quota), **q}
+            self.last_quota = dict(self._state)
+        return self._state or self.last_quota
+
+    async def _write_reserve(self, params: dict, level: int, cmd_id: int = 17) -> None:
+        """Send a reserve change of HomePower's own, noting the level first (and saving it with the originals), so hand-back
+        can tell HomePower's raise from a change someone made in the EcoFlow app meanwhile. Noted before sending: a command
+        that fails after it took effect still counts as ours."""
+        if self._orig is not None:
+            wrote = [w for w in self._orig.get("wrote", []) if w != level][-(WROTE_KEPT - 1):] + [int(level)]
+            self._orig = {**self._orig, "wrote": wrote}
+        await self.api.command(self.sn, params, cmd_id=cmd_id)
+
+    def _ours(self, level: float | None, q: dict | None = None) -> bool:
+        """True when a reserve reading is one HomePower wrote during this takeover. The battery keeps a reserve between its
+        discharge limit + 3 and its charge limit (95 at most on the Ultra), so a value HomePower wrote may show clamped into
+        that range, or rounded: within a point of what was written, or of that clamped value, still counts. (Mistaking a
+        clamp for the user's own change would leave the battery stuck at a raised reserve.)"""
+        if level is None:
+            return False
+        q = q or self._state or self.last_quota
+        lo_soc = q.get("cmsMinDsgSoc") if isinstance(q.get("cmsMinDsgSoc"), (int, float)) else self.config.caps.min_soc
+        hi_soc = q.get("cmsMaxChgSoc") if isinstance(q.get("cmsMaxChgSoc"), (int, float)) and q.get("cmsMaxChgSoc") > 0 else 100
+        lo, hi = max(3, (lo_soc or 0) + 3), min(HOLD_RESERVE if "backupReverseSoc" in q else 100, hi_soc)
+        return any(abs(level - w) <= 1 or abs(level - min(max(w, lo), max(lo, hi))) <= 1
+                   for w in (self._orig or {}).get("wrote", []))
+
+    def _changed_by_user(self, what: str, now) -> None:
+        _LOGGER.info("%s: the %s was changed (to %s) while HomePower held the battery, so the new setting is kept on hand-back",
+                     self.config.device_id, what, now)
+
+    def _unknown_original(self, what: str) -> None:
+        if not self._warned_unknown:
+            self._warned_unknown = True
+            _LOGGER.warning("%s: HomePower does not know the %s this battery had before it was changed, so it is left as it is: "
+                            "set it in the EcoFlow app if it should be different", self.config.device_id, what)
 
     def _just_handed_back(self) -> bool:
         return time.monotonic() - self._handed_at < HANDBACK_QUIET_S
@@ -398,13 +445,34 @@ class EcoFlowStreamDriver:
                 level = q.get("backupSoc")
                 if (q.get("backupSocOnOff") and isinstance(level, (int, float)) and level >= RAISED_RESERVE and not self._just_handed_back()
                         and self._decode(q, self.config.caps.min_soc).mode in (Mode.HOLD, Mode.CHARGE)):
-                    await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": False, "backupSoc": 0}}, cmd_id=38)  # restarted while held, originals lost
-                return                          # otherwise it is the user's own reserve (or a stale reading): never touched
+                    self._unknown_original("backup reserve and operating mode")    # looks raised, but nothing was saved
+                return                          # the user's own settings (or a stale reading): never touched
             o = self._orig                      # forgotten only once every command below has succeeded: a failed hand-back is retried with the same originals
-            reserve = {"backupSocOnOff": True, "backupSoc": o["level"]} if o["on"] and o["level"] is not None else {"backupSocOnOff": False, "backupSoc": 0}
-            await self.api.command(self.sn, {"bpBackupConfig": reserve}, cmd_id=38)
-            if o["mode"] and o["mode"] != SELF_MODE:
-                await self.api.command(self.sn, {"workMode": o["mode"]}, cmd_id=38)
+            if o.get("on") is None and "on" in o:
+                reserve = None                  # whether it was switched on is not known: left alone
+                self._unknown_original("backup reserve")
+            elif not o.get("on"):
+                reserve = {"backupSocOnOff": False, "backupSoc": 0}                 # it was switched off: off again
+            elif isinstance(o.get("level"), int):
+                reserve = {"backupSocOnOff": True, "backupSoc": o["level"]}
+            else:
+                reserve = None                  # on, at a level that could not be read: the level is left alone
+                self._unknown_original("backup reserve level")
+            mode = o.get("mode") if o.get("mode") and o["mode"] != SELF_MODE else None
+            if "wrote" in o:                    # (an entry from an older version has no record of what HomePower wrote)
+                now = await self._fresh()       # what the battery has now: changed in the app since HomePower raised it?
+                on, level, cur_mode = now.get("backupSocOnOff"), now.get("backupSoc"), now.get("workMode")
+                as_found = bool(on) == bool(o.get("on")) and (not on or level == o.get("level"))
+                if reserve is not None and not as_found and not (on and self._ours(level if isinstance(level, (int, float)) else None, now)):
+                    self._changed_by_user("backup reserve", f"{'on' if on else 'off'} {level}" if on else "off")
+                    reserve = None
+                if mode and isinstance(cur_mode, str) and cur_mode not in (SELF_MODE, mode):
+                    self._changed_by_user("operating mode", cur_mode)
+                    mode = None
+            if reserve is not None:
+                await self.api.command(self.sn, {"bpBackupConfig": reserve}, cmd_id=38)
+            if mode:
+                await self.api.command(self.sn, {"workMode": mode}, cmd_id=38)
             self._orig = None
             self._handed_at = time.monotonic()
             return
@@ -412,16 +480,23 @@ class EcoFlowStreamDriver:
             raise ValueError(f"EcoFlow STREAM cannot {desired.mode.value} through the API")
         if soc is None:
             raise ValueError("cannot hold or charge: the battery's charge level is not known yet")
-        if self._orig is None:
+        if self._orig is None:              # taking control: read what the user has now, before the first write, and save it
+            q = await self._fresh()
+            soc = self._decode(q).soc if self._decode(q).soc is not None else soc     # the fresh charge level for the Hold level too
             level = q.get("backupSoc")
-            self._orig = {"on": bool(q.get("backupSocOnOff")), "level": int(level) if isinstance(level, (int, float)) else None,
-                          "mode": q.get("workMode") if isinstance(q.get("workMode"), str) else None}
+            # "on" is None when the reading did not include the switch (EcoFlow's fallback request leaves it out): unknown, so
+            # hand-back leaves the reserve alone rather than switching it off
+            self._orig = {"on": bool(q["backupSocOnOff"]) if "backupSocOnOff" in q else None,
+                          "level": int(level) if isinstance(level, (int, float)) else None,
+                          "mode": q.get("workMode") if isinstance(q.get("workMode"), str) else None, "wrote": []}
+            self._warned_unknown = False
         if isinstance(q.get("workMode"), str) and q["workMode"] != SELF_MODE:
             await self.api.command(self.sn, {"workMode": SELF_MODE}, cmd_id=38)
         target = soc
         if desired.mode is Mode.CHARGE:
             target = max(soc, desired.target_soc if desired.target_soc is not None else 100)
-        await self.api.command(self.sn, {"bpBackupConfig": {"backupSocOnOff": True, "backupSoc": int(max(0, min(100, target)))}}, cmd_id=38)
+        level = int(max(0, min(100, target)))
+        await self._write_reserve({"bpBackupConfig": {"backupSocOnOff": True, "backupSoc": level}}, level, cmd_id=38)
 
     async def apply(self, desired: Desired) -> None:
         if time.monotonic() < self._blocked_until and desired.mode is not Mode.AUTO:
@@ -451,27 +526,44 @@ class EcoFlowStreamDriver:
                 return
             raise ValueError("this EcoFlow model's settings are not known to HomePower: read-only for now")
         if desired.mode in (Mode.HOLD, Mode.CHARGE) and self._orig is None:
-            # Remember the reserve the user had, so Auto puts exactly that back (not a made-up minimum). A reserve already
-            # near the top was probably left raised by an earlier run: its original is unknown, so it is not trusted.
-            cur = _first(self._state or self.last_quota, "backupReverseSoc")
-            self._orig = {"reserve": int(cur) if cur is not None and cur < 90 else None}
+            # Taking control: read the reserve the user has now, before the first write, and save it, so Auto puts exactly
+            # that back. (Even a high one: putting back what was there is leaving it as it was found.)
+            cur = _first(await self._fresh(), "backupReverseSoc")
+            if cur is None:
+                raise ValueError("could not read the battery's backup reserve, so nothing was changed (it is needed to hand the battery back)")
+            self._orig = {"reserve": int(cur), "wrote": []}
+            self._warned_unknown = False
         if desired.mode is Mode.HOLD:
             # Raise the reserve to where the battery is now: it stops discharging, and is not told to charge from the grid
             # (a reserve above the charge level could make it top up at whatever the price is).
             soc = self._decode(self._state or self.last_quota).soc
             if soc is None:
                 raise ValueError("cannot hold: the battery's charge level is not known yet")
-            await self.api.command(self.sn, {"cfgBackupReverseSoc": int(max(3, min(HOLD_RESERVE, soc)))})
+            level = int(max(3, min(HOLD_RESERVE, soc)))
+            await self._write_reserve({"cfgBackupReverseSoc": level}, level)
         elif desired.mode is Mode.AUTO:
-            o = self._orig                        # forgotten only after both commands succeed (a failed hand-back is retried with the same originals)
-            if o is None:
-                cur = _first(self._state or self.last_quota, "backupReverseSoc")
-                if (cur is None or cur < RAISED_RESERVE or self._just_handed_back()
-                        or self._decode(self._state or self.last_quota, self.config.caps.min_soc).mode is Mode.AUTO):
-                    return                        # nothing of ours to hand back: the user's own reserve (or a stale reading) is left alone
+            o = self._orig                        # forgotten only after the command succeeds (a failed hand-back is retried with the same originals)
             saved = o.get("reserve") if o else None
-            await self.api.command(self.sn, {"cfgEnergyStrategyOperateMode": {"operateSelfPoweredOpen": True}})
-            await self.api.command(self.sn, {"cfgBackupReverseSoc": int(saved) if saved is not None else max(3, self.config.caps.min_soc)})
+            if saved is None:
+                cur = _first(self._state or self.last_quota, "backupReverseSoc")
+                if not (cur is None or cur < RAISED_RESERVE or self._just_handed_back()
+                        or self._decode(self._state or self.last_quota, self.config.caps.min_soc).mode is Mode.AUTO):
+                    self._unknown_original("backup reserve")    # looks raised, but nothing was saved: never a made-up value
+                if o is not None:
+                    self._orig = None             # saved by an older version without the reserve: nothing to put back
+                return
+            if "wrote" in o:                      # (an entry from an older version has no record of what HomePower wrote)
+                q = await self._fresh()
+                cur = _first(q, "backupReverseSoc")
+                if cur is not None and abs(cur - saved) > 1 and not self._ours(cur, q):
+                    # changed in the EcoFlow app while HomePower held it: that newer choice stays, not the older saved one
+                    self._changed_by_user("backup reserve", int(cur))
+                    self._orig = None
+                    self._handed_at = time.monotonic()
+                    return
+            # Only the reserve is put back: Hold and Charge never change the energy strategy, so the user's own (AI, time-of-use,
+            # scheduled...) is still in place and is not touched.
+            await self.api.command(self.sn, {"cfgBackupReverseSoc": int(saved)})
             self._orig = None
             self._handed_at = time.monotonic()
         elif desired.mode is Mode.CHARGE:
@@ -481,6 +573,7 @@ class EcoFlowStreamDriver:
             target = desired.target_soc if desired.target_soc is not None else HOLD_RESERVE
             if soc is not None and soc >= target:
                 target = soc                      # already there: hold rather than top up further
-            await self.api.command(self.sn, {"cfgBackupReverseSoc": int(max(3, min(HOLD_RESERVE, target)))})
+            level = int(max(3, min(HOLD_RESERVE, target)))
+            await self._write_reserve({"cfgBackupReverseSoc": level}, level)
         else:
             raise ValueError(f"EcoFlow STREAM cannot {desired.mode.value} through the API")

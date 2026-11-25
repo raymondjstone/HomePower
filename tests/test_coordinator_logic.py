@@ -186,7 +186,7 @@ def test_startup_note_says_what_was_restored_and_what_is_unreachable():
     c.rate_learner.rates["e"] = 2800
     c.adapters = [FakeAdapter(eco_cfg(), None)]
     c._startup_check({"e": Actual(online=False)})
-    assert "1 saved EcoFlow original settings" in c.startup_note and "Could not reach: Eco" in c.startup_note
+    assert "1 saved hand-back settings" in c.startup_note and "Could not reach: Eco" in c.startup_note
 
 
 def test_release_all_when_paused_only_with_force():
@@ -368,3 +368,114 @@ def test_grid_event_ignores_an_all_day_calendar_entry():
     st["calendar.saving"] = types.SimpleNamespace(state="off", attributes={})
     st["binary_sensor.octo"] = types.SimpleNamespace(state="on", attributes={})
     assert c._grid_event_on() is True
+
+
+def test_a_failed_read_shows_stale_readings_until_the_offline_after_time():
+    """Another Modbus client holding the battery for a moment must not make it look offline: the last reading is shown,
+    marked stale, until reads have failed for the offline-after time (or the network says the battery is not there)."""
+    c = bare()
+    c.settings.offline_after_min = 5
+    c._began = 0.0
+    st = c._snap.devices["e"] = coordinator.DeviceStatus()
+    good = Actual(online=True, soc=55.0, power_w=-300.0)
+    c._note_link(st, good, 1000.0)
+    st.actual = good
+    assert c.link("e") == "online" and c.shown_actual("e") is good
+
+    st.actual = Actual(online=False)
+    c._note_link(st, st.actual, 1000.0 + 299)
+    assert c.link("e") == "stale" and c.shown_actual("e") is good and c.shown_actuals()["e"] is good
+    assert st.ok_mono == 1000.0                           # a failed read does not move the last good read on
+
+    c._note_link(st, st.actual, 1000.0 + 300)
+    assert c.link("e") == "offline" and c.shown_actual("e") is None
+
+    c._note_link(st, good, 1400.0)                        # answers again
+    assert c.link("e") == "online"
+    st.actual = Actual(online=False, gone=True)           # the network says it is not there: offline at once
+    c._note_link(st, st.actual, 1401.0)
+    assert c.link("e") == "offline"
+    st.actual = Actual(online=False)                      # next cycle a time-out instead: still offline, not back to stale
+    c._note_link(st, st.actual, 1402.0)
+    assert c.link("e") == "offline"
+
+
+def test_a_battery_never_read_since_start_up_waits_before_showing_offline():
+    c = bare()
+    c.settings.offline_after_min = 1
+    c._began = 500.0
+    st = c._snap.devices["e"] = coordinator.DeviceStatus(actual=Actual(online=False))
+    c._note_link(st, st.actual, 530.0)
+    assert c.link("e") == "stale" and c.shown_actual("e") is None    # nothing to show yet, but not called offline
+    c._note_link(st, st.actual, 560.0)
+    assert c.link("e") == "offline"
+
+
+def test_a_battery_added_but_not_read_yet_is_waiting_not_offline():
+    c = bare()
+    c._snap.devices["e"] = coordinator.DeviceStatus()
+    assert c.link("e") == "stale" and c.shown_actual("e") is None
+    assert c.link("missing") == "offline"
+
+
+def test_x1_limit_state_round_trips_and_drops_originals_once_the_limit_is_gone():
+    from hp.coord_base import x1_limits_keep, x1_limits_take
+    state = {"x1lim:x1:export:3000": True, "x1orig:x1:export:2:6000": True, "x1lim:other:import:5": True, "unrelated": True}
+    mine, orig = x1_limits_take(state, "x1")
+    assert mine == {"export": 3000} and orig == {"export": [2, 6000]}
+    assert set(state) == {"x1lim:other:import:5", "unrelated"}              # another battery's are left alone
+    x1_limits_keep(state, "x1", mine, orig)
+    assert x1_limits_take(dict(state), "x1") == (mine, orig)
+    x1_limits_take(state, "x1")
+    x1_limits_keep(state, "x1", {}, {"export": [2, 6000]})                    # HomePower's limit gone: no stray original kept
+    assert not any(k.startswith(("x1lim:x1:", "x1orig:x1:")) for k in state)
+
+
+def test_x1_limits_are_taken_off_when_the_option_is_switched_off():
+    c = bare()
+    calls = []
+
+    class Drv:
+        async def set_grid_limits(self, imp, exp, mine, orig):
+            calls.append((imp, exp, dict(mine), dict(orig)))
+            mine.clear(); orig.clear()
+            return ["export limit back to 6000 W"]
+
+    cfg = DeviceConfig("x1", "X1", "anker_x1", Capabilities(10000, 3000, 3000, 10), extra={"house_meter": True, "control_enabled": True})
+    a = types.SimpleNamespace(config=cfg, driver=Drv())
+    c._snap.devices["x1"] = coordinator.DeviceStatus(actual=Actual(online=True, soc=50))
+    c._event_state = {"x1lim:x1:export:3000": True, "x1orig:x1:export:2:6000": True}
+    c._last_limit_sync = -1e9                                                 # (not paused: FakeManager)
+    c.settings = types.SimpleNamespace(x1_grid_limits=False, dry_run=False, engine=types.SimpleNamespace(import_limit_w=None, export_limit_w=3000))
+    asyncio.run(c._sync_x1_limits(1000.0, [a]))
+    assert calls == [(None, None, {"export": 3000}, {"export": [2, 6000]})]  # option off: HomePower's limit taken off
+    assert not any(k.startswith(("x1lim:x1", "x1orig:x1")) for k in c._event_state)
+    calls.clear()
+    c._last_limit_sync = -1e9
+    asyncio.run(c._sync_x1_limits(2000.0, [a]))
+    assert calls == []                                                        # nothing of HomePower's left: nothing done
+
+
+def test_deleting_an_x1_takes_its_limits_off_and_forgets_them_even_if_unreachable():
+    c = bare()
+    calls = []
+
+    class Drv:
+        def __init__(self, fail):
+            self.fail = fail
+
+        async def set_grid_limits(self, imp, exp, mine, orig):
+            calls.append((imp, exp, dict(mine), dict(orig)))
+            if self.fail:
+                raise OSError("no route to host")
+            mine.clear(); orig.clear()
+            return ["export limit back to 6000 W"]
+
+    cfg = DeviceConfig("x1", "X1", "anker_x1", Capabilities(10000, 3000, 3000, 10), extra={"house_meter": True})
+    for fail in (False, True):
+        calls.clear()
+        c.adapters = [types.SimpleNamespace(config=cfg, driver=Drv(fail))]
+        c._event_state = {"x1lim:x1:export:3000": True, "x1orig:x1:export:2:6000": True, "x1lim:other:import:5": True}
+        asyncio.run(c.release_x1_limits("x1"))
+        assert calls == [(None, None, {"export": 3000}, {"export": [2, 6000]})]
+        assert set(c._event_state) == {"x1lim:other:import:5"}       # the deleted battery's records go; another's stay

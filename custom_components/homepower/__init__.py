@@ -218,9 +218,64 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return ok
 
 
+async def _release_x1_limits_on_remove(hass: HomeAssistant) -> None:
+    """HomePower is gone for good: take the import/export limits it wrote into any Anker X1 back off, putting back what was
+    there before (an installer's limit, or off). On a restart or reload they stay, so they still hold while HA is down."""
+    import asyncio
+
+    from .coord_base import x1_limits_keep, x1_limits_take
+
+    mgr = HomePowerManager(hass)
+    await mgr.async_load()
+    state = mgr.event_state
+    if not any(k.startswith("x1lim:") for k in state):
+        return
+    from .core.serde import device_from_dict
+    from .drivers.anker import AnkerModbusDriver
+    from .drivers.modbus import ModbusError
+
+    drivers = []                        # only the X1s with limits of HomePower's: nothing else is connected to
+    for d in mgr.devices.values():
+        if d.get("driver") == "anker_modbus" and any(k.startswith(f"x1lim:{d.get('device_id')}:") for k in state):
+            try:
+                drivers.append(AnkerModbusDriver(device_from_dict(d)))
+            except Exception:  # noqa: BLE001 - a damaged row is skipped
+                _LOGGER.debug("could not build %s", d.get("device_id"), exc_info=True)
+    try:
+        for drv in drivers:
+            did = drv.config.device_id
+            mine, orig = x1_limits_take(state, did)
+            try:
+                if not (await asyncio.wait_for(drv.read(), 15)).online:     # also learns the 32-bit word order the limits need
+                    raise ConnectionError("the battery did not answer")
+                changed = await asyncio.wait_for(drv.set_grid_limits(None, None, mine, orig), 30)
+                if mine:                                    # still in place: e.g. the word order could not be learned
+                    raise RuntimeError("its limits could not be written")
+                _LOGGER.info("HomePower removed: %s: %s", did, ", ".join(changed) or "its own limits were already gone")
+            except Exception as err:  # noqa: BLE001 - best effort: removal must finish with the battery unreachable
+                expected = isinstance(err, (ConnectionError, RuntimeError, OSError, asyncio.TimeoutError, ModbusError))
+                _LOGGER.warning("HomePower removed, but the import/export limits it wrote into %s could not be taken off (%s): "
+                                "check them in the Anker app", did, err or type(err).__name__, exc_info=not expected)
+            finally:
+                x1_limits_keep(state, did, mine, orig)      # whatever is still HomePower's stays recorded
+    finally:
+        for drv in drivers:
+            try:
+                await drv.close()
+            except Exception:  # noqa: BLE001
+                pass
+    raw = await mgr._store.async_load() or {}                       # only the limit flags change: everything else is saved as it was
+    raw["event_state"] = {k: v for k, v in state.items() if v}
+    await mgr._store.async_save(raw)                                # what is still HomePower's (if anything) is still known
+
+
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """HomePower was deleted. Its batteries, schedules and history are kept (so adding it again restores everything)
-    unless the user ticked 'erase everything when HomePower is removed' in Settings."""
+    unless the user ticked 'erase everything when HomePower is removed' in Settings. Any X1 limits it wrote are taken off."""
+    try:
+        await _release_x1_limits_on_remove(hass)
+    except Exception:  # noqa: BLE001 - removal must always finish
+        _LOGGER.warning("could not check for X1 limits HomePower wrote", exc_info=True)
     if not entry.options.get("erase_on_remove"):
         _LOGGER.info("HomePower removed; its saved batteries, schedules and history were kept")
         return

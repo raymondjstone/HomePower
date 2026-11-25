@@ -129,11 +129,24 @@ class HomePowerPanel extends HTMLElement {
     return Number.isFinite(v) ? v : null;
   }
 
+  // Online / Readings stale / Waiting for readings / Offline, as a chip. Offline only once reads have failed for the
+  // "offline after" time (Settings > Limits), or the network says the battery is not there.
+  _linkChip(r) {
+    const mins = (this.data.settings || {}).offline_after_min || 5;
+    const why = `HomePower could not read it just now. This is often another app or integration holding its connection for a moment, so it is only shown offline after ${mins} min of failed reads.`;
+    const last = r.lv && r.lv.last_read_ok ? ` Last good read ${new Date(r.lv.last_read_ok).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit", second: "2-digit" }))}.` : "";
+    if (r.online && r.stale) return `<span class="chip warn" title="${esc(why + last)}">Readings stale</span>`;
+    if (r.online) return `<span class="chip">Online</span>`;
+    if (r.waiting) return `<span class="chip warn" title="${esc(why)}">Waiting for readings</span>`;
+    return `<span class="chip bad">Offline</span>`;
+  }
+
   _reading(d) {
     const e = d.entities || {};
     const lv = (this.live.devices || {})[d.device_id] || {};
     if (d.driver && d.driver !== "entities") {  // HomePower talks to this battery itself
-      return { soc: lv.soc ?? null, power: lv.power_w ?? null, online: !!lv.online, lv };
+      // stale: this cycle's read failed but not for long (another Modbus client may hold the battery): the last reading is shown
+      return { soc: lv.soc ?? null, power: lv.power_w ?? null, online: !!lv.online, stale: !!lv.stale, waiting: !lv.online && lv.link === "stale", lv };
     }
     const bad = (k) => { const st = e[k] && this._hass.states[e[k]]; return !st || ["unavailable", "unknown"].includes(st.state); };
     // Whichever control entity this battery family has tells us whether it is reachable.
@@ -147,7 +160,8 @@ class HomePowerPanel extends HTMLElement {
       p = this._num(e.power);
       if (p != null && d.invert_power) p = -p;
     }
-    return { soc: this._num(e.soc), power: p, online, lv };
+    // its integration reports it unavailable, but not for long yet: waiting, not offline (the same rule as a direct battery)
+    return { soc: this._num(e.soc), power: p, online, waiting: !online && lv.link === "stale", lv };
   }
 
   _gridW() {
@@ -165,7 +179,7 @@ class HomePowerPanel extends HTMLElement {
     for (const d of this.data.devices) {
       const r = this._reading(d);
       const h = (this._hist[d.device_id] ||= []);
-      h.push({ t: now, p: r.power });
+      h.push({ t: now, p: r.stale ? null : r.power });     // a held (stale) reading is not a new sample
       while (h.length && h[0].t < now - 24 * 3600e3) h.shift();
     }
     const g = this._gridW();
@@ -197,7 +211,11 @@ class HomePowerPanel extends HTMLElement {
       if (this.tab === "plan") this._preview = await this._hass.callWS({ type: "homepower/preview", hours: 24 });
       else if (this.tab === "settings") this._backups = ((await this._hass.callWS({ type: "homepower/backups" }).catch(() => ({ backups: [] }))).backups) || [];
       else if (this.tab === "diagnostics") this._diag = await this._hass.callWS({ type: "homepower/diagnostics" });
-      else if (this.tab === "insights") { await this._loadHistory(); this._tariffs = await this._hass.callWS({ type: "homepower/tariffs/compare", days: 30 }).catch((e) => ({ error: e.message || String(e) })); }
+      else if (this.tab === "insights") {
+        await this._loadHistory();
+        this._tariffs = await this._hass.callWS({ type: "homepower/tariffs/compare", days: 30 }).catch((e) => ({ error: e.message || String(e) }));
+        this._solarCmp = await this._hass.callWS({ type: "homepower/solar_forecast", days: 30, ...(this._solarDay ? { day: this._solarDay } : {}) }).catch(() => null);
+      }
     } catch (e) { this._tabError = e.message || String(e); }
     if (!this._modal) this._render();
   }
@@ -473,6 +491,7 @@ ${esc(where)}</pre></div>`;
         if (!(await this._call({ type: "homepower/goal/delete", goal_id: id }))) return;
         await this._reload(); this._closeModal(); return this._tabLoad();
       case "range": this._range = t.dataset.r; return this._tabLoad();
+      case "solar-day": this._solarDay = t.dataset.day || null; return this._tabLoad();
       case "setup-test": this.tab = "diagnostics"; this._render(); await this._tabLoad(); return this._runTest(id);
       case "goto-tariff": this.tab = "settings"; this._render(); return this._tabLoad();
       case "tariff-preset": {

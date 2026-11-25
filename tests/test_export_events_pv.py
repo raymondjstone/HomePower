@@ -273,3 +273,11 @@ def test_a_string_quiet_at_dusk_is_not_called_dead_through_the_night():
         t += 60
     assert list(pv.warnings("x1", "2026-06-06", t)) == [3]
     assert "for 33 min" in pv.warnings("x1", "2026-06-06", t)[3]
+
+
+def test_offline_after_setting():
+    assert build({}).offline_after_min == 5
+    assert clean({"offline_after_min": "10"}) == {"offline_after_min": 10} and build({"offline_after_min": 10}).offline_after_min == 10
+    for bad in ("0", "2000"):
+        with pytest.raises(SettingsError):
+            clean({"offline_after_min": bad})

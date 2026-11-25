@@ -61,7 +61,7 @@ ECO = {"device_id": "e", "name": "E", "kind": "ecoflow_stream_ultra_x", "capacit
 def test_anker_direct_defaults_to_monitor_only_and_roundtrips():
     c = device_from_dict(ANKER)
     assert c.extra["connection"] == {"host": "192.168.1.50", "port": 502, "unit_id": 1}
-    assert c.extra["control_enabled"] is False and c.extra["watchdog"] is True and c.extra["restore_mode"] == 20
+    assert c.extra["control_enabled"] is False and c.extra["watchdog"] is True and "restore_mode" not in c.extra
     assert Mode.CHARGE in c.caps.supported_modes
     assert device_from_dict(device_to_dict(c)) == c
     assert device_from_dict({**ANKER, "control_enabled": True}).extra["control_enabled"] is True

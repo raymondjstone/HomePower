@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import struct
 import time
 
@@ -23,7 +24,18 @@ _WHY = {
     "no_reply": "connected, but the battery did not answer in time",
     "closed": "the battery closed the connection",
     "garbage": "something answered that is not a Modbus device",
+    "unreachable": "the network reports the battery is not there (host unreachable)",
 }
+
+# "no route to the host / network" (this platform's errno, and the Winsock codes): the network itself says nothing is there.
+_UNREACHABLE = {errno.EHOSTUNREACH, errno.ENETUNREACH}
+_UNREACHABLE_WIN = {10065, 10051, 1231, 1232}
+
+
+def known_down(err: Exception) -> bool:
+    """True when a failure shows the battery is off the network, not merely busy (another Modbus client holding it, a slow
+    reply): only then is it shown offline straight away; other failures are shown as stale readings for a while first."""
+    return getattr(err, "reason", None) == "unreachable"
 
 
 def describe_failure(err: Exception) -> str:
@@ -139,6 +151,8 @@ class ModbusTcpClient:
                         reason = "garbage"
                     elif isinstance(err, ConnectionRefusedError):
                         reason = "refused"
+                    elif getattr(err, "errno", None) in _UNREACHABLE or getattr(err, "winerror", None) in _UNREACHABLE_WIN:
+                        reason = "unreachable"
                     elif isinstance(err, asyncio.TimeoutError):
                         reason = "no_connect" if phase == "connect" else "no_reply"
                     else:

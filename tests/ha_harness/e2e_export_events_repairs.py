@@ -106,7 +106,7 @@ async def main():
     det = await must("homepower/device/details", device_id="x")
     assert det["pv"]["strings"][1]["volts"] == 360.0
     assert coord.view()["devices"]["a"]["pv"] is None
-    assert "pv1_voltage" in BATTERY_SENSOR_SUFFIXES and "pv_total" in BATTERY_SENSOR_SUFFIXES
+    assert "pv1_voltage" in BATTERY_SENSOR_SUFFIXES and "pv_total" in BATTERY_SENSOR_SUFFIXES and "solar" in BATTERY_SENSOR_SUFFIXES
     print("strings  :", [(s["string"], s.get("watts"), s["state"]) for s in pv["strings"][:3]])
 
     # Repairs: a lasting problem (the alert path's raise and clear) is filed under Repairs, a heads-up is not

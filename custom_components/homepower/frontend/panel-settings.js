@@ -17,7 +17,8 @@ export default (U) => {
         { k: "peak_shaving", t: "bool", label: "Peak shaving: discharge to keep import under the limit" },
         num("export_limit_w", "Export limit (W, 0 = none)", "For grid connection rules (G98/G99): charge or trim discharge to stay under it."),
         num("total_charge_limit_w", "Max total charge (W, 0 = none)"), num("total_discharge_limit_w", "Max total discharge (W, 0 = none)"),
-        num("cooldown_s", "Re-apply cooldown (s)", "Stops the same command being re-sent too often.")]],
+        num("cooldown_s", "Re-apply cooldown (s)", "Stops the same command being re-sent too often."),
+        num("offline_after_min", "Show a battery offline after (minutes)", "A failed read is often just another app (another integration) holding the battery's Modbus connection for a moment. Until reads have failed for this long the battery shows \"Readings stale\" with its last values, not Offline. A battery the network reports as not there is shown offline at once.")]],
       ["Zero-import battery", "mdi:scale-balance", [{ k: "zero_import_device", t: "device", label: "Keeps grid import at 0 W when nothing else applies" }]],
       ["Tariff & prices", "mdi:cash", [
         { k: "tariff_presets", t: "presets", label: "Quick fill the cheap-rate hours" },
@@ -75,7 +76,7 @@ export default (U) => {
         { k: "divert_cheap", t: "bool", label: "Also switch it on during cheap-rate hours (needs a cheap rate set under Tariff)" }]],
       ["Anker X1 limits", "mdi:transmission-tower", [
         { k: "x1_grid_limits", t: "bool", label: "Also set the X1's own import and export limits to HomePower's (experimental)" },
-        { k: "x1_grid_limits_note", t: "note", label: "Writes the limit into the X1 itself so it still holds if Home Assistant is down. A limit HomePower set itself follows your setting up and down (and is taken off again if you clear it); a limit set by anyone else, such as an installer's grid-code limit, is only ever tightened, never raised or switched off. The registers (10074-10079) are the ones in Anker's own X1 Modbus protocol document; Diagnostics > Registers: save baseline / compare while changing the limit in the Anker app shows them on your unit." }]],
+        { k: "x1_grid_limits_note", t: "note", label: "Writes the limit into the X1 itself so it still holds if Home Assistant is down. A limit HomePower set itself follows your setting up and down; a limit set by anyone else, such as an installer's grid-code limit, is only ever tightened, never raised or switched off. When you clear the limit, turn this off, make the X1 monitor-only, delete it or remove HomePower, each limit gets back exactly what it had before HomePower first wrote it (the installer's value, or off). A restart leaves them in place. The registers (10074-10079) are the ones in Anker's own X1 Modbus protocol document; Diagnostics > Registers: save baseline / compare while changing the limit in the Anker app shows them on your unit." }]],
       ["Compare tariffs", "mdi:scale-balance", [
         { k: "compare_tariffs_note", t: "note", label: "HomePower records your grid import and export every half-hour. List other tariffs here, one per line, and Insights shows what the same usage would have cost on each. Rates are per kWh in your currency; standing is per day. Example: Octopus Go; peak=0.28; cheap=0.07; window=00:30-05:30; export=0.15; standing=0.45. Add your current tariff as one line to compare against it." },
         { k: "compare_tariffs", t: "area", label: "Tariffs (one per line)" }]],

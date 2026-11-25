@@ -20,7 +20,7 @@ from ..core.models import Actual, Desired, DeviceConfig, Mode
 import time
 
 from ..core.anker_x1_map import alarm_texts
-from .modbus import ModbusError, ModbusTcpClient, describe_failure, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
+from .modbus import ModbusError, ModbusTcpClient, describe_failure, known_down, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +40,10 @@ class AnkerModbusDriver:
         c = config.extra["connection"]
         self.client = client or ModbusTcpClient(c["host"], int(c.get("port", 502)), int(c.get("unit_id", 1)))
         self._on_orig = on_orig                        # called when the remembered mode changes, so it survives a restart or an edit
+        self._warned_unknown = False                   # logged once that a hand-back was skipped (original mode unknown)
         self._restore_val: int | None = int(orig["restore"]) if isinstance(orig, dict) and isinstance(orig.get("restore"), int) else None
+        # X1: the comms watchdog it had before HomePower set its own (put back on hand-back, saved with the work mode)
+        self._watchdog_orig: int | None = int(orig["watchdog"]) if isinstance(orig, dict) and isinstance(orig.get("watchdog"), int) else None
         self._order: str | None = None    # "big" / "little" once detected
         self._slow_at = 0.0               # X1: next time to refresh the slowly-changing extras (temperature)
         self._firmware: str | None = None
@@ -64,11 +67,30 @@ class AnkerModbusDriver:
     @_restore.setter
     def _restore(self, value: int | None) -> None:
         self._restore_val = value
+        if value is None:
+            self._watchdog_orig = None      # handed back (or no longer ours): nothing left to put back
+        self._save_orig()
+
+    def _save_orig(self) -> None:
         if self._on_orig is not None:
             try:
-                self._on_orig({"restore": value} if value is not None else None)
+                v = self._restore_val
+                self._on_orig(None if v is None else {"restore": v, **({"watchdog": self._watchdog_orig} if self._watchdog_orig is not None else {})})
             except Exception:  # noqa: BLE001 - failing to save must never stop a command
                 _LOGGER.debug("could not save the original mode", exc_info=True)
+
+    async def _put_back_watchdog(self) -> None:
+        """X1: the comms watchdog it had before HomePower set 600 s, unless someone has changed it since."""
+        if self._watchdog_orig is None:
+            return
+        try:
+            now = (await self.client.read_holding(WATCHDOG_REG, 1))[0]
+            if now == WATCHDOG_SECONDS and now != self._watchdog_orig:     # still HomePower's: put the user's back
+                await self.client.write_register(WATCHDOG_REG, self._watchdog_orig)
+        except ModbusError as err:
+            if err.code is None:
+                raise                   # no answer: the whole hand-back is retried
+            _LOGGER.warning("%s: could not put the comms watchdog back: %s", self.config.device_id, err)
 
     async def close(self) -> None:
         await self.client.close()
@@ -190,7 +212,7 @@ class AnkerModbusDriver:
         except ModbusError as err:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
             self._note_down(err)
-            return Actual(online=False)
+            return Actual(online=False, gone=known_down(err))
         self._note_up()
         return actual
 
@@ -229,34 +251,48 @@ class AnkerModbusDriver:
             pass
         return info
 
-    async def set_grid_limits(self, import_w: int | None, export_w: int | None, mine: dict[str, int] | None = None) -> list[str]:
+    async def set_grid_limits(self, import_w: int | None, export_w: int | None, mine: dict[str, int] | None = None,
+                              orig: dict[str, list] | None = None) -> list[str]:
         """X1 only: mirror HomePower's house import / export limit into the inverter's own limit registers
         (10074 export mode, 10075-76 value, 10077 import mode, 10078-79 value; mode 0 off, 2 fixed watts), so the
         limit also holds if Home Assistant is down. Cautious by design: a limit HomePower did not write (an installer's
         grid-code limit) is only ever tightened, never raised or switched off; nothing that is already right is written.
         `mine` holds the limits HomePower itself wrote ({"export": W, "import": W}, kept across restarts by the caller and
         updated here): one of those still in place follows HomePower's setting up as well as down, and is switched off
-        again when HomePower's limit is cleared. Returns what it changed."""
+        again when HomePower's limit is cleared. `orig` ({"export": [mode, W], ...}, kept with `mine`) holds what a slot had
+        before HomePower first wrote it: clearing HomePower's limit puts exactly that back (an installer's looser limit, or
+        off), not simply "off". Returns what it changed."""
         if self._order is None:
             return []             # the 32-bit word order is not known yet: never write a number that could be misread
         mine = mine if mine is not None else {}
+        orig = orig if orig is not None else {}
         hold = await self.client.read_holding(10074, 6)
         order, changed = self._order, []
         for label, base, want in (("export", 0, export_w), ("import", 3, import_w)):
             mode, cur = hold[base], to_u32(hold[base + 1], hold[base + 2], order)
             ours = mode == 2 and mine.get(label) == cur          # still the value HomePower wrote: nobody has changed it since
-            if mode == 2 and mine.get(label) is not None and not ours:
+            if mine.get(label) is not None and not ours:
                 mine.pop(label, None)                            # changed in the app or by an installer since: no longer ours
+                orig.pop(label, None)
             if not want or want <= 0:
-                if ours:                                         # HomePower's limit was cleared: take ours off again
-                    await self.client.write_register(10074 + base, 0)
+                if ours:                                         # HomePower's limit was cleared: put back what was there before
+                    was = orig.get(label)
+                    if isinstance(was, list) and len(was) == 2 and was[0] != 0:
+                        await self.client.write_multiple(10074 + base + 1, from_i32(int(was[1]), order))
+                        await self.client.write_register(10074 + base, int(was[0]))
+                        changed.append(f"{label} limit back to {was[1]} W" if was[0] == 2 else f"{label} limit back to its own setting")
+                    else:                                        # it was off before (or, saved by an older version, not recorded)
+                        await self.client.write_register(10074 + base, 0)
+                        changed.append(f"{label} limit off")
                     mine.pop(label, None)
-                    changed.append(f"{label} limit off")
+                    orig.pop(label, None)
                 continue
             if mode == 2 and cur == want:
                 continue
             if mode != 0 and cur and cur < want and not ours:
                 continue          # the inverter already has a stricter limit someone else set: leave it alone
+            if not ours and label not in orig:
+                orig[label] = [int(mode), int(cur)]              # what the slot had before HomePower's first write
             await self.client.write_multiple(10074 + base + 1, from_i32(int(want), order))
             await self.client.write_register(10074 + base, 2)
             mine[label] = int(want)
@@ -352,14 +388,38 @@ class AnkerModbusDriver:
 
         if desired.mode is Mode.AUTO:
             if cur_mode == MODE_THIRD_PARTY:
+                if self._restore in (None, MODE_THIRD_PARTY):
+                    # The mode it had before is not known (it is saved when HomePower takes control, so this is someone
+                    # else's third-party control, or a takeover from before that was saved). Never write a made-up mode.
+                    if not self._warned_unknown:
+                        self._warned_unknown = True
+                        _LOGGER.warning("%s: in third-party control, but HomePower does not know the mode it had before, so it is "
+                                        "left as it is: choose its work mode in the Anker app if it should run itself again",
+                                        self.config.device_id)
+                    return
                 await self._set_setpoint(0)
-                target = self._restore if self._restore not in (None, MODE_THIRD_PARTY) else int(extra.get("restore_mode", 0))
-                await self.client.write_register(MODE_REG, target)
+                await self._put_back_watchdog()
+                await self.client.write_register(MODE_REG, self._restore)
+                self._restore = None
+            elif self._restore is not None:
+                # Out of third-party control already (someone chose another mode in the app, or the X1's watchdog fired):
+                # that mode is kept, but HomePower's own watchdog value is still undone.
+                await self._put_back_watchdog()
                 self._restore = None
             return
 
-        if cur_mode != MODE_THIRD_PARTY:  # taking control: remember what to hand back to
+        if cur_mode != MODE_THIRD_PARTY:  # taking control: remember what to hand back to (read just above; saved across restarts)
+            wd = None
+            if extra.get("watchdog"):
+                try:
+                    wd = (await self.client.read_holding(WATCHDOG_REG, 1))[0]      # the user's own, put back on hand-back
+                except ModbusError as err:
+                    if err.code is None:
+                        raise
+                    _LOGGER.warning("%s: could not read the comms watchdog, so it will not be put back: %s", self.config.device_id, err)
+            self._watchdog_orig = wd
             self._restore = cur_mode
+            self._warned_unknown = False
             await self.client.write_register(MODE_REG, MODE_THIRD_PARTY)
             if extra.get("watchdog"):
                 try:

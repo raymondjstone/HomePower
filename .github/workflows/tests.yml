@@ -7,22 +7,72 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
       - run: python -m pip install pytest pillow pyyaml
       - run: python -m pytest -q
 
   # The same code against the real Home Assistant classes and a simulated battery (tests/ha_harness/README.md).
+  # Both ends of what is supported: the oldest release HomePower is tested on, and the newest. Home Assistant 2026.3 and
+  # later need Python 3.14.2+, and pip quietly installs the newest release that fits the Python it runs on, so each
+  # entry names its Python and Home Assistant explicitly (an unpinned install on 3.13 never reaches the current release).
   ha-harness:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: oldest supported
+            python-version: "3.13"
+            homeassistant: "homeassistant==2026.2.3"
+          - name: newest
+            python-version: "3.14"
+            homeassistant: "homeassistant"
+    name: ha-harness (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
-      - run: python -m pip install homeassistant pytest paho-mqtt
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install "${{ matrix.homeassistant }}" pytest paho-mqtt
+      # e2e_solar_forecast.py loads Home Assistant's real Forecast.Solar integration: install the library version that
+      # release's own manifest asks for (read without importing the integration, which needs it)
+      - run: |
+          req=$(python -c "import importlib.util, json, os; d = os.path.dirname(importlib.util.find_spec('homeassistant').origin); print(' '.join(json.load(open(os.path.join(d, 'components', 'forecast_solar', 'manifest.json')))['requirements']))")
+          echo "forecast_solar needs: $req"; python -m pip install $req
+      - run: python -c "import homeassistant.const as c; print('Home Assistant', c.__version__)"
       - run: python tests/ha_harness/run_all.py
+
+  # The sidebar panel and the card in a real DOM (jsdom), fed what the current backend really sends (tests/panel_dom/README.md).
+  # The browser test (Playwright) is left out: it needs a browser download and is run by hand.
+  panel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - run: python -m pip install homeassistant pytest paho-mqtt   # (the payload script uses the tests' shared setup, which needs pytest)
+      - run: python tests/ha_harness/dump_panel_payload.py tests/panel_dom/payload.json
+      - run: npm install --no-save --prefix tests/panel_dom jsdom@29.1.1
+      - name: Panel tests
+        run: |
+          set -e
+          for t in tests/panel_charts_smoke.mjs tests/panel_features_smoke.mjs tests/panel_registers_smoke.mjs \
+                   tests/panel_dom/panel_dom.mjs tests/panel_dom/render_fuzz.mjs tests/panel_dom/card.mjs \
+                   tests/panel_dom/battery_form.mjs tests/panel_dom/save_warn.mjs tests/panel_dom/reattach.mjs \
+                   tests/panel_dom/audit_ui.mjs tests/panel_dom/link_states.mjs tests/panel_dom/solar_forecast.mjs; do
+            echo "::group::$t"; node "$t"; echo "::endgroup::"
+          done

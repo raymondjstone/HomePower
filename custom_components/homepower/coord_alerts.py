@@ -113,7 +113,7 @@ class AlertsMixin:
     async def _check_events(self, now: datetime, now_s: float, actuals: dict[str, Actual], rates: RateTable | None) -> None:
         """Optional heads-up messages: battery full, battery low, cheap rate starting soon with a low battery."""
         s = self.settings
-        fig = self._combined(actuals)
+        fig = self._combined(self.shown_actuals())    # a battery whose read failed a moment ago still counts (no false "low")
         soc = fig["soc"]
 
         async def edge(key: str, active: bool, clear: bool, msg: str) -> None:
@@ -187,7 +187,7 @@ class AlertsMixin:
             if st is None:
                 continue
             checks = {
-                f"offline:{did}": (bool(st.actual and not st.actual.online), f"{name} is offline: HomePower cannot read it." + (f" {h}" if (h := offline_hint(a.config.kind)) else ""), OFFLINE_ALERT_AFTER_S),
+                f"offline:{did}": (bool(st.actual and not st.actual.online) and st.link == "offline", f"{name} is offline: HomePower cannot read it." + (f" {h}" if (h := offline_hint(a.config.kind)) else ""), OFFLINE_ALERT_AFTER_S),
                 f"error:{did}": (st.last_error is not None, f"A command to {name} failed: {st.last_error}" if st.last_error
                                  else f"A command to {name} failed earlier and is working again.", 0),
                 f"unconfirmed:{did}": (st.unconfirmed >= UNCONFIRMED_ALERT_AFTER, f"{name} is not following HomePower's commands (not confirmed after {UNCONFIRMED_ALERT_AFTER} tries).", 0),

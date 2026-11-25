@@ -18,11 +18,14 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        python-version: ["3.13", "3.14"]   # Home Assistant 2026.3+ runs on Python 3.14
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python-version }}
       - run: python -m pip install pytest pillow pyyaml
       - run: python -m pytest -q
 

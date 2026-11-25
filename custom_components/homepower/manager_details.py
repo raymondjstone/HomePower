@@ -145,6 +145,8 @@ class DetailsMixin:
         if address is not None:
             label = str(label or "").strip()[:80]
             if label:
+                if str(int(address)) not in notes and len(notes) >= 500:
+                    raise ValidationError("this battery already has 500 register labels: remove some first")
                 notes[str(int(address))] = label
             else:
                 notes.pop(str(int(address)), None)

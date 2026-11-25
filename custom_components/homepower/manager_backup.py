@@ -94,6 +94,7 @@ class BackupMixin:
                 if not isinstance(raw, dict):
                     raise ValidationError("not a battery entry")
                 raw = self._with_saved_secret(dict(raw))
+                self._check_new_device(raw)
                 d = device_to_dict(device_from_dict(raw))
                 old = self.devices.get(d["device_id"])
                 if old and old.get("control_enabled", True) and not d["control_enabled"]:

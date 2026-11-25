@@ -131,8 +131,11 @@ async def main():
         "eff": S.Efficiency(coord, entry, "a", "A").native_value,
         "cycles": S.Cycles(coord, entry, "a", "A", 10000).native_value,
         "target": S.BatteryTarget(coord, entry, "a", "A").native_value,
+        "solar": S.BatterySolarPower(coord, entry, "a", "A").native_value,
     }
     print("sensors  :", vals)
+    panel_pv = coord.view()["devices"]["a"]["pv_w"]   # the side panel's "Solar" chip
+    assert vals["solar"] == (None if panel_pv is None else round(panel_pv)), (vals["solar"], panel_pv)
     assert vals["soc"] == 62 and vals["bat_in_kwh"] > 0 and vals["stored_kwh"] > 0 and vals["target"] in ("unmanaged", "auto", "charge", "discharge", "hold")
     sw = {s[0]: W.HomePowerSwitch(coord, entry, *s).is_on for s in W.SWITCHES}
     await W.HomePowerSwitch(coord, entry, *W.SWITCHES[1]).async_turn_on()

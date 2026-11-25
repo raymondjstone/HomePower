@@ -96,6 +96,7 @@ export default (U) => {
       ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid sensor set (Settings)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? "#dc2626" : grid < -20 ? MODES.charge.color : "")}
       ${tile("Batteries online", `${online} / ${ds.length}`, "Reading directly from the batteries")}
       ${this.live.savings ? tile("Saved today", `${esc(this.live.currency || "£")}${(+this.live.savings.today || 0).toFixed(2)}`, `This month ${esc(this.live.currency || "£")}${(+this.live.savings.month || 0).toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? MODES.charge.color : "#dc2626") : ""}
+      ${this._solarTile(tile)}
       ${this.live.price_now != null ? tile("Price now", `${esc(this.live.currency || "£")}${this.live.price_now.toFixed(3)}/kWh`, "From your rates") : ""}
     </div>`;
     const cards = ds.map((d, i) => this._batCard(d, rd[i], i)).join("");
@@ -106,6 +107,18 @@ export default (U) => {
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-areaspline"></ha-icon>Power, last ${this._durLabel(this._flowMin())}<span class="durs">${this._durButtons()}</span></h2>${this._flowChart()}</div>
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:timeline-clock"></ha-icon>Today's plan</h2>${this._timeline()}</div>
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:text-box-outline"></ha-icon>Activity</h2>${this._log()}</div>`;
+  },
+
+  // Today's solar forecast (Forecast.Solar or Solcast, found by themselves): shown only when one is set up.
+  _solarTile(tile) {
+    const sf = this.live.solar_forecast;
+    if (!sf) return "";
+    const k = (v) => `${(+v).toFixed(1)} kWh`;
+    const sub = [sf.so_far_kwh != null ? `${k(sf.so_far_kwh)} so far` : null, sf.remaining_kwh != null ? `${k(sf.remaining_kwh)} still to come` : null,
+      sf.tomorrow_kwh != null ? `tomorrow ${k(sf.tomorrow_kwh)}` : null].filter(Boolean).join(" · ");
+    const src = { forecast_solar: "Forecast.Solar", solcast_solar: "Solcast" }[sf.source] || "your solar forecast";
+    return tile("Solar forecast today", sf.today_kwh != null ? k(sf.today_kwh) : "–", esc(sub || src))
+      .replace('<div class="card tile"', `<div class="card tile" title="From ${esc(src)}. Forecast against what really came: Insights."`);
   },
 
   _ring(soc, size = 96) {
@@ -120,13 +133,14 @@ export default (U) => {
   _batCard(d, r, i) {
     const lv = r.lv || {};
     const p = r.power;
-    const state = !r.online ? "Offline" : p == null ? "–" : Math.abs(p) < 20 ? "Idle" : p > 0 ? "Charging" : "Discharging";
+    const state = r.waiting ? "Waiting for readings" : !r.online ? "Offline" : p == null ? "–" : Math.abs(p) < 20 ? "Idle" : p > 0 ? "Charging" : "Discharging";
     const col = !r.online ? "#9ca3af" : p > 20 ? MODES.charge.color : p < -20 ? MODES.discharge.color : "var(--secondary-text-color)";
     const mode = lv.mode && MODES[lv.mode];
     const want = lv.desired_mode && MODES[lv.desired_mode];
     const chips = [];
     if (want) chips.push(`<span class="chip m" style="background:${want.color}" title="${esc(want.help)}">Target: ${want.label}${lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : ""}</span>`);
     else if (r.online) chips.push(`<span class="chip">Device's own control</span>`);
+    if (r.stale || r.waiting) chips.push(this._linkChip(r));
     if (mode) chips.push(`<span class="chip"><span class="dot" style="background:${mode.color}"></span>Mode: ${mode.label}</span>`);
     const room = ((this.live.solar_room || {}).batteries || {})[d.device_id];
     if (room && room.ceiling < 100) chips.push(`<span class="chip" title="Overnight charging stops here so the solar forecast (${room.solar_kwh} kWh for this battery) has room">Room for solar: up to ${room.ceiling}%</span>`);

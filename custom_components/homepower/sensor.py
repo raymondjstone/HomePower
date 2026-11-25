@@ -38,6 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
         ents = []
         for c in new:
             ents += [BatterySoc(coord, entry, c.device_id, c.name), BatteryDevicePower(coord, entry, c.device_id, c.name),
+                     BatterySolarPower(coord, entry, c.device_id, c.name),
                      BatteryTarget(coord, entry, c.device_id, c.name),
                      EnergyTotal(coord, entry, f"bat:{c.device_id}_in", f"{c.name} energy charged"),
                      EnergyTotal(coord, entry, f"bat:{c.device_id}_out", f"{c.name} energy discharged"),
@@ -75,8 +76,7 @@ class BatteryFlow(_Base):
 
     @property
     def native_value(self):
-        vals = [s.actual.power_w for s in self.coordinator._snap.devices.values()
-                if s.actual and s.actual.online and s.actual.power_w is not None]
+        vals = [a.power_w for a in self.coordinator.shown_actuals().values() if a.online and a.power_w is not None]
         return round(sum(vals)) if vals else None
 
 
@@ -94,9 +94,9 @@ class StoredEnergy(_Base):
     def native_value(self):
         total, seen = 0.0, False
         for a in self.coordinator.adapters:
-            st = self.coordinator._snap.devices.get(a.config.device_id)
-            if st and st.actual and st.actual.online and st.actual.soc is not None:
-                total += st.actual.soc / 100 * a.config.caps.capacity_wh
+            act = self.coordinator.shown_actual(a.config.device_id)
+            if act and act.online and act.soc is not None:
+                total += act.soc / 100 * a.config.caps.capacity_wh
                 seen = True
         return round(total / 1000, 2) if seen else None
 
@@ -123,7 +123,7 @@ class BatteryTarget(_Base):
     @property
     def extra_state_attributes(self):
         v = self.coordinator.devices_view().get(self._did, {})
-        return {k: v.get(k) for k in ("decision", "desired_power_w", "mode", "soc", "power_w", "online",
+        return {k: v.get(k) for k in ("decision", "desired_power_w", "mode", "soc", "power_w", "online", "stale",
                                      "active_schedules", "override", "last_error", "reason")}
 
 
@@ -153,8 +153,7 @@ class _BatteryBase(_Base):
         self._attr_unique_id = f"{entry.entry_id}_{device_id}_{suffix}"
 
     def _actual(self):
-        st = self.coordinator._snap.devices.get(self._did)
-        return st.actual if st and st.actual and st.actual.online else None
+        return self.coordinator.shown_actual(self._did)     # the last reading while the readings are only stale
 
 
 class BatterySoc(_BatteryBase):
@@ -185,6 +184,25 @@ class BatteryDevicePower(_BatteryBase):
     def native_value(self):
         a = self._actual()
         return None if a is None or a.power_w is None else round(a.power_w)
+
+
+class BatterySolarPower(_BatteryBase):
+    """The solar power the battery itself reports: the "Solar" figure on the side panel's battery cards
+    (Anker: register 10002, PV power; EcoFlow: its PV sum). On an X1 "PV input power" below is the
+    inverter's separate total (10183), so the two can be compared."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_icon = "mdi:solar-power"
+
+    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+        super().__init__(coord, entry, device_id, name, "solar", "solar power")
+
+    @property
+    def native_value(self):
+        a = self._actual()
+        return None if a is None or a.pv_w is None else round(a.pv_w)
 
 
 class PvTotal(_BatteryBase):
@@ -362,8 +380,7 @@ class HomeBattery(_Base):
         self._attr_unique_id = f"{entry.entry_id}_home_battery"
 
     def _fig(self) -> dict:
-        actuals = {did: s.actual for did, s in self.coordinator._snap.devices.items() if s.actual}
-        return self.coordinator._combined(actuals)
+        return self.coordinator._combined(self.coordinator.shown_actuals())
 
     @property
     def native_value(self):
@@ -376,7 +393,8 @@ class HomeBattery(_Base):
         return {**fig, "homepower": True,
                 "batteries": [{"name": a.config.name, "soc": (v.get(a.config.device_id) or {}).get("soc"),
                                "power_w": (v.get(a.config.device_id) or {}).get("power_w"),
-                               "online": bool((v.get(a.config.device_id) or {}).get("online"))} for a in self.coordinator.adapters]}
+                               "online": bool((v.get(a.config.device_id) or {}).get("online")),
+                               "stale": bool((v.get(a.config.device_id) or {}).get("stale"))} for a in self.coordinator.adapters]}
 
 
 class DailyShare(_Base):

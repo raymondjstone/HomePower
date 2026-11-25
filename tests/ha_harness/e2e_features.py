@@ -111,6 +111,9 @@ async def main():
     coord2.set_config(coord2.adapters, [], [])
     hass2.services.async_register("persistent_notification", "create", callback(lambda call: sent.append(("create", call.data["notification_id"]))))
     srv.close(); await srv.wait_closed()
+    coord2._began -= 3600              # reads have failed for longer than "offline after" (a short failure only shows stale readings)
+    for st in coord2._snap.devices.values():
+        st.ok_mono = st.ok_mono and st.ok_mono - 3600
     await coord2._async_update_data()
     await asyncio.sleep(0.2)   # service calls are scheduled, not instant
     print("alerts   :", coord2.view()["alerts"], "| notifications", sent[-1:])

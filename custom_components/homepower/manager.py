@@ -15,7 +15,7 @@ from .coordinator import HomePowerCoordinator
 from .core.insights import DEFAULT_SCENES, SceneError, clean_scene
 from .core.models import Desired, Mode
 from .core.profiles import PROFILE_BY_ID
-from .core.serde import (
+from .core.serde import (check_new_device, 
     ValidationError,
     device_from_dict,
     current_abilities,
@@ -39,7 +39,7 @@ from .manager_backup import BackupMixin
 _LOGGER = logging.getLogger(__name__)
 
 
-BATTERY_SENSOR_SUFFIXES = ("soc", "power", "target", "efficiency", "cycles", "pv_total") + tuple(   # sensor.py's per-battery unique ids
+BATTERY_SENSOR_SUFFIXES = ("soc", "power", "solar", "target", "efficiency", "cycles", "pv_total") + tuple(   # sensor.py's per-battery unique ids
     f"pv{i}_{kind}" for i in range(1, 9) for kind in ("voltage", "current", "power"))                  # (the PV ones: Anker X1 only)
 
 
@@ -67,6 +67,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         self.grid_events: list = []              # times a battery reported the grid down
         self.trend_data: dict = {}               # daily temperature / pack-voltage spread per battery
         self.pv_health_data: dict = {}           # X1: which solar strings are used and their energy per day
+        self.solar_forecast_data: dict = {}      # the solar forecast per day (first total, latest hours), for forecast vs actual
         self.register_notes: dict[str, dict[str, str]] = {}   # the user's own names for registers they have identified
         self.scenes: dict[str, dict] = {}        # saved combinations of modes and limits
         self.event_state: dict[str, bool] = {}   # heads-up messages currently showing
@@ -122,6 +123,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
 
         self.plan_log_data, self.trace_data, self.weather_data = dict(plain("plan_log")), dict(plain("traces")), dict(plain("weather"))
         self.pv_health_data = dict(plain("pv_health"))
+        self.solar_forecast_data = dict(plain("solar_forecast"))
         conf = data.get("confirmed")
         self.confirmed = {c for c in conf if isinstance(c, str)} if isinstance(conf, list) else set()
         self.charge_rates = {k: int(v) for k, v in plain("charge_rates").items() if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")}
@@ -143,6 +145,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             "event_state": {k: v for k, v in (c._event_state if c else self.event_state).items() if v}, "tests": self.tests, "divert_on": self.divert_on, "pv_seen": sorted(self.pv_seen), "forecast_days": self.forecast_days,
             "ecoflow_orig": self.ecoflow_orig, "charge_rates": c.rate_learner.rates if c else self.charge_rates,
             "plan_log": c.plan_log.dump() if c else self.plan_log_data, "pv_health": c.pv_health.dump() if c else self.pv_health_data,
+            "solar_forecast": c.solar_log.dump() if c else self.solar_forecast_data,
             "traces": c.traces.dump() if c else self.trace_data,
             "weather": ({"temps": c.temp_log.dump(), "model": c.cold_model.dump()} if c else self.weather_data), "confirmed": sorted(self.confirmed),
         })
@@ -395,7 +398,11 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             c._set_release(device_id, c._snap.devices[device_id], False)      # also clears the coordinator's own saved copy
         return True
 
+    def _check_new_device(self, raw: dict) -> None:
+        check_new_device(raw, self.devices)
+
     async def save_device(self, raw: dict) -> dict:
+        self._check_new_device(raw)
         d = device_to_dict(device_from_dict(await self._autofill(self._with_saved_secret(raw))))
         old = self.devices.get(d["device_id"])
         if old and old.get("control_enabled", True) and not d["control_enabled"]:
@@ -421,6 +428,8 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         await self._apply()
 
     async def delete_device(self, device_id: str) -> None:
+        if self.coordinator is not None:
+            await self.coordinator.release_x1_limits(device_id)     # its own X1 limits first, back to what was there before
         if not await self._hand_back(device_id):
             st = self.coordinator._snap.devices.get(device_id) if self.coordinator else None
             if st is not None and st.actual is not None and st.actual.online:
