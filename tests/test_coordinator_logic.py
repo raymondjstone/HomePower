@@ -479,3 +479,22 @@ def test_deleting_an_x1_takes_its_limits_off_and_forgets_them_even_if_unreachabl
         asyncio.run(c.release_x1_limits("x1"))
         assert calls == [(None, None, {"export": 3000}, {"export": [2, 6000]})]
         assert set(c._event_state) == {"x1lim:other:import:5"}       # the deleted battery's records go; another's stay
+
+
+def test_a_lasting_failure_in_the_control_loop_is_logged_once_not_every_cycle(caplog):
+    import logging
+    c = bare()
+    c._logged_failures = {}
+    caplog.set_level(logging.DEBUG)
+
+    def fail(msg):
+        try:
+            raise ValueError(msg)
+        except ValueError:
+            c._log_failure("engine", "decision engine failed")
+    for _ in range(5):
+        fail("boom")
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1 and errors[0].exc_info                       # once, with its traceback; the rest at debug
+    fail("a different problem")
+    assert len([r for r in caplog.records if r.levelno >= logging.ERROR]) == 2   # a new failure is logged at once

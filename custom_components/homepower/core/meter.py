@@ -6,10 +6,6 @@ _ENERGY_KWH = {"wh": 0.001, "kwh": 1.0, "mwh": 1000.0}
 MAX_WINDOW_S = 900  # a counter that has not moved for this long means "no power", not "stale"
 
 
-def is_energy_unit(unit: str | None) -> bool:
-    return str(unit or "").strip().lower() in _ENERGY_KWH
-
-
 class MeterReader:
     """Turns sensor states into watts. Power sensors convert units; energy counters are differentiated.
 

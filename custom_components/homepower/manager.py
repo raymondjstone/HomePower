@@ -196,6 +196,16 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             hub.enabled = self._live_on
         return hub
 
+    def live_status(self) -> dict | None:
+        """The EcoFlow live feed, for Settings and Diagnostics: on or off, connected, how many updates came, and why it is
+        not working when it is not (paho-mqtt missing, refused...). None when no EcoFlow battery uses it."""
+        hubs = list(self._hubs.values())
+        if not hubs:
+            return None
+        return {"on": bool(self._live_on), "connected": any(bool(h.connected) for h in hubs),
+                "messages": sum(int(getattr(h, "messages", 0) or 0) for h in hubs),
+                "problem": next((h.error for h in hubs if getattr(h, "error", None)), None)}
+
     def set_live(self, on: bool) -> None:
         self._live_on = on
         for hub in self._hubs.values():

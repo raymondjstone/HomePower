@@ -84,8 +84,8 @@ def async_register(hass: HomeAssistant) -> None:
     hass.services.async_register(DOMAIN, "away", admin(away), schema=vol.Schema({vol.Required("enabled"): bool}))
     hass.services.async_register(DOMAIN, "test_control", admin(test_control), schema=vol.Schema({vol.Required("device_id"): str}),
                                  supports_response=SupportsResponse.OPTIONAL)
-    hass.services.async_register(DOMAIN, "pause", admin(pause))
-    hass.services.async_register(DOMAIN, "resume", admin(resume))
+    hass.services.async_register(DOMAIN, "pause", admin(pause), schema=vol.Schema({}))      # no fields: anything else is refused
+    hass.services.async_register(DOMAIN, "resume", admin(resume), schema=vol.Schema({}))
     hass.services.async_register(
         DOMAIN, "override", admin(override),
         schema=vol.Schema({

@@ -17,8 +17,10 @@ export default (U) => {
   _niceTicks(lo, hi, n = 4) {
     const span = Math.max(hi - lo, 1e-9), raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
     const step = ([1, 2, 2.5, 5, 10].map((m) => m * mag).find((x) => x >= raw)) || 10 * mag;
-    const a = Math.floor(lo / step + 1e-9) * step, b = Math.ceil(hi / step - 1e-9) * step, ticks = [];
-    for (let v = a; v <= b + step / 2; v += step) ticks.push(Math.round(v / step) * step);
+    // rounded to the step's own decimals: 3 x 0.2 is 0.6000000000000001 in floating point, which would be printed as such
+    const dec = Math.max(0, Math.ceil(-Math.log10(step)) + 1), fix = (v) => +v.toFixed(dec);
+    const a = fix(Math.floor(lo / step + 1e-9) * step), b = fix(Math.ceil(hi / step - 1e-9) * step), ticks = [];
+    for (let v = a; v <= b + step / 2; v += step) ticks.push(fix(Math.round(v / step) * step));
     return { lo: a, hi: b, ticks };
   },
 

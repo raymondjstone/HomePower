@@ -23,6 +23,7 @@ import time
 from typing import Any
 
 from ..core.models import Actual, Desired, DeviceConfig, Mode
+from .stamp import stamp
 
 _LOGGER = logging.getLogger(__name__)
 HOSTS = {"eu": "api-e.ecoflow.com", "america": "api-a.ecoflow.com", "global": "api.ecoflow.com"}
@@ -205,6 +206,8 @@ class EcoFlowStreamDriver:
     _orig_val = None
     _on_orig = None
     _handed_at = -1e9
+    _failing: str | None = None       # the read failure last logged (None while reads work)
+    _warned_no_soc = False
     _warned_unknown = False   # logged once that a hand-back was skipped (original unknown)
     _pv_prev = None           # (time, pv_w) of the last solar reading accepted; see _screen_pv
     _pv_run = 0
@@ -289,7 +292,7 @@ class EcoFlowStreamDriver:
     def _note_changes(self, before: dict, after: dict) -> None:
         found = setting_changes(before, after) if before else []
         if found:
-            self.changes = (self.changes + [{"at": time.strftime("%Y-%m-%d %H:%M:%S"), **c} for c in found])[-40:]
+            self.changes = (self.changes + [{"at": stamp(), **c} for c in found])[-40:]
             _LOGGER.info("%s: EcoFlow settings changed: %s", self.config.device_id,
                          "; ".join(f"{c['key']} {c['from']!r} -> {c['to']!r}" for c in found))
 
@@ -405,8 +408,12 @@ class EcoFlowStreamDriver:
             self._note_changes(self._state, q)
             self._state, self._polled, self._pushed = dict(q), time.monotonic(), 0.0
             self.last_quota, self.last_error = q, None
+            if self._failing:
+                _LOGGER.info("%s: EcoFlow readings are back", self.config.device_id)
+                self._failing = None
             actual = self._held_at_floor(self._screen_pv(self._decode(q, self.config.caps.min_soc)))
-            if actual.soc is None and q:
+            if actual.soc is None and q and not self._warned_no_soc:
+                self._warned_no_soc = True          # once: a model that never reports it would otherwise log this every poll
                 _LOGGER.warning("%s: EcoFlow returned no charge level; readings it did return: %s",
                                 self.config.device_id, ", ".join(sorted(q)[:60]))
             self._cache = (time.monotonic(), actual)
@@ -415,7 +422,11 @@ class EcoFlowStreamDriver:
             self.last_error = friendly_error(err)
             if backs_off(err):
                 self._blocked_until = time.monotonic() + BACKOFF_S
-            _LOGGER.warning("%s: EcoFlow read failed: %s", self.config.device_id, self.last_error)
+            if self._failing != self.last_error:      # when it starts failing, or the reason changes: not on every poll
+                self._failing = self.last_error
+                _LOGGER.warning("%s: EcoFlow read failed: %s", self.config.device_id, self.last_error)
+            else:
+                _LOGGER.debug("%s: EcoFlow read still failing: %s", self.config.device_id, self.last_error)
             return Actual(online=False)
 
     async def probe(self) -> dict:

@@ -19,8 +19,6 @@ _WATTS = re.compile(r"^(pv power|3rd-party pv power|battery power|load power|gri
 _PERCENT = re.compile(r"\b(soc|soh)\b|\(%", re.I)
 _ENUM_TAIL = re.compile(r"\s*\(([^()]*)\)\s*$")
 
-KIND_ORDER = ("setting", "info", "live", "alarm")
-
 # Meanings seen on real units that Anker's document does not list (from the open-source X1 integration afewyards/anker-x1-ha,
 # checked on firmware 1.0.19.16). They are added to the document's own list; where both name a value, these win.
 _REAL_ENUMS: dict[int, dict[int, str]] = {

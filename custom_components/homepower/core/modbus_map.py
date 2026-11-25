@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 
 TYPES = {"u16": 1, "i16": 1, "u32": 2, "i32": 2}
-READ_KEYS = ("soc", "power", "grid", "pv", "load")
 
 
 class MapError(ValueError):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time as _time
 from collections import deque
 from dataclasses import replace as _replace
@@ -78,6 +79,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         self.cold_model = ColdModel((manager.weather_data or {}).get("model"))   # extra use per degree of cold
         self.weather: dict = {}                                                  # tomorrow's temperature and what it means, for the panel
         self._weather_at, self._weather_busy = -1e9, False
+        self._logged_failures: dict[str, tuple[str, float]] = {}   # see _log_failure
         self.solar_log = SolarForecastLog(getattr(manager, "solar_forecast_data", None))   # forecast per day, for forecast vs actual
         self.solar_hours: dict[str, list[float]] = {}    # latest hourly solar forecast (kWh per local hour) by day
         self.forecast_source: str | None = None          # which forecast integration is used
@@ -280,6 +282,19 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         """Every battery's reading as shown (see shown_actual), for the panel's and the sensors' totals."""
         return {did: self.shown_actual(did) or st.actual for did, st in self._snap.devices.items() if st.actual}
 
+    def _log_failure(self, key: str, msg: str, *args) -> None:
+        """For the safety nets of the control loop (it runs every 10 s): the first time a failure happens, or when it
+        changes, or an hour after it was last logged, log it with its traceback; otherwise only at debug level, so a lasting
+        problem does not fill the log with the same traceback thousands of times a day."""
+        err = sys.exc_info()[1]
+        sig, now = f"{type(err).__name__}: {err}", _time.monotonic()
+        last = self._logged_failures.get(key)
+        if last is None or last[0] != sig or now - last[1] >= 3600:
+            self._logged_failures[key] = (sig, now)
+            _LOGGER.exception(msg + (" (logged once an hour while it lasts)" if last and last[0] == sig else ""), *args)
+        else:
+            _LOGGER.debug(msg + ": %s", *args, sig)
+
     def _commanded(self, did: str) -> Mode | None:
         """What HomePower last told this battery to do, if it was sent (a paused, monitor-only or tested battery was told nothing)."""
         st = self._snap.devices.get(did)
@@ -319,7 +334,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         try:
             self.day_plan = self._day_plan(rates, now, actuals)
         except Exception:  # noqa: BLE001 - without a plan the simpler rules apply
-            _LOGGER.exception("day plan failed; using the simpler rules this cycle")
+            self._log_failure("day plan", "day plan failed; using the simpler rules this cycle")
             self.day_plan = None
         before_event = self._event_goal(now)
         world = World(
@@ -348,7 +363,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         try:
             res = compute(world)
         except Exception:  # noqa: BLE001 - a decision bug must never take the integration down or send odd commands
-            _LOGGER.exception("decision engine failed; leaving the batteries alone this cycle")
+            self._log_failure("engine", "decision engine failed; leaving the batteries alone this cycle")
             res = Result(notes=["internal error in the decision engine: no commands were sent this cycle (see the Home Assistant log)"])
         self.last_result = res
 
@@ -366,7 +381,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             try:
                 self._note_decision(did, a.config.name, st, actuals[did], world, res, grid, now)
             except Exception:  # noqa: BLE001 - the decision log is for people: a bug there must not stop control of this or the next battery
-                _LOGGER.exception("could not record the decision for %s", did)
+                self._log_failure(f"decision log {did}", "could not record the decision for %s", did)
             if st.desired is None:  # nothing manages it: device runs its own logic
                 st.decision = None
                 st.unconfirmed = 0
@@ -399,22 +414,22 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         if not self.paused:
             await self._keepalive(mono, adapters)
         self.last_grid = grid
-        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(mono, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals), lambda: self._check_tariff_drift(wall),
+        for i, step in enumerate((lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(mono, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals), lambda: self._check_tariff_drift(wall),
                      lambda: self._check_events(now, wall, actuals, rates), lambda: self._watch_pv(now, mono, actuals),
                      lambda: self._divert(mono, actuals, grid), lambda: self._sync_x1_limits(mono, adapters),
-                     lambda: self._note_solar(now)):
+                     lambda: self._note_solar(now))):
             try:   # accounting / alerts are secondary: a bug there must not stop control
                 r = step()
                 if asyncio.iscoroutine(r):
                     await r
             except Exception:  # noqa: BLE001
-                _LOGGER.exception("secondary step failed (accounting/alerts); control continues")
+                self._log_failure(f"secondary step {i}", "secondary step failed (accounting/alerts); control continues")
         if mono - self._last_persist >= PERSIST_EVERY_S:
             self._last_persist = mono
             try:
                 await self.manager.save_runtime()
             except Exception:  # noqa: BLE001
-                _LOGGER.exception("could not save HomePower state")
+                self._log_failure("save", "could not save HomePower state")
         return self._snap
 
     async def _keepalive(self, mono: float, adapters: list[DeviceAdapter]) -> None:

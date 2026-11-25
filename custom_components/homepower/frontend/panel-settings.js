@@ -2,6 +2,14 @@
 export default (U) => {
   const { MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS } = U;
   return {
+  // How the EcoFlow live feed is doing, so a feed that quietly fell back to polling says why.
+  _liveText() {
+    const l = this.live.ecoflow_live;
+    if (!l || !l.on) return "";
+    if (l.connected) return ` Right now: connected, ${l.messages} update${l.messages === 1 ? "" : "s"} received.`;
+    return ` Right now: not connected${l.problem ? ` (${l.problem})` : ""}, so readings come from polling every 30 s.`;
+  },
+
   _settingsView() {
     const s = this.data.settings || {};
     const num = (k, label, hint, step = 1) => ({ k, t: "num", label, hint, step });
@@ -81,7 +89,7 @@ export default (U) => {
         { k: "compare_tariffs_note", t: "note", label: "HomePower records your grid import and export every half-hour. List other tariffs here, one per line, and Insights shows what the same usage would have cost on each. Rates are per kWh in your currency; standing is per day. Example: Octopus Go; peak=0.28; cheap=0.07; window=00:30-05:30; export=0.15; standing=0.45. Add your current tariff as one line to compare against it." },
         { k: "compare_tariffs", t: "area", label: "Tariffs (one per line)" }]],
       ["EcoFlow", "mdi:flash", [{ k: "ecoflow_live", t: "bool", label: "Use EcoFlow's live feed for faster readings (seconds instead of 30 s)" },
-        { k: "ecoflow_live_note", t: "note", label: "Off by default: it opens a second connection to EcoFlow with your keys, which could disturb another EcoFlow integration using the same account (such as EcoFlow Cloud). If readings stop updating after turning it on, turn it off again." }]],
+        { k: "ecoflow_live_note", t: "note", label: "Off by default: it opens a second connection to EcoFlow with your keys, which could disturb another EcoFlow integration using the same account (such as EcoFlow Cloud). If readings stop updating after turning it on, turn it off again." + this._liveText() }]],
       ["Backup & restore", "mdi:backup-restore", [{ k: "backup_restore", t: "backup", label: "" }]],
       ["Test run", "mdi:test-tube", [{ k: "dry_run", t: "bool", label: "Test run (dry run): work everything out and show it, but send no commands to any battery" },
         { k: "dry_run_note", t: "note", label: "Unlike Pause, the plan is still worked out and each command it would send is listed under Events as 'DRY RUN: would send ...'. Use it to try new schedules, goals or a new battery safely. Batteries keep whatever they were last told to do." }]],

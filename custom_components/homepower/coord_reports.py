@@ -296,6 +296,9 @@ class ReportsMixin:
                 "word_order": getattr(getattr(a, "driver", None), "_order", None),
                 "driver_error": getattr(getattr(a, "driver", None), "last_error", None),
                 "recent_outages": getattr(getattr(a, "driver", None), "outages", None) or None,
+                "live_feed": (lambda h: {"on": bool(getattr(h, "enabled", False)), "connected": bool(h.connected),
+                                         "messages": int(getattr(h, "messages", 0) or 0), "problem": getattr(h, "error", None)}
+                              if h is not None else None)(getattr(getattr(a, "driver", None), "hub", None)),
                 "pv_readings_ignored": getattr(getattr(a, "driver", None), "pv_ignored", None) or None,
                 "command_traces": self.traces.recent(did, 10) or None,
                 "recent_setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or []) or None,
@@ -376,7 +379,7 @@ class ReportsMixin:
             "alerts": sorted(self.alerts.active()), "notes": self.last_result.notes,
             "price_now": self._price_now(rates, now),
             "meter_entity": self.grid_source, "rates_entity": self._rates_entity(),
-            "combined": self._combined(actuals), "solar_forecast": self.solar_view(now), "setup": self.setup_check(), "solar_room": self.solar_room, "export_better": self._export_better(rates, now),
+            "combined": self._combined(actuals), "solar_forecast": self.solar_view(now), "ecoflow_live": self.manager.live_status(), "setup": self.setup_check(), "solar_room": self.solar_room, "export_better": self._export_better(rates, now),
             "export": self._export_view(rates, now), "grid_event": self.grid_event,
             "divert": {"entity": self.settings.divert_entity, "on": self.diverter.on} if self.settings.divert_entity else None,
             "daily": {"self_consumption": self.daily.self_consumption(day_key), "cheap_share": self.daily.cheap_share(day_key)},

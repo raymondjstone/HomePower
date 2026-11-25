@@ -266,23 +266,69 @@
     },
     "override": {
       "name": "Manual override",
-      "description": "Force a mode for a while, taking priority over schedules."
+      "description": "Force a mode for a while, taking priority over schedules.",
+      "fields": {
+        "mode": {
+          "name": "Mode",
+          "description": "Mode"
+        },
+        "power_w": {
+          "name": "Power (W)",
+          "description": "Power (W)"
+        },
+        "target_soc": {
+          "name": "Stop charging at SOC (%)",
+          "description": "Stop charging at SOC (%)"
+        },
+        "minutes": {
+          "name": "Duration (minutes)",
+          "description": "Duration (minutes)"
+        },
+        "device_ids": {
+          "name": "Battery IDs (empty = all)",
+          "description": "Battery IDs (empty = all)"
+        }
+      }
     },
     "clear_override": {
       "name": "Clear manual override",
-      "description": "Go back to schedules."
+      "description": "Go back to schedules.",
+      "fields": {
+        "device_ids": {
+          "name": "Battery IDs (empty = all)",
+          "description": "Battery IDs (empty = all)"
+        }
+      }
     },
     "backup": {
       "name": "Backup mode",
-      "description": "Keep a reserve for power cuts."
+      "description": "Keep a reserve for power cuts.",
+      "fields": {
+        "enabled": {
+          "name": "Enabled",
+          "description": "Enabled"
+        }
+      }
     },
     "away": {
       "name": "Away mode",
-      "description": "Use only schedules for away."
+      "description": "Use only schedules for away.",
+      "fields": {
+        "enabled": {
+          "name": "Enabled",
+          "description": "Enabled"
+        }
+      }
     },
     "test_control": {
       "name": "Test control",
-      "description": "Send a tiny safe command and check the battery follows it."
+      "description": "Send a tiny safe command and check the battery follows it.",
+      "fields": {
+        "device_id": {
+          "name": "Battery ID",
+          "description": "Battery ID"
+        }
+      }
     },
     "apply_scene": {
       "name": "Apply scene",

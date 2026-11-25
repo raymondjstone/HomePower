@@ -227,7 +227,12 @@ export default (U) => {
 
   async _runTest(id) {
     const el = this.shadowRoot.getElementById("test-" + id);
-    if (el) el.innerHTML = `<div class="sub">Testing… this takes about 10 seconds. HomePower sends a tiny safe command, checks it, and hands the battery back.</div>`;
+    // how long the test really waits (coordinator.test_control): EcoFlow's cloud is given up to 45 s to show Hold and again
+    // to show Charge; the local ES5000 also checks which way its power moves; the others need one 6 s wait
+    const d = (this.data.devices || []).find((x) => x.device_id === id) || {};
+    const takes = d.power_control === false ? "this can take up to two minutes (EcoFlow's cloud is slow to show a change)"
+      : d.driver === "ecoflow_modbus" ? "this takes about 20 seconds" : "this takes about 10 seconds";
+    if (el) el.innerHTML = `<div class="sub">Testing… ${takes}. HomePower sends a tiny safe command, checks it, and hands the battery back.</div>`;
     let html;
     try {
       const r = await this._hass.callWS({ type: "homepower/device/test", device_id: id });

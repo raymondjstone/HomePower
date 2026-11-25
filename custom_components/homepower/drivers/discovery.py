@@ -61,9 +61,13 @@ async def scan(hosts: list[str], port: int = 502, unit: int = 1, concurrency: in
         async with sem:
             try:  # cheap TCP check first so dead addresses cost ~0.4 s, not a Modbus timeout
                 _, w = await asyncio.wait_for(asyncio.open_connection(h, port), 0.4)
-                w.close()
             except (OSError, asyncio.TimeoutError):
                 return None
+            w.close()
+            try:
+                await w.wait_closed()           # let it finish closing (no "transport not closed" warning)
+            except OSError:
+                pass
             return await probe_host(h, port, unit)
 
     return [r for r in await asyncio.gather(*(one(h) for h in hosts)) if r]

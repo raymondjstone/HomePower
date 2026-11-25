@@ -1,6 +1,5 @@
 from datetime import date, datetime, time
 
-from core.allocator import ChargeRequest, allocate
 from core.models import Actual, Desired, Mode
 from core.reconcile import Decision, clamp, decide
 from core.schedule import WEEKDAYS, WEEKEND, ScheduleEntry, resolve
@@ -61,22 +60,6 @@ def test_clamp_limits():
     assert d.power_w == 4000 and d.reserve_soc == 10
     d = clamp(Desired(Mode.DISCHARGE, 9000), max_charge_w=4000, max_discharge_w=6000, min_soc=10)
     assert d.power_w == 6000
-
-
-def test_allocator_just_in_time_and_import_limit():
-    reqs = [
-        ChargeRequest("x1", soc=20, target_soc=100, capacity_wh=10000, max_charge_w=6000, priority=0),
-        ChargeRequest("e5k", soc=50, target_soc=100, capacity_wh=5000, max_charge_w=2500, priority=1),
-    ]
-    # 7h window: x1 needs 8000Wh -> 1143W; e5k needs 2500Wh -> 357W
-    out = allocate(reqs, 7, import_limit_w=7000)
-    assert out == {"x1": 1143, "e5k": 357}
-    # tight limit: priority device first
-    out = allocate(reqs, 1, import_limit_w=3000)
-    assert out["x1"] == 3000 and out["e5k"] == 0
-    # at target -> 0
-    done = [ChargeRequest("a", 100, 100, 5000, 2500)]
-    assert allocate(done, 5, 7000) == {"a": 0}
 
 
 def test_condition_entity_and_all_day():

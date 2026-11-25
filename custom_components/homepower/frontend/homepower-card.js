@@ -19,6 +19,10 @@ class HomePowerCard extends HTMLElement {
 
   getCardSize() { return 4; }
 
+  // Sections dashboards: half the width by default, never narrower than a third; the height follows the content (it grows
+  // with the number of batteries shown).
+  getGridOptions() { return { columns: 6, min_columns: 4 }; }
+
   static getStubConfig() { return {}; }
 
   _entity() {

@@ -1662,3 +1662,28 @@ def test_es5000_reserve_switch_missing_from_the_reading_is_unknown_not_off():
         await d.apply(Desired(Mode.AUTO))
         assert d.api.sent == [{"workMode": "TIMER_TASK"}]          # the mode goes back; the reserve is not switched off
     asyncio.run(go())
+
+
+def test_ecoflow_logs_a_failing_cloud_once_and_says_when_it_is_back(caplog):
+    import logging
+    from hp.drivers.ecoflow import EcoFlowError
+
+    class Failing(FakeApi):
+        async def quota(self, sn):
+            err = EcoFlowError("EcoFlow error 500: server busy")
+            err.code = "500"
+            raise err
+
+    async def go():
+        d = eco({"soc": 40, "backupReverseSoc": 10})
+        d.api = Failing({})
+        caplog.set_level(logging.DEBUG)
+        for _ in range(4):
+            d._cache = None
+            await d.read()
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING and "read failed" in r.getMessage()]) == 1
+        d.api = FakeApi({"soc": 40, "backupReverseSoc": 10})
+        d._cache = None
+        await d.read()
+        assert any("readings are back" in r.getMessage() for r in caplog.records)
+    asyncio.run(go())
