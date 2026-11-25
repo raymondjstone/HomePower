@@ -632,7 +632,7 @@ Removing HomePower also takes any import/export limits it wrote into an X1 back 
 that moment). Afterwards, check each battery's settings in the vendor app (work mode, backup reserve, operating mode, and
 on an X1 the limits and watchdog): see [What to check in the vendor app afterwards](#what-to-check-in-the-vendor-app-afterwards).
 To erase all of it instead, tick **Erase everything when HomePower is deleted** (HomePower panel > Settings > If you remove
-HomePower) before deleting. Home Assistant cannot ask at the moment of deleting, so the choice is made there.
+HomePower) before deleting; that also deletes its daily backup copies in `homepower_backups` (other files there are left alone). Home Assistant cannot ask at the moment of deleting, so the choice is made there.
 
 ## Known limits
 
@@ -690,9 +690,11 @@ split by concern: `coord_prices.py` (rates, export, wear, the day plan, grid eve
 notifications), `coord_forecast.py` (solar forecast, room for solar, weather), `coord_inputs.py` (grid and other readings
 from Home Assistant), `coord_accounting.py` (energy, savings and money totals, learning), `coord_reports.py` (the panel's
 views, setup check, debug file and hardware report) and `coord_base.py` (what they share). The manager likewise:
-`manager.py`, `manager_details.py` (registers, battery settings, the details sheet) and `manager_backup.py`. Checks against
+`manager.py`, `manager_details.py` (registers, battery settings, the details sheet) and `manager_backup.py`; a loaded
+HomePower keeps them on its config entry (`runtime.py`). Checks against
 the real Home Assistant classes are in `tests/ha_harness/` (see its README; `python tests/ha_harness/run_all.py` runs them
 all, and GitHub Actions runs them on each push). See [docs/DESIGN.md](docs/DESIGN.md).
-Other checks: `tests/*.mjs` run the panel in jsdom (`node tests/panel_features_smoke.mjs`), `tests/panel_dom/panel_browser.mjs` runs it in
-real headless Chromium (needs `npm install playwright`), and `tests/test_ecoflow_modbus.py` runs the local EcoFlow driver against a
+Other checks: `tests/*.mjs` and `tests/panel_dom/*.mjs` run the panel in jsdom (`node tests/panel_features_smoke.mjs`; GitHub
+Actions runs them on each push too), `tests/panel_dom/panel_browser.mjs` runs it in real headless Chromium (needs
+`npm install playwright`), and `tests/test_ecoflow_modbus.py` runs the local EcoFlow driver against a
 fake register space that follows EcoFlow's published map.

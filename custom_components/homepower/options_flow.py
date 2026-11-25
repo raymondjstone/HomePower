@@ -194,7 +194,8 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="ecoflow_account", errors=errors,
             data_schema=vol.Schema({vol.Required("region", default="eu"): _dropdown(region),
-                                    vol.Required("access_key"): str, vol.Required("secret_key"): str}),
+                                    vol.Required("access_key"): str,
+                                    vol.Required("secret_key"): sel.TextSelector(sel.TextSelectorConfig(type=sel.TextSelectorType.PASSWORD))}),
             description_placeholders={"error": detail})
 
     async def async_step_ecoflow_device(self, user_input=None):

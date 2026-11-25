@@ -182,61 +182,64 @@ class AlertsMixin:
 
     async def _check_alerts(self, now_s: float, adapters: list[DeviceAdapter]) -> None:
         for a in adapters:
-            did, name = a.config.device_id, a.config.name
-            st = self._snap.devices.get(did)
-            if st is None:
-                continue
-            checks = {
-                f"offline:{did}": (bool(st.actual and not st.actual.online) and st.link == "offline", f"{name} is offline: HomePower cannot read it." + (f" {h}" if (h := offline_hint(a.config.kind)) else ""), OFFLINE_ALERT_AFTER_S),
-                f"error:{did}": (st.last_error is not None, f"A command to {name} failed: {st.last_error}" if st.last_error
-                                 else f"A command to {name} failed earlier and is working again.", 0),
-                f"unconfirmed:{did}": (st.unconfirmed >= UNCONFIRMED_ALERT_AFTER, f"{name} is not following HomePower's commands (not confirmed after {UNCONFIRMED_ALERT_AFTER} tries).", 0),
-                f"grid:{did}": (bool(st.actual and st.actual.off_grid), f"{name} reports the grid is down and is running the house itself. HomePower is not sending it commands until the grid is back."
-                                + (self._cover_text() if st.actual and st.actual.off_grid else ""), 0),
-                f"protect:{did}": (st.decision is Decision.SKIP_PROTECTED and not (st.actual and st.actual.off_grid), f"{name} has manufacturer protection active, so HomePower is not overriding it.", PROTECT_ALERT_AFTER_S),
-            }
-            act = st.actual
-            watching = bool(act and act.online and did not in self.testing and not self.settings.dry_run
-                            and a.config.extra.get("control_enabled", True) and not self.paused and not st.awaiting_confirm
-                            and st.decision is not None and st.decision is not Decision.SKIP_PROTECTED)   # nothing was sent otherwise
-            if watching:
-                tgt = st.desired.target_soc if st.desired else None
-                stuck = self.charge_watch.stuck(did, self._grid_charging(st), act.soc, act.power_w, tgt, now_s)
-            else:
-                self.charge_watch.forget(did)
-                stuck = False                       # offline, being tested or not controlled: the alert (if raised) clears
-            checks[f"stuck:{did}"] = (stuck, f"{name} was told to charge but is not charging (no power and no rise in charge for "
-                                             f"{int(self.charge_watch.after_s // 60)} min). Check the battery's own app for a mode or schedule overriding HomePower.", 0)
-            if a.config.extra.get("driver") in ("ecoflow_stream", "ecoflow_modbus"):
-                checks[f"gridsign:{did}"] = (bool(act and act.online) and grid_sign_mismatch(self.last_grid, act.grid_w),
-                                             f"{name}'s grid reading ({act.grid_w:g} W) points the opposite way to your grid meter ({self.last_grid:g} W). "
-                                             "One of them is reversed or measures a different point: check Settings > grid sensor and its 'invert' option."
-                                             if self.last_grid is not None and act and act.grid_w is not None else "", 600)
-            for text in X1_ALARMS.values():     # alarms the X1 itself reports (a failed meter or inverter link, ...)
-                checks[f"alarm:{did}:{text}"] = (bool(act and text in act.alarms), f"{name} reports: {text}.", 0)
-            fw, fw_key = act.firmware if act else None, f"fw:{did}"
-            if fw:
-                before = self._event_state.get(fw_key)
-                if before and before != fw:
-                    await self._notify(f"fwchg:{did}:{fw}", f"{name}'s software changed from {before} to {fw}. If something stops working, "
-                                       "run Diagnostics > Registers: compare: register addresses can differ between versions.", True)
-                self._event_state[fw_key] = fw
-            weak = self.health.degraded(did)
-            checks[f"health:{did}"] = (weak is not None, f"{name}: {weak}", 0)
-            if act and act.online:
-                self.grid_events.observe(did, name, act.off_grid, dt_util.now(), act.soc)
-                self.trend.update(dt_util.now().strftime("%Y-%m-%d"), did, act.temp_c, act.pack_v)
-            drift = self.trend.warning(did)
-            checks[f"trend:{did}"] = (drift is not None, f"{name}: {drift}", 0)
-            if a.config.extra.get("house_meter") or did in self.pv_health.used:   # X1 / EcoFlow: a solar string dead or clearly weaker than usual
-                pv = self.pv_health.warnings(did, dt_util.now().strftime("%Y-%m-%d"), now_s)
-                for n in range(1, 9):
-                    checks[f"pv:{did}:{n}"] = (n in pv, f"{name}: {pv.get(n, f'PV{n} is producing normally again')}.", 0)
-            for key, (active, msg, after) in checks.items():
-                ev = self.alerts.observe(key, active, now_s, after)
-                if ev:
-                    self._log(did, ("ALERT: " if ev == "raised" else "resolved: ") + msg)
-                    await self._notify(key, msg, ev == "raised")
+            try:
+                did, name = a.config.device_id, a.config.name
+                st = self._snap.devices.get(did)
+                if st is None:
+                    continue
+                checks = {
+                    f"offline:{did}": (bool(st.actual and not st.actual.online) and st.link == "offline", f"{name} is offline: HomePower cannot read it." + (f" {h}" if (h := offline_hint(a.config.kind)) else ""), OFFLINE_ALERT_AFTER_S),
+                    f"error:{did}": (st.last_error is not None, f"A command to {name} failed: {st.last_error}" if st.last_error
+                                     else f"A command to {name} failed earlier and is working again.", 0),
+                    f"unconfirmed:{did}": (st.unconfirmed >= UNCONFIRMED_ALERT_AFTER, f"{name} is not following HomePower's commands (not confirmed after {UNCONFIRMED_ALERT_AFTER} tries).", 0),
+                    f"grid:{did}": (bool(st.actual and st.actual.off_grid), f"{name} reports the grid is down and is running the house itself. HomePower is not sending it commands until the grid is back."
+                                    + (self._cover_text() if st.actual and st.actual.off_grid else ""), 0),
+                    f"protect:{did}": (st.decision is Decision.SKIP_PROTECTED and not (st.actual and st.actual.off_grid), f"{name} has manufacturer protection active, so HomePower is not overriding it.", PROTECT_ALERT_AFTER_S),
+                }
+                act = st.actual
+                watching = bool(act and act.online and did not in self.testing and not self.settings.dry_run
+                                and a.config.extra.get("control_enabled", True) and not self.paused and not st.awaiting_confirm
+                                and st.decision is not None and st.decision is not Decision.SKIP_PROTECTED)   # nothing was sent otherwise
+                if watching:
+                    tgt = st.desired.target_soc if st.desired else None
+                    stuck = self.charge_watch.stuck(did, self._grid_charging(st), act.soc, act.power_w, tgt, now_s)
+                else:
+                    self.charge_watch.forget(did)
+                    stuck = False                       # offline, being tested or not controlled: the alert (if raised) clears
+                checks[f"stuck:{did}"] = (stuck, f"{name} was told to charge but is not charging (no power and no rise in charge for "
+                                                 f"{int(self.charge_watch.after_s // 60)} min). Check the battery's own app for a mode or schedule overriding HomePower.", 0)
+                if a.config.extra.get("driver") in ("ecoflow_stream", "ecoflow_modbus"):
+                    checks[f"gridsign:{did}"] = (bool(act and act.online) and grid_sign_mismatch(self.last_grid, act.grid_w),
+                                                 f"{name}'s grid reading ({act.grid_w:g} W) points the opposite way to your grid meter ({self.last_grid:g} W). "
+                                                 "One of them is reversed or measures a different point: check Settings > grid sensor and its 'invert' option."
+                                                 if self.last_grid is not None and act and act.grid_w is not None else "", 600)
+                for text in X1_ALARMS.values():     # alarms the X1 itself reports (a failed meter or inverter link, ...)
+                    checks[f"alarm:{did}:{text}"] = (bool(act and text in act.alarms), f"{name} reports: {text}.", 0)
+                fw, fw_key = act.firmware if act else None, f"fw:{did}"
+                if fw:
+                    before = self._event_state.get(fw_key)
+                    if before and before != fw:
+                        await self._notify(f"fwchg:{did}:{fw}", f"{name}'s software changed from {before} to {fw}. If something stops working, "
+                                           "run Diagnostics > Registers: compare: register addresses can differ between versions.", True)
+                    self._event_state[fw_key] = fw
+                weak = self.health.degraded(did)
+                checks[f"health:{did}"] = (weak is not None, f"{name}: {weak}", 0)
+                if act and act.online:
+                    self.grid_events.observe(did, name, act.off_grid, dt_util.now(), act.soc)
+                    self.trend.update(dt_util.now().strftime("%Y-%m-%d"), did, act.temp_c, act.pack_v)
+                drift = self.trend.warning(did)
+                checks[f"trend:{did}"] = (drift is not None, f"{name}: {drift}", 0)
+                if a.config.extra.get("house_meter") or did in self.pv_health.used:   # X1 / EcoFlow: a solar string dead or clearly weaker than usual
+                    pv = self.pv_health.warnings(did, dt_util.now().strftime("%Y-%m-%d"), now_s)
+                    for n in range(1, 9):
+                        checks[f"pv:{did}:{n}"] = (n in pv, f"{name}: {pv.get(n, f'PV{n} is producing normally again')}.", 0)
+                for key, (active, msg, after) in checks.items():
+                    ev = self.alerts.observe(key, active, now_s, after)
+                    if ev:
+                        self._log(did, ("ALERT: " if ev == "raised" else "resolved: ") + msg)
+                        await self._notify(key, msg, ev == "raised")
+            except Exception:  # noqa: BLE001 - one battery whose alerts cannot be worked out must not silence the others
+                self._log_failure(f"alerts {a.config.device_id}", "could not check the alerts of battery %s", a.config.device_id)
 
     async def _on_action(self, event) -> None:
         """A button on a HomePower phone notification was tapped."""
@@ -246,8 +249,8 @@ class AlertsMixin:
                 await self.manager.set_paused(True)
                 self._log("events", "paused from a notification button")
             elif action == ACTION_HAND_BACK:
+                await self.manager.set_paused(True)          # paused first: stay handed back, and no cycle forces one in between
                 await self.release_all(force=True)
-                await self.manager.set_paused(True)          # stay handed back: otherwise the plan would take them over again
                 self._log("events", "batteries handed back and HomePower paused from a notification button")
         except Exception:  # noqa: BLE001 - a button must never break the control loop
             _LOGGER.warning("notification action failed", exc_info=True)

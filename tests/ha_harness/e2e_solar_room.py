@@ -18,6 +18,11 @@ from custom_components.homepower.coordinator import HomePowerCoordinator
 
 async def main():
     dt_util.set_default_time_zone(dt_util.get_time_zone("Europe/Dublin"))
+    # Home Assistant's clock is fixed at 03:00 on a June night: the room left for solar depends on how much of the day's sun
+    # is still to come, so a real clock made this pass in the morning and fail in the late afternoon.
+    fixed = dtm.datetime(2026, 6, 15, 3, 0, tzinfo=dt_util.get_time_zone("Europe/Dublin"))
+    dt_util.now = lambda time_zone=None: fixed.astimezone(time_zone) if time_zone else fixed
+    dt_util.utcnow = lambda: fixed.astimezone(dtm.timezone.utc)
     tmp = tempfile.mkdtemp()
     dev = FakeAnker(); srv = await asyncio.start_server(dev.handle, "127.0.0.1", 0); port = srv.sockets[0].getsockname()[1]
     hass = HomeAssistant(tmp); hass.config.config_dir = tmp

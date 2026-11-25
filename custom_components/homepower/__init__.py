@@ -73,7 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) ->
     # If HA shuts down while a battery is being forced, hand it back (best effort; the
     # persisted flag makes the next start retry if this does not complete).
     async def _on_stop(_event) -> None:
-        await coordinator.release_all()
+        await coordinator.release_all(closing=True)
 
     entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop))
 
@@ -213,7 +213,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) -
             coord.stop_listening()
             # Reloaded, disabled or removed: nothing will be steering the batteries, so hand back any we are forcing.
             try:
-                await coord.release_all()
+                await coord.release_all(closing=True)
             except Exception:  # noqa: BLE001 - unloading must still finish
                 _LOGGER.warning("could not hand the batteries back while unloading", exc_info=True)
         if mgr:
@@ -292,7 +292,22 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     from homeassistant.helpers.storage import Store
 
     await Store(hass, STORAGE_VERSION, STORAGE_KEY).async_remove()
-    _LOGGER.info("HomePower removed; its saved batteries, keys, schedules and history were erased")
+    try:
+        await hass.async_add_executor_job(_erase_backups, hass.config.path("homepower_backups"))
+    except Exception:  # noqa: BLE001 - removal must always finish
+        _LOGGER.warning("could not delete HomePower's daily backup copies", exc_info=True)
+    _LOGGER.info("HomePower removed; its saved batteries, keys, schedules, history and backup copies were erased")
+
+
+def _erase_backups(folder: str) -> None:
+    """'Erase everything' covers the daily copies too: only HomePower's own files, and the folder if that leaves it empty."""
+    d = Path(folder)
+    if not d.is_dir():
+        return
+    for p in backup_files(d):
+        p.unlink(missing_ok=True)
+    if not any(d.iterdir()):
+        d.rmdir()
 
 
 async def _options_updated(hass: HomeAssistant, entry: HomePowerConfigEntry) -> None:

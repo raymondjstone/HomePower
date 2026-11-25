@@ -86,6 +86,17 @@ async def main():
     print("test     :", res["ok"], [(s["name"], s["ok"]) for s in res["steps"]])
     assert res["ok"], res
     print("view keys:", sorted(coord.view())[:8], "...")
+    # safe mode pauses before it hands back, so a cycle running in between cannot force a battery again
+    order, real = [], coord.release_all
+    async def watch(force=False, closing=False):
+        order.append((mgr.paused, mgr.safe)); await real(force=force, closing=closing)
+    coord.release_all = watch
+    await mgr.set_safe(True)
+    assert order == [(True, True)] and mgr.paused and mgr.safe, order
+    coord.release_all = real
+    await mgr.set_safe(False)
+    assert not mgr.paused and not mgr.safe
+    print("safe     : paused before handing back")
     await coord.async_close()
     srv.close(); await srv.wait_closed()
     print("E2E OK")

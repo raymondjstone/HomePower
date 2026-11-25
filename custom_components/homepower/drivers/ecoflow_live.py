@@ -130,7 +130,12 @@ class EcoFlowLive:
             self.connected = False
 
         def on_message(_c, _u, msg):
-            self.loop.call_soon_threadsafe(self._dispatch, msg.topic, msg.payload)
+            if gen != self._gen:            # stopped (unload, reload): paho's thread may still deliver a few before it ends
+                return
+            try:
+                self.loop.call_soon_threadsafe(self._dispatch, msg.topic, msg.payload)
+            except RuntimeError:            # the event loop has closed (Home Assistant stopping): nothing to deliver to
+                pass
 
         client.on_connect, client.on_disconnect, client.on_message = on_connect, on_disconnect, on_message
         client.reconnect_delay_set(min_delay=5, max_delay=120)

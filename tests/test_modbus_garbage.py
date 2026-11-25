@@ -83,6 +83,7 @@ def test_a_slow_battery_is_waited_for_not_given_up_on_and_asked_again():
             while True:
                 req = await r.read(64)
                 if not req:
+                    w.close()                    # the fake battery's side too
                     return
                 await asyncio.sleep(0.5)                      # slower than the short wait (0.2 s), within the long one (1.2 s)
                 w.write(_reply(req)); await w.drain()
@@ -106,6 +107,7 @@ def test_a_connection_gone_quiet_is_replaced_quickly():
             while True:
                 req = await r.read(64)
                 if not req:
+                    w.close()                    # the fake battery's side too
                     return
                 n += 1
                 if len(conns) == 1 and n > 1:                 # the first connection answers once, then silently stops (a dead socket)

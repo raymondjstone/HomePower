@@ -110,12 +110,17 @@ async def main():
     # removing HomePower keeps the saved data unless the user chose to erase it
     from homeassistant.helpers.storage import Store
     from custom_components.homepower.const import STORAGE_KEY, STORAGE_VERSION
+    bdir = hass.config.path("homepower_backups"); os.makedirs(bdir, exist_ok=True)
+    for n in ("homepower-2026-01-01.json", "homepower-2026-01-02.json", "my-notes.txt"):
+        open(os.path.join(bdir, n), "w").write("{}")
     await HP.async_remove_entry(hass, entry)
+    assert {"homepower-2026-01-01.json", "homepower-2026-01-02.json", "my-notes.txt"} <= set(os.listdir(bdir)), "backup copies were deleted without being asked"
     kept = await Store(hass, STORAGE_VERSION, STORAGE_KEY).async_load()
     assert kept and kept["devices"], "data was erased without being asked"
     object.__setattr__(entry, "options", {"erase_on_remove": True})
     await HP.async_remove_entry(hass, entry)
     assert await Store(hass, STORAGE_VERSION, STORAGE_KEY).async_load() is None, "data was not erased"
+    assert os.listdir(bdir) == ["my-notes.txt"], ("backup copies not erased, or another file was", os.listdir(bdir))
     print("remove   : kept by default, erased when chosen")
     srv.close(); await srv.wait_closed()
     print("E2E6 OK")

@@ -1,34 +1,45 @@
 # Design
 
 ## Principles
-- **One controller.** HomePower owns the settings it manages; no other automation writes them (Modbus allows a single controlling client).
-- **Read before write, verify every command.** An API 200 is not proof the inverter accepted it.
-- **Desired vs actual.** Per device: desired config, actual config, last command, last readback, history.
-- **Manufacturer protection wins.** Calibration/protection/firmware states are never overridden (`Decision.SKIP_PROTECTED`); re-applies are rate-limited.
-- **Device-specific limits.** Every command is clamped to that device's `Capabilities`.
-- **Fail safe.** Offline device => no writes; loss of comms must not cause uncontrolled charge/discharge.
+- **One controller.** HomePower owns the settings it manages; no other automation should write them at the same time
+  (Modbus devices often allow a single client at a time, which is also why a failed read is first shown as "Readings stale").
+- **Read before write, verify every command.** An accepted request is not proof the battery acted on it: every command is
+  read back, and slow (cloud) batteries are watched for minutes before a command counts as followed.
+- **Desired vs actual.** Per battery: what HomePower wants, what the battery reports, the last command and its result.
+- **Manufacturer protection wins.** Calibration / protection / grid-down states are never overridden
+  (`Decision.SKIP_PROTECTED`); re-applies are rate-limited and capped per day.
+- **Device-specific limits.** Every command is clamped to that battery's `Capabilities`.
+- **Fail safe.** An offline battery gets no writes; a failure in one battery, one step or one view never stops the others.
+- **Hand back exactly what was there.** Before its first write HomePower reads and saves the battery's own settings and
+  puts exactly those back; when the original is unknown it leaves the battery alone rather than write a default.
 - **Export protection is not a substitute for certified G100 hardware.**
 
 ## Layers
 ```
-schedules / strategies / tariff window  ->  core (pure Python)
-                                          |  Desired (neutral)
-                              DeviceAdapter (HaEntityAdapter)
-                                          |  select / number service calls
-                    upstream HA integrations (Anker Modbus, EcoFlow API/MQTT)
+panel (frontend/*.js)  <- websocket API (websocket_api.py, admin only) ->  manager (stored config, flows, backup)
+                                                                              |
+                     coordinator (coordinator.py + coord_*.py): the 10 s control loop
+                     read all batteries -> decide (core/engine.py, pure) -> send and verify commands
+                                                                              |
+                     DeviceAdapter (adapters/)  ->  drivers/: Anker Modbus TCP, EcoFlow cloud API (+ optional MQTT live
+                                                    feed), EcoFlow local Modbus, generic Modbus map, or Home Assistant
+                                                    entities of another integration ("Other battery")
 ```
+- `core/` is pure Python with no Home Assistant imports, so the decision logic is unit- and fuzz-tested on its own.
+- A loaded HomePower keeps its manager and coordinator on its config entry (`runtime.py`, `entry.runtime_data`).
+- Actions are registered in `async_setup`; the sidebar panel and the panel's websocket API are admin only.
 
-## Schedule types
-1. Time-based (weekday/weekend, seasonal, date overrides, priority) — `core/schedule.py` (done)
-2. SOC-based (floors, targets) — via `Desired.reserve_soc` / `target_soc` (model done, rules TODO)
-3. Tariff-based — `core/allocator.py` spreads charge across batteries within the import limit (done); window source from HA TODO
-
-## Strategies (stage 3)
-Cheap-rate charging, solar harvesting, peak avoidance, reserve protection, max self-sufficiency, manual override.
-Device priorities decide discharge order; topology/shared-bus awareness needed.
+## How a cycle decides
+Highest priority first (`core/engine.py`): manual override > backup reserve > grid event > schedule (`core/schedule.py`) >
+goal plan (charge to X % by a time in the cheapest slots: `core/planner.py`) > zero-import battery > paid export; then,
+for batteries still without an instruction, peak shaving / export limiting, and finally handing back the ones HomePower
+forced earlier. The day plan (`core/dayplan.py`: where stored energy is worth most until refilling is cheapest) decides
+the paid-export half-hours and when to hold charge for dearer hours later. Safety clamps always apply:
+device limits, charge-level limits with hysteresis, load rules and the overall caps. Batteries that pick their own rate
+(EcoFlow's cloud) get Hold / Charge through their backup reserve, with the measured charge rate used in plans.
 
 ## Open questions
-- Is the "ES5000" the STREAM AC 5000 (ES22)? Controls differ by model.
-- Some EcoFlow commands write a whole-day task rather than a mode; charge-setpoint behaviour unproven — needs validation on hardware.
-- Exact entity names/mode option strings per upstream integration (to be captured as per-device profiles).
-- Cheap-rate window source (Octopus/HA entity?) and house import limit.
+- Hardware: commands have been run against simulators and published register maps only; Test control and the hardware
+  report are how real batteries get proven (README, "Known limits").
+- EcoFlow STREAM 5000 series over the cloud: the command set is taken from EcoFlow's document but untested on hardware.
+- EcoFlow local Modbus: the sign of the power setpoint is assumed (+ charging); Test control checks it.

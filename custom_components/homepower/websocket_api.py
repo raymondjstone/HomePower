@@ -83,7 +83,12 @@ async def ws_subscribe(hass, connection, msg):
         mgr = running_manager(hass)
         coord = mgr.coordinator if mgr else None
         if coord:
-            connection.send_message(websocket_api.event_message(msg["id"], coord.view()))
+            try:
+                view = coord.view()
+            except Exception:  # noqa: BLE001 - never let a drawing bug escape into Home Assistant's dispatcher every cycle
+                coord._log_failure("live view", "could not build the panel's live view")
+                return
+            connection.send_message(websocket_api.event_message(msg["id"], view))
 
     connection.subscriptions[msg["id"]] = async_dispatcher_connect(hass, SIGNAL_UPDATE, push)
     connection.send_result(msg["id"])

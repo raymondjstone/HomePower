@@ -336,9 +336,10 @@ class HomePowerManager(DetailsMixin, BackupMixin):
     async def set_safe(self, on: bool) -> None:
         """Safe mode: hand every battery back to its own control, then send nothing until it is switched off."""
         if on:
+            # paused first, so no cycle forces a battery again between the hand-back and the pause
+            self.paused = self.safe = True
             if self.coordinator:
                 await self.coordinator.release_all(force=True)     # even if already paused: safe mode means handed back
-            self.safe = True
             await self.set_paused(True)
             self.safe = True                               # set_paused(True) leaves it alone, but be explicit
             await self._save()
