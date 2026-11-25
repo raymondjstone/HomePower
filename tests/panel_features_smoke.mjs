@@ -191,7 +191,9 @@ p.live.alerts = [];
 {
   p._hass.config = { time_zone: "Pacific/Auckland" };
   const at = Date.UTC(2026, 0, 15, 0, 0);                         // 13:00 in Auckland (summer, UTC+13)
-  must("plan times use Home Assistant's time zone", p._fmtT(at, 3600e3).replace(/\D/g, "").startsWith("13"));
+  // (compared in this machine's own locale: "13:00" with a 24-hour clock, "01:00 PM" with a 12-hour one)
+  const fmt = (timeZone) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone });
+  must("plan times use Home Assistant's time zone", p._fmtT(at, 3600e3) === fmt("Pacific/Auckland") && fmt("Pacific/Auckland") !== fmt("UTC"));
   p._hass.config = { time_zone: "Not/AZone" };
   must("an unknown zone falls back to the browser's clock", typeof p._fmtT(at, 3600e3) === "string");
   p._hass.config = {};
