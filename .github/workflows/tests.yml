@@ -64,7 +64,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
-      - run: python -m pip install homeassistant paho-mqtt
+      - run: python -m pip install homeassistant pytest paho-mqtt   # (the payload script uses the tests' shared setup, which needs pytest)
       - run: python tests/ha_harness/dump_panel_payload.py tests/panel_dom/payload.json
       - run: npm install --no-save --prefix tests/panel_dom jsdom@29.1.1
       - name: Panel tests
