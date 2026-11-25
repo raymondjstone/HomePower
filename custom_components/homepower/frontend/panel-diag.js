@@ -7,7 +7,7 @@ export default (U) => {
     const ps = this._ports || {}, rows = ps.results || [];
     let out = "";
     if (ps.error) out = `<div class="err">${esc(ps.error)}</div>`;
-    else if (ps.busy) out = `<div class="sub">${ps.wide ? "Wide scan running: ports 1 to 10,000, up to a minute. Please wait…" : "Scanning… this takes a few seconds."}</div>`;
+    else if (ps.busy) out = `<div class="sub">${ps.wide ? "Wide scan running: ports 1 to 10,000, this can take a minute or two. Please wait…" : "Scanning… this takes a few seconds."}</div>`;
     else if (rows.length || ps.wide) {
       const wide = !!ps.wide, prev = ps.prev && !!ps.prev.wide === wide ? ps.prev : null, at = prev ? new Date(prev.at).toLocaleTimeString([], this._tzOpt()) : "";
       const open = rows.filter((r) => r.state === "open");
@@ -26,10 +26,10 @@ export default (U) => {
       out = `<p style="margin:8px 0 4px">${sum} <span class="sub" style="font-size:12px;color:var(--secondary-text-color)">(${esc(ps.address || ps.host)}${wide ? ", wide scan" : ""})</span></p>${diff}${tally}${table}`;
     }
     return `<div class="card" style="margin-bottom:12px"><h2>Find local control ports</h2>
-      <p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:0">Checks whether a device on your network is listening on the ports local control usually uses (502 Modbus TCP, 1883 MQTT, ...). Use it after a firmware update or after switching something on in the vendor app: scan again and it shows what changed. The wide scan checks every port from 1 to 10,000 on that one device (up to a minute) and lists only the open ones, in case local control uses an unusual port. Both only connect and listen: they send nothing, and they refuse addresses outside your own network.</p>
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:0">Checks whether a device on your network is listening on the ports local control usually uses (502 Modbus TCP, 1883 MQTT, ...). Use it after a firmware update or after switching something on in the vendor app: scan again and it shows what changed. The wide scan checks every port from 1 to 10,000 on that one device (a minute or two) and lists only the open ones, in case local control uses an unusual port. Both only connect and listen: they send nothing, and they refuse addresses outside your own network.</p>
       <div class="row2"><input type="text" id="ps-host" placeholder="192.168.1.50" value="${esc(ps.host || "")}" style="min-width:200px" aria-label="Device IP address">
       <button class="btn pri" data-act="scan-ports"${ps.busy ? " disabled" : ""}><ha-icon icon="mdi:lan-connect" style="--mdc-icon-size:16px"></ha-icon>Scan</button>
-      <button class="btn" data-act="scan-ports-wide"${ps.busy ? " disabled" : ""} title="Checks every port from 1 to 10,000 on this one device. Takes up to a minute. Read-only, like the normal scan."><ha-icon icon="mdi:radar" style="--mdc-icon-size:16px"></ha-icon>Wide scan (1-10,000)</button></div>${out}</div>`;
+      <button class="btn" data-act="scan-ports-wide"${ps.busy ? " disabled" : ""} title="Checks every port from 1 to 10,000 on this one device. Can take a minute or two. Read-only, like the normal scan."><ha-icon icon="mdi:radar" style="--mdc-icon-size:16px"></ha-icon>Wide scan (1-10,000)</button></div>${out}</div>`;
   },
 
   async _scanPorts(wide = false) {
@@ -78,7 +78,7 @@ export default (U) => {
     const set = (html) => { (this._scans ||= {})[id] = { ...(this._scans[id] || {}), html }; const el = this.shadowRoot.getElementById("scan-" + id); if (el) el.innerHTML = html; };
     const base = (this._scans || {})[id] && this._scans[id].base;
     if (compare && !base) return set(`<div class="bad">Save a baseline first.</div>`);
-    set(`<div class="sub">Reading registers (read-only)… this can take up to a minute.</div>`);
+    set(`<div class="sub">Reading registers (read-only)… this can take some time.</div>`);
     let now;
     try { now = await this._hass.callWS({ type: "homepower/device/scan", device_id: id }); }
     catch (e) { return set(`<div class="bad">${esc(e.message || e)}</div>`); }
@@ -110,7 +110,7 @@ export default (U) => {
   async _showRegisters(id) {
     const el = () => this.shadowRoot.getElementById("scan-" + id);
     const put = (html) => { (this._scans ||= {})[id] = { ...(this._scans[id] || {}), html }; if (el()) el().innerHTML = html; };
-    put(`<div class="sub">Reading every register (read-only)… this can take up to a minute.</div>`);
+    put(`<div class="sub">Reading every register (read-only)… this can take some time.</div>`);
     let r;
     try { r = await this._hass.callWS({ type: "homepower/device/scan", device_id: id }); }
     catch (e) { return put(`<div class="bad">${esc(e.message || e)}</div>`); }
