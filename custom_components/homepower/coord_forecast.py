@@ -53,7 +53,7 @@ class ForecastMixin:
     async def _refresh_solar_hours(self) -> None:
         """Every 15 minutes: the expected solar energy for each hour, from the forecast integration's energy platform (what
         Home Assistant's Energy dashboard draws its forecast from). The first integration in FORECAST_PLATFORMS that gives
-        an answer is used, all its planes / sites added up."""
+        an answer is used, all its planes / sites added up: when only some answer, the last whole figures are kept."""
         if self._solar_busy or _time.monotonic() - self._solar_at < 900:
             return
         self._solar_busy, self._solar_at = True, _time.monotonic()
@@ -63,7 +63,8 @@ class ForecastMixin:
 
             tz = dt_util.now().tzinfo
             for domain in FORECAST_PLATFORMS:
-                entries = [e for e in self.hass.config_entries.async_entries(domain) if e.state is ConfigEntryState.LOADED]
+                wanted = [e for e in self.hass.config_entries.async_entries(domain) if not e.disabled_by and e.source != "ignore"]
+                entries = [e for e in wanted if e.state is ConfigEntryState.LOADED]
                 if not entries:
                     continue
                 try:
@@ -77,16 +78,22 @@ class ForecastMixin:
                 by_end = domain == "forecast_solar" and not hasattr(
                     sys.modules.get("homeassistant.components.forecast_solar.coordinator"), "energy_by_period_start")
                 total: dict[str, list[float]] = {}
+                whole = len(entries) == len(wanted)
                 for e in entries:
                     try:
                         data = await fetch(self.hass, e.entry_id)
-                    except Exception:  # noqa: BLE001 - one plane failing must not lose the others
+                    except Exception:  # noqa: BLE001 - one plane failing must not stop the refresh
                         _LOGGER.debug("solar forecast from %s failed", domain, exc_info=True)
-                        continue
-                    for day, hours in hours_by_day((data or {}).get("wh_hours") if isinstance(data, dict) else None, tz, by_end).items():
+                        data = None
+                    found = hours_by_day(data.get("wh_hours") if isinstance(data, dict) else None, tz, by_end)
+                    whole = whole and bool(found)
+                    for day, hours in found.items():
                         acc = total.setdefault(day, [0.0] * 24)
                         for i, v in enumerate(hours):
                             acc[i] += v
+                if total and not whole:
+                    self._solar_at -= 840                 # try again in a minute
+                    return
                 if total:
                     self.solar_hours = total
                     return
