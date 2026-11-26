@@ -693,3 +693,18 @@ def test_an_override_naming_a_monitor_only_battery_is_refused_not_silently_ignor
         c.set_override(["a"], Desired(Mode.CHARGE), 10)
     assert c.overrides == {}
     c.manager.safe = False
+
+
+def test_a_forecast_with_a_plane_missing_is_not_taken_as_the_days_total():
+    day, nxt = "2026-11-11", "2026-11-12"
+    values = {"a_today": 4.0, "b_today": 6.0, "a_tom": 5.0, "b_tom": 7.0}
+    me = types.SimpleNamespace(
+        manager=types.SimpleNamespace(forecast_days={}), _forecast_kwh=lambda: None, _kwh=values.get,
+        _forecast_entities=lambda: {"today": ["a_today", "b_today"], "tomorrow": ["a_tom", "b_tom"]})
+    ask = lambda: coordinator.HomePowerCoordinator._forecast_as_given(me, datetime(2026, 11, 11, 10, tzinfo=timezone.utc))
+    values["b_today"] = values["b_tom"] = None
+    assert ask() == {} and me.manager.forecast_days == {}          # half a forecast is not remembered as the whole
+    values.update(b_today=6.0, b_tom=7.0)
+    assert ask() == {day: 10.0, nxt: 12.0}
+    values["b_today"] = values["b_tom"] = None                     # one plane drops out: the last whole figures stand
+    assert ask() == {day: 10.0, nxt: 12.0}

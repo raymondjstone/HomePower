@@ -177,16 +177,20 @@ class ForecastMixin:
             out[tomorrow] = v
         found = self._forecast_entities()
         for day, key in ((today, "today"), (tomorrow, "tomorrow")):
-            vals = [x for x in (self._kwh(e) for e in found[key]) if x is not None]
-            if vals and day not in out:
+            vals = [self._kwh(e) for e in found[key]]
+            # every plane / site or nothing: some of them added up would pass for the whole day's solar
+            if vals and day not in out and None not in vals:
                 out[day] = sum(vals)
         mem = self.manager.forecast_days
-        if out.get(tomorrow) is not None and mem.get(tomorrow) != out[tomorrow]:
-            mem[tomorrow] = out[tomorrow]
-            for k in [k for k in mem if k < today]:
-                del mem[k]
-        if today not in out and today in mem:
-            out[today] = mem[today]
+        for day in (today, tomorrow):
+            if out.get(day) is not None and mem.get(day) != out[day]:
+                mem[day] = out[day]
+                for k in [k for k in mem if k < today]:
+                    del mem[k]
+        # a plane missing for the moment: the last whole figure stands (today's also when there is no sensor for it at all)
+        for day, key in ((today, "today"), (tomorrow, "tomorrow")):
+            if day not in out and day in mem and (day == today or found[key]):
+                out[day] = mem[day]
         return out
 
     def _sun(self, day) -> tuple[datetime, datetime] | None:
