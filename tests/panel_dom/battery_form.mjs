@@ -66,4 +66,21 @@ await wait(50);
 const out3 = el._collectBattery("m");
 must("unit id 0 survives an edit", root.getElementById("c-unit_id").value === "0" && out3.connection.unit_id === 0, JSON.stringify(out3.connection.unit_id));
 
+// legends: clicking hides a series, clicking again shows it; the scale follows and the choice is remembered
+el._modal = null; el.tab = "batteries"; el._render();
+const pts = (v) => [{ t: 1000, v }, { t: 2000, v }];
+const draw = () => el._lineChart([{ key: "a", name: "A", color: "#111", pts: pts(400) }, { key: "b", name: "B", color: "#222", pts: pts(9000) }], "W", "power");
+const host = () => { let h = root.getElementById("lg-host"); if (!h) { h = document.createElement("div"); h.id = "lg-host"; root.getElementById("app").appendChild(h); } h.innerHTML = draw(); return h; };
+const btn = () => host().querySelector('[data-act="legend"][data-key="b"]');
+const click = () => btn().dispatchEvent(new w.MouseEvent("click", { bubbles: true, composed: true }));
+const lines = () => host().querySelectorAll(".plot-main svg path").length;
+const top = () => host().querySelector(".plot-y span:last-child").textContent;
+must("legend items are buttons, shown to start with", btn().getAttribute("aria-pressed") === "true" && lines() === 2);
+const full = top();
+click();
+must("a click on the legend hides that series only", lines() === 1 && btn().getAttribute("aria-pressed") === "false");
+must("the scale fits what is left", top() !== full, `${full} -> ${top()}`);
+must("the choice is remembered", localStorage.getItem("homepower.hidden").includes("power"));
+click();
+must("a second click shows it again", lines() === 2 && top() === full);
 process.exit(failures ? 1 : 0);

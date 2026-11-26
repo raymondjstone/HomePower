@@ -428,7 +428,7 @@ notifications. Both optionally go to a `notify.*` service as well.
 | Plan | Goals, the price chart with planned charging, planned export, energy kept for dearer hours and grid events, the next 24 hours per battery, schedule clashes |
 | Schedules | Add, edit, enable and delete schedules |
 | Batteries | Add, edit and delete batteries; allow control; role, priority, solar panels, whether its meter measures the whole house |
-| Insights | Savings today and this month, energy totals, solar forecast against measured solar (by day and by hour), solar self-consumption and cheap-rate share, what exporting pays now, solar strings (Anker X1, EcoFlow), battery health (weekly round-trip efficiency), long-term history charts |
+| Insights | Savings today and this month, energy totals, solar forecast against measured solar (by day and by hour), solar self-consumption and cheap-rate share, what exporting pays now, solar strings (Anker X1, EcoFlow), battery health (weekly round-trip efficiency), long-term history charts. On any chart with a clickable legend, click an item to hide that series and again to show it (also on the Overview power chart) |
 | Settings | Everything in the [settings reference](#settings-reference) |
 | Diagnostics | Setup check, per-battery status and last command, Test control, the raw readings received, event log, copy debug info, hardware report |
 

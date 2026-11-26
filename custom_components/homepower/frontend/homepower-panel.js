@@ -574,6 +574,7 @@ ${esc(where)}</pre></div>`;
         alert(`Restored ${a.devices || 0} batteries, ${a.schedules || 0} schedules, ${a.goals || 0} goals and ${a.scenes || 0} scenes.` + ((res.skipped || []).length ? `\n\nSkipped:\n- ${res.skipped.join("\n- ")}` : ""));
         return;
       }
+      case "legend": return this._toggleSeries(t.dataset.chart, t.dataset.key);
       case "flowdur":
         this._flowMinV = parseInt(t.dataset.m, 10);
         try { localStorage.setItem("homepower.flowMin", String(this._flowMinV)); } catch (e) { /* optional */ }
