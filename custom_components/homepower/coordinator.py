@@ -54,7 +54,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
         self.settings: AppSettings = build_settings({**config_entry.data, **config_entry.options})
         manager.set_live(self.settings.ecoflow_live)
-        self.overrides: dict[str, tuple[Desired, datetime]] = {}   # manual "charge now" etc.
+        self.overrides: dict[str, tuple[Desired, datetime]] = self._load_overrides(getattr(manager, "overrides_data", None))   # manual "charge now" etc.: kept over a restart
         self.testing: set[str] = set()                              # batteries under a control test
         self.meter = EnergyMeter(manager.energy)
         self._meter = MeterReader()   # smart-meter sensors -> watts
@@ -187,11 +187,37 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         if device_ids and (unknown := sorted(set(device_ids) - known)):
             # a mistyped id in an automation would otherwise do nothing at all, silently
             raise ValueError(f"no battery called {', '.join(unknown)} (known: {', '.join(sorted(known)) or 'none'})")
+        if getattr(self.manager, "safe", False):     # it would never be sent: safe mode sends nothing until switched off
+            raise ValueError("Safe mode is on: HomePower sends no commands until you switch it off, so an override would do nothing")
+        watched = sorted(a.config.name for a in self.adapters
+                         if device_ids and a.config.device_id in device_ids and not a.config.extra.get("control_enabled", True))
+        if watched:      # it would never be sent: say so rather than accept an override that does nothing
+            raise ValueError(f"{', '.join(watched)} {'is' if len(watched) == 1 else 'are'} monitor-only (control is off in its "
+                             "battery settings), so HomePower sends it no commands")
         until = dt_util.now() + timedelta(minutes=minutes)
         for a in self.adapters:
             if not device_ids or a.config.device_id in device_ids:
                 self.overrides[a.config.device_id] = (desired, until)
                 self._log(a.config.device_id, f"manual override {desired.mode.value} for {minutes} min")
+
+    def dump_overrides(self) -> dict:
+        return {did: {"mode": d.mode.value, "power_w": d.power_w, "target_soc": d.target_soc, "until": until.isoformat()}
+                for did, (d, until) in self.overrides.items()}
+
+    @staticmethod
+    def _load_overrides(raw) -> dict:
+        """Overrides saved before a restart; one that has run out, or is damaged, is dropped (the next cycle drops expired ones)."""
+        out = {}
+        for did, o in (raw or {}).items() if isinstance(raw, dict) else ():
+            try:
+                until = datetime.fromisoformat(str(o["until"]))
+                if until is None or until.tzinfo is None:
+                    continue
+                num = lambda v: None if v is None or isinstance(v, bool) else int(v)
+                out[str(did)] = (Desired(Mode(o["mode"]), num(o.get("power_w")), num(o.get("target_soc"))), until)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+        return out
 
     def clear_override(self, device_ids: list[str] | None = None) -> None:
         for did in list(self.overrides):
@@ -399,6 +425,8 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             may_hand_back = handing_back and (not control_on or did in self._retry_handback or self.manager.safe)
             if did in self.testing or ((self.paused or not control_on) and not may_hand_back):
                 st.decision = None  # monitor-only / paused / being tested: read and report, never write
+                if did not in self.testing:     # nothing is being sent, so "not following" / "failed" no longer apply
+                    st.unconfirmed, st.last_error = 0, None
                 continue
             fresh = materially_different(st.last_applied, st.desired)   # new instruction: no cooldown
             st.decision, diffs = decide(st.desired, st.actual, now=mono, last_apply=None if fresh else st.last_apply,

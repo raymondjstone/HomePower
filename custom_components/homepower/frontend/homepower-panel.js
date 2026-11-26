@@ -306,6 +306,12 @@ ${esc(where)}</pre></div>`;
     return base;
   }
 
+  // Today's date (YYYY-MM-DD) on the home's clock, for file names: toISOString() is UTC, a day out in the evening west of it.
+  _today() {
+    try { return new Intl.DateTimeFormat("en-CA", this._tzOpt({ year: "numeric", month: "2-digit", day: "2-digit" })).format(new Date()); }
+    catch (e) { return new Date().toISOString().slice(0, 10); }
+  }
+
   async _call(msg, errTarget, wantResult) {
     try { const res = await this._hass.callWS(msg); return wantResult ? res : true; }
     catch (e) { (errTarget || ((m) => this._err(m)))(e.message || String(e)); return false; }
@@ -348,7 +354,7 @@ ${esc(where)}</pre></div>`;
         if (!r) return;
         const a = document.createElement("a");
         a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" }));
-        a.download = `homepower-${hw ? "hardware-report" : "debug"}-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `homepower-${hw ? "hardware-report" : "debug"}-${this._today()}.json`;
         a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
         return;
       }
@@ -365,7 +371,7 @@ ${esc(where)}</pre></div>`;
         if (!s.id) return this._err("Give the schedule a name.");
         if (orig !== s.id && this.data.schedules.some((x) => x.id === s.id)) return this._err("A schedule with that name already exists.");
         if (orig) s.enabled = (this.data.schedules.find((x) => x.id === orig) || {}).enabled !== false;
-        const saved = await this._call({ type: "homepower/schedule/save", schedule: s }, undefined, true);
+        const saved = await this._call({ type: "homepower/schedule/save", schedule: s, new: orig !== s.id }, undefined, true);
         if (!saved) return;
         if (orig && orig !== s.id) await this._call({ type: "homepower/schedule/delete", schedule_id: orig });
         await this._reload(); this._closeModal();
@@ -465,7 +471,7 @@ ${esc(where)}</pre></div>`;
         const d = this._collectBattery(t.dataset.id);
         if (!d.name) return this._err("Give the battery a name.");
         if (!t.dataset.id && this.data.devices.some((x) => x.device_id === d.device_id)) return this._err("A battery with that name already exists.");
-        if (!(await this._call({ type: "homepower/device/save", device: d }))) return;     // the dialog stays open: Test still tests this battery
+        if (!(await this._call({ type: "homepower/device/save", device: d, new: !t.dataset.id }))) return;     // the dialog stays open: Test still tests this battery
         this._editingId = null;
         await this._reload(); return this._closeModal();
       }
@@ -475,7 +481,11 @@ ${esc(where)}</pre></div>`;
         await this._reload(); return this._closeModal();
       case "save-settings": {
         const msg = this.shadowRoot.getElementById("g-msg");
-        const ok = await this._call({ type: "homepower/settings/save", settings: this._collectSettings() }, (m) => { msg.style.color = ""; msg.textContent = m; });
+        const named = (m) => String(m).replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g, (k) => {     // a setting's key in an error: shown as its label
+          const lab = this.shadowRoot.getElementById(`st-${k}`)?.closest(".f")?.querySelector("label")?.textContent;
+          return lab ? `"${lab}"` : k;
+        });
+        const ok = await this._call({ type: "homepower/settings/save", settings: this._collectSettings() }, (m) => { msg.style.color = ""; msg.textContent = named(m); });
         if (ok) {
           this._savedNote = true;   // survives the re-render that follows
           await this._reload();
@@ -497,7 +507,7 @@ ${esc(where)}</pre></div>`;
         if (!g.id) return this._err("Give the goal a name.");
         if (orig !== g.id && (this.data.goals || []).some((x) => x.id === g.id)) return this._err("A goal with that name already exists.");
         if (orig) g.enabled = ((this.data.goals || []).find((x) => x.id === orig) || {}).enabled !== false;
-        const saved = await this._call({ type: "homepower/goal/save", goal: g }, undefined, true);
+        const saved = await this._call({ type: "homepower/goal/save", goal: g, new: orig !== g.id }, undefined, true);
         if (!saved) return;
         if (orig && orig !== g.id) await this._call({ type: "homepower/goal/delete", goal_id: orig });
         await this._reload(); this._closeModal(); this._tabLoad();
@@ -528,7 +538,7 @@ ${esc(where)}</pre></div>`;
         const sc = this._collectScene(), orig = t.dataset.orig;
         if (!sc.name) return this._err("Give the scene a name.");
         if (orig !== sc.name && (this.data.scenes || []).some((x) => x.name === sc.name)) return this._err("A scene with that name already exists.");
-        if (!(await this._call({ type: "homepower/scene/save", scene: sc }, (m) => this._err(m)))) return;
+        if (!(await this._call({ type: "homepower/scene/save", scene: sc, new: orig !== sc.name }, (m) => this._err(m)))) return;
         if (orig && orig !== sc.name) await this._call({ type: "homepower/scene/delete", name: orig });
         await this._reload(); return this._closeModal();
       }
@@ -542,7 +552,7 @@ ${esc(where)}</pre></div>`;
         if (!dump) return;
         const a = document.createElement("a");
         a.href = URL.createObjectURL(new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" }));
-        a.download = `homepower-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+        a.download = `homepower-backup-${this._today()}.json`; a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 5000);
         return;
       }

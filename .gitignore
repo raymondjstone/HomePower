@@ -8,3 +8,4 @@ __pycache__/
 
 .coverage
 .coveragerc
+node_modules/

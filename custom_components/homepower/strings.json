@@ -286,7 +286,7 @@
         },
         "device_ids": {
           "name": "Battery IDs (empty = all)",
-          "description": "Battery IDs (empty = all)"
+          "description": "The battery IDs shown as \"Battery ID (for actions)\" in each battery's details in the HomePower panel: one, or several. Leave empty for all batteries. A mistyped ID is refused, not ignored."
         }
       }
     },
@@ -296,7 +296,7 @@
       "fields": {
         "device_ids": {
           "name": "Battery IDs (empty = all)",
-          "description": "Battery IDs (empty = all)"
+          "description": "The battery IDs shown as \"Battery ID (for actions)\" in each battery's details in the HomePower panel: one, or several. Leave empty for all batteries. A mistyped ID is refused, not ignored."
         }
       }
     },

@@ -42,6 +42,11 @@ def _num(lo, hi, unit=None, step=1):
     return sel.NumberSelector(sel.NumberSelectorConfig(**cfg))
 
 
+def _plain(err) -> str:
+    """A settings error names the setting by its key (the panel shows its label instead): here, as words."""
+    return re.sub(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", lambda m: m.group(0).replace("_", " "), str(err))
+
+
 def _dropdown(options, custom=False):
     return sel.SelectSelector(sel.SelectSelectorConfig(options=options, custom_value=custom, mode=sel.SelectSelectorMode.DROPDOWN))
 
@@ -378,7 +383,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                     if new.get(k):
                         new[k] = new[k][:5]
             except SettingsError as err:
-                return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
+                return self.async_abort(reason="invalid", description_placeholders={"error": _plain(err)})
             return self.async_create_entry(data={**self.config_entry.options, **new})
 
         def ent(domains):
@@ -418,7 +423,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                     full["event_entity"] = ", ".join(str(e) for e in ev if e)
                 new = clean({k: ("" if v is None else v) for k, v in full.items()})
             except SettingsError as err:
-                return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
+                return self.async_abort(reason="invalid", description_placeholders={"error": _plain(err)})
             return self.async_create_entry(data={**self.config_entry.options, **new})
 
         def opt(key, default=None):

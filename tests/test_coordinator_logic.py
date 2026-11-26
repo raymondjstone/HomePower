@@ -146,14 +146,20 @@ def test_phone_notification_buttons_pause_and_hand_back():
 
 def test_plan_is_recorded_for_the_chart():
     c = bare()
+    from hp.core.reconcile import Decision
     st = coordinator.DeviceStatus(desired=Desired(Mode.CHARGE, 1500))
+    st.decision = Decision.OK                                     # it was told (sent, or already doing it)
     c._snap.devices["e"] = st
+    watched = coordinator.DeviceStatus(desired=Desired(Mode.CHARGE, 1500))    # monitor-only / paused: decision None, sent nothing
+    c._snap.devices["m"] = watched
     now = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
-    c._record_plan(now, {"e": Actual(online=True, power_w=1400)})
+    c._record_plan(now, {"e": Actual(online=True, power_w=1400), "m": Actual(online=True, power_w=0)})
     st.desired = Desired(Mode.AUTO)
     c._record_plan(now.replace(minute=30), {"e": Actual(online=True, power_w=-200)})
     rows = {r[0][11:16]: r[1:] for r in c.plan_log.view("e", now.replace(minute=40))["rows"]}
     assert rows["12:00"] == [1500, 1400] and rows["12:30"] == [None, -200]
+    mrows = {r[0][11:16]: r[1:] for r in c.plan_log.view("m", now.replace(minute=40))["rows"]}
+    assert mrows["12:00"] == [None, 0]                            # not scored against a plan it never got
 
 
 def test_tariff_drift_alerts_only_when_the_history_disagrees_for_long_enough():
@@ -651,3 +657,39 @@ def test_hand_back_button_and_safe_mode_pause_before_handing_back():
     c._log = lambda *a, **k: None
     asyncio.run(c._on_action(types.SimpleNamespace(data={"action": coordinator.ACTION_HAND_BACK})))
     assert seen == [("pause", True), ("release", True)], seen
+
+
+def test_manual_overrides_are_kept_over_a_restart_and_damaged_or_naive_ones_dropped():
+    from datetime import timedelta
+    from hp.core.models import Desired, Mode
+    c = bare()
+    until = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    c.overrides = {"a": (Desired(Mode.CHARGE, 1500, 80), until), "b": (Desired(Mode.HOLD), until + timedelta(hours=1))}
+    saved = c.dump_overrides()
+    import json
+    back = coordinator.HomePowerCoordinator._load_overrides(json.loads(json.dumps(saved)))
+    assert back == c.overrides
+    damaged = {"x": {"mode": "fly"}, "y": "nonsense", "z": {"mode": "hold", "until": "2026-06-01T12:00:00"},   # no time zone
+               "w": {"mode": "charge", "until": "soon"}, "v": {"mode": "charge", "power_w": "lots", "until": until.isoformat()}}
+    assert coordinator.HomePowerCoordinator._load_overrides({**saved, **damaged}) == c.overrides
+    assert coordinator.HomePowerCoordinator._load_overrides(None) == {} and coordinator.HomePowerCoordinator._load_overrides([1]) == {}
+
+
+def test_an_override_naming_a_monitor_only_battery_is_refused_not_silently_ignored():
+    c = bare()
+    caps = Capabilities(5000, 3000, 3000, 10)
+    c.adapters = [types.SimpleNamespace(config=DeviceConfig("a", "Garage", "anker_e5000_pro", caps, extra={})),
+                  types.SimpleNamespace(config=DeviceConfig("b", "Shed", "anker_e5000_pro", caps, extra={"control_enabled": False}))]
+    c.overrides, c._log = {}, (lambda *a, **k: None)
+    with pytest.raises(ValueError, match="Shed is monitor-only"):
+        c.set_override(["a", "b"], Desired(Mode.HOLD), 10)
+    assert c.overrides == {}                                   # nothing half applied
+    c.set_override(None, Desired(Mode.HOLD), 10)               # "all batteries" still works: the monitor-only one is just not sent anything
+    c.set_override(["a"], Desired(Mode.HOLD), 10)
+    assert set(c.overrides) == {"a", "b"}
+    c.overrides = {}
+    c.manager.safe = True
+    with pytest.raises(ValueError, match="Safe mode is on"):
+        c.set_override(["a"], Desired(Mode.CHARGE), 10)
+    assert c.overrides == {}
+    c.manager.safe = False

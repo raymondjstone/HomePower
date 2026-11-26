@@ -117,17 +117,12 @@ def clean(raw: dict) -> dict:
     if "offpeak_extra" in out:
         parse_windows(out["offpeak_extra"])
     if "offline_after_min" in out and not 1 <= out["offline_after_min"] <= 1440:
-        raise SettingsError("offline after must be 1-1440 minutes")
+        raise SettingsError("offline_after_min must be 1-1440 minutes")
     if "base_load_w" in out and not 0 <= out["base_load_w"] <= 50000:
-        raise SettingsError("base load must be 0-50000 W")
-    if "divert_min_soc" in out and out["divert_min_soc"] > 100:
-        raise SettingsError("percentages must be 0-100")
-    for k in ("notify_low_pct", "cheap_soon_below_pct"):
-        if k in out and out[k] > 100:
-            raise SettingsError("percentages must be 0-100")
-    for k in ("event_charge_pct", "export_keep_pct"):
-        if out.get(k, 0) > 100:
-            raise SettingsError("percentages must be 0-100")
+        raise SettingsError("base_load_w must be 0-50000 W")
+    for k in ("divert_min_soc", "notify_low_pct", "cheap_soon_below_pct", "event_charge_pct", "export_keep_pct"):
+        if out.get(k) is not None and out[k] > 100:
+            raise SettingsError(f"{k} must be 0-100 %")
     if out.get("wear_cost") is not None and out["wear_cost"] < 0:
         raise SettingsError("battery wear cost cannot be negative")
     if "forecast_reserve_pct" in out and out["forecast_reserve_pct"] > 100:

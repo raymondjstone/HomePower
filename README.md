@@ -100,7 +100,7 @@ already doing it, and reads back to confirm. For each battery the first of these
 Then, for batteries nobody has instructed: **peak shaving** and **export limiting**, **hold-back** (reserve role, save for
 peak hours), and finally **hand-back** to the battery's own control. Device limits, charge-level limits and the overall
 caps are applied to whatever was decided. Every decision has a visible reason: the *Why* chip on each battery, and the
-battery's *target* sensor.
+battery's *target* sensor (`paused` while HomePower is paused, `monitor_only` for a battery whose control is off).
 
 ## Schedules
 
@@ -307,7 +307,8 @@ state, so a Home Assistant restart while a battery is held does not lose it.
 
 When no schedule, goal or override needs it any more; when you switch control off for it (monitor-only); when you delete
 it; on **Safe mode**; when HomePower is reloaded, removed or Home Assistant shuts down; after a restart if it was left
-held; from the *Hand back to Auto* button on a phone alert. **Pause** does not hand back: it leaves batteries as they are.
+held; from the *Hand back to Auto* button on a phone alert. **Pause** does not hand back: it leaves batteries as they are
+(except that an Anker X1 is no longer kept alive while paused, so its watchdog returns it to its own control after 10 minutes).
 
 A hand-back that fails (the battery is offline, EcoFlow's cloud refuses or rate-limits it) is retried until it works,
 and a *command failed* alert says so meanwhile. If Home Assistant stops while a battery is held, nothing is handed back
@@ -331,7 +332,8 @@ HomePower left them.
   *Also set the X1's own import and export limits to HomePower's* (Settings): HomePower takes its limits back off, putting
   back what each one had before (an installer's limit, or off), when you clear the limit, turn the option off, switch the
   X1 to monitor-only, delete it or remove HomePower. They are deliberately left in place over a restart or reload, so they
-  still hold while Home Assistant is down, and they stay if the X1 cannot be reached at that moment (the log says so).
+  still hold while Home Assistant is down, and they stay if the X1 cannot be reached at that moment (the log says so; when
+  you delete an X1 that cannot be reached, a Home Assistant notification tells you to check its limits in the Anker app).
   Check them in the app, or with your installer if the limits are part of your grid connection agreement.
 - **EcoFlow app (Ultra / Ultra X):** the backup reserve, and that the energy strategy is still the one you use.
 - **EcoFlow app (STREAM 5000 series):** the backup reserve switch and level, and the operating mode (timer tasks, AI
@@ -380,7 +382,7 @@ battery was "left as it is". EcoFlow's app can take a few minutes to show the se
   entity (a weather alert, for example) is on.
 - **Away mode:** only schedules marked "away" (or "always") apply. Manual, or from a person / tracker / on-off entity.
 - **Manual override:** force a mode on some or all batteries for a set time, with an optional power and stop level. It beats
-  everything else and ends by itself.
+  everything else and ends by itself; a restart of Home Assistant in the meantime does not cancel it.
 - **Scenes:** saved combinations of backup / away / pause and limits. *Normal*, *Holiday*, *Storm coming* and *Hands off*
   come built in; add your own. One tap in the panel, or the `homepower.apply_scene` service.
 
@@ -490,6 +492,9 @@ battery. It has not been tested against a live EcoFlow account.
 | `homepower.away` | Away mode on or off |
 | `homepower.apply_scene` | Switch to a saved scene by name |
 | `homepower.test_control` | Run the control test on a battery and return the result |
+
+Batteries are named by their ID, shown as *Battery ID (for actions)* in each battery's details in the panel; `device_ids`
+takes one ID or a list. A mistyped ID is refused with a message rather than ignored.
 
 **Dashboard card (optional):** `type: custom:homepower-card` shows the home battery. It finds the sensor by itself;
 `entity:`, `title:` and `show_batteries:` are optional.
@@ -649,7 +654,7 @@ HomePower) before deleting; that also deletes its daily backup copies in `homepo
 - **Self-calibrating EcoFlow:** HomePower measures the power an EcoFlow battery really charges at (the median of recent readings while it was told to charge) and plans with that instead of the per-model estimate. A cloud battery gets one cycle to show a command's effect before it counts as unconfirmed, and at most 150 commands a day are sent to each (handing it back to Auto is never blocked). Each battery card can show "Why idle", the main thing in the way, and "Settings changed" with what the EcoFlow app changed.
 - **Plan versus actual:** the Overview shows, per battery, what HomePower told it to do over the last 24 hours (dashed) against what it really did (solid), with a "followed the plan" percentage. A low figure means the battery is not following commands or something else is overriding them. The last 8 days are kept.
 - **Proving EcoFlow control:** every Hold or Charge sent to an EcoFlow battery is watched for ten minutes and logged ("Command results" on its card, `command_traces` in Diagnostics): did it react, how fast, the most power seen. After three Charge commands in a row with no effect, HomePower stops sending that battery Charge (a schedule that asks for it leaves the battery on its own control, and the plan notes it) and says so; a Test control that sees it charge turns Charge back on. Test control now checks Hold first, then Charge. Until a battery has passed Test control, its first command waits for you to press "Allow first command" on its card. Each last command shows the inputs behind it (reason, charge level, price, grid). Alert notifications on a phone (a `notify.mobile_app_...` service) carry "Pause HomePower" and "Hand back to Auto" buttons.
-- **Safe mode** (header button): hands every battery back to its own control, then sends nothing until you leave it. Pause only stops new commands and leaves batteries as they are.
+- **Safe mode** (header button): hands every battery back to its own control, then sends nothing until you leave it. Pause only stops new commands and leaves batteries as they are (an X1 returns to its own control through its watchdog after 10 minutes).
 - **EcoFlow control report** (Insights): per battery, how many commands worked, the average reaction time, the real charge rate, how well it followed the plan, and a plain verdict. The wait before a slow battery counts as "not following commands" adapts to how long it has really taken to react (up to four retries).
 - **Warnings on save:** saving a schedule or goal still works, but you are told if it cannot do anything (a battery that cannot discharge), if its power setting is ignored (EcoFlow picks its own rate), or if its target is not above the battery's minimum charge.
 - **Price changes:** if the cheap hours in the price history differ clearly from the ones in Settings for six hours, you get an alert to update them. **Keep stored energy for dearer hours** (Settings, off by default) holds a battery while the day plan (see [Paid export](#paid-export)) keeps its energy for dearer half-hours later, up to when buying it back is cheapest, but not while solar is charging it. Without prices for the coming hours it holds when a clearly dearer price is coming within six hours. When several batteries compete for a limited import, the one with the better measured efficiency gets the cheapest slots.
@@ -693,7 +698,8 @@ views, setup check, debug file and hardware report) and `coord_base.py` (what th
 `manager.py`, `manager_details.py` (registers, battery settings, the details sheet) and `manager_backup.py`; a loaded
 HomePower keeps them on its config entry (`runtime.py`). Checks against
 the real Home Assistant classes are in `tests/ha_harness/` (see its README; `python tests/ha_harness/run_all.py` runs them
-all, and GitHub Actions runs them on each push). See [docs/DESIGN.md](docs/DESIGN.md).
+all, and GitHub Actions runs them on each push; a release is published only when the whole suite, these included, passes).
+See [docs/DESIGN.md](docs/DESIGN.md).
 Other checks: `tests/*.mjs` and `tests/panel_dom/*.mjs` run the panel in jsdom (`node tests/panel_features_smoke.mjs`; GitHub
 Actions runs them on each push too), `tests/panel_dom/panel_browser.mjs` runs it in real headless Chromium (needs
 `npm install playwright`), and `tests/test_ecoflow_modbus.py` runs the local EcoFlow driver against a

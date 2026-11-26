@@ -131,7 +131,9 @@ export default (U) => {
     const devs = this.data.devices;
     const html = `<div class="overlay" data-close-bg><div class="modal" role="dialog" aria-label="Manual override">
       <h2>Manual override</h2><p class="lead">Take control for a while. This beats any schedule, then HomePower goes back to normal.</p>
-      <h3>Batteries</h3><div class="checks">${devs.map((d) => `<label><input type="checkbox" name="o-dev" value="${esc(d.device_id)}" ${d.device_id === did ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div>
+      <h3>Batteries</h3><div class="checks">${devs.map((d) => d.control_enabled === false
+        ? `<label title="Control is off for this battery: HomePower only reads it"><input type="checkbox" name="o-dev" value="${esc(d.device_id)}" disabled>${esc(d.name)} (monitor only)</label>`
+        : `<label><input type="checkbox" name="o-dev" value="${esc(d.device_id)}" ${d.device_id === did ? "checked" : ""}>${esc(d.name)}</label>`).join("")}</div>
       <h3>What to do</h3>
       <div class="seg-pick">${Object.entries(MODES).map(([k, m]) => `<label style="--c:${m.color}"><input type="radio" name="o-mode" value="${k}" ${k === "charge" ? "checked" : ""}><ha-icon icon="${m.icon}" style="color:${U.INK[k] || m.color}"></ha-icon><span>${m.label}</span></label>`).join("")}</div>
       <div class="f"><label>Power (W) — for charge / discharge</label><input type="number" id="o-pw" min="0" step="100" value="3000"></div>

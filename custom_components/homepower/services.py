@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError, Unauthorized
+from homeassistant.helpers import config_validation as cv
 
 from ._schema import vol
 from .const import DOMAIN
@@ -57,7 +58,11 @@ def async_register(hass: HomeAssistant) -> None:
     async def clear_override(call: ServiceCall) -> None:
         m = _mgr(hass)
         if m and m.coordinator:
-            m.coordinator.clear_override(call.data.get("device_ids"))
+            ids = call.data.get("device_ids")
+            known = {a.config.device_id for a in m.coordinator.adapters}
+            if ids and (unknown := sorted(set(ids) - known)):     # as for override: a mistyped id must not silently leave one forced
+                raise ServiceValidationError(f"no battery called {', '.join(unknown)} (known: {', '.join(sorted(known)) or 'none'})")
+            m.coordinator.clear_override(ids)
             await m.coordinator.async_request_refresh()
 
     async def backup(call: ServiceCall) -> None:
@@ -77,7 +82,12 @@ def async_register(hass: HomeAssistant) -> None:
 
     async def test_control(call: ServiceCall):
         m = _mgr(hass)
-        return await m.coordinator.test_control(call.data["device_id"]) if m and m.coordinator else {"ok": False}
+        if not m or not m.coordinator:
+            return {"ok": False}
+        known = {a.config.device_id for a in m.coordinator.adapters}
+        if call.data["device_id"] not in known:     # the response is optional: an automation not reading it must still hear of a typo
+            raise ServiceValidationError(f"no battery called {call.data['device_id']} (known: {', '.join(sorted(known)) or 'none'})")
+        return await m.coordinator.test_control(call.data["device_id"])
 
     hass.services.async_register(DOMAIN, "backup", admin(backup), schema=vol.Schema({vol.Required("enabled"): bool}))
     hass.services.async_register(DOMAIN, "apply_scene", admin(scene), schema=vol.Schema({vol.Required("name"): str}))
@@ -89,7 +99,7 @@ def async_register(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN, "override", admin(override),
         schema=vol.Schema({
-            vol.Optional("device_ids"): [str],
+            vol.Optional("device_ids"): vol.All(cv.ensure_list, [cv.string]),   # one id, or a list of them
             vol.Required("mode"): vol.In([m.value for m in Mode]),
             vol.Optional("power_w"): vol.All(vol.Coerce(int), vol.Range(min=0, max=50000)),
             vol.Optional("target_soc"): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
@@ -98,5 +108,5 @@ def async_register(hass: HomeAssistant) -> None:
     )
     hass.services.async_register(
         DOMAIN, "clear_override", admin(clear_override),
-        schema=vol.Schema({vol.Optional("device_ids"): [str]}),
+        schema=vol.Schema({vol.Optional("device_ids"): vol.All(cv.ensure_list, [cv.string])}),   # one id, or a list of them
     )

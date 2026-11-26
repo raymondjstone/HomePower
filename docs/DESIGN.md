@@ -12,6 +12,8 @@
 - **Fail safe.** An offline battery gets no writes; a failure in one battery, one step or one view never stops the others.
 - **Hand back exactly what was there.** Before its first write HomePower reads and saves the battery's own settings and
   puts exactly those back; when the original is unknown it leaves the battery alone rather than write a default.
+- **Nothing lands after a hand-back.** Sending commands and handing back take the same lock; a cycle re-checks pause,
+  safe mode and unload before it sends, and safe mode / the hand-back button pause first, then hand back.
 - **Export protection is not a substitute for certified G100 hardware.**
 
 ## Layers

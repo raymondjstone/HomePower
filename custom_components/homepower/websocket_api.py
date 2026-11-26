@@ -108,13 +108,13 @@ def _guard(fn):
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "homepower/device/save", vol.Required("device"): dict}
+    {vol.Required("type"): "homepower/device/save", vol.Required("device"): dict, vol.Optional("new", default=False): bool}
 )
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
 async def ws_save_device(hass, msg):
-    return await _mgr(hass).save_device(msg["device"])
+    return await _mgr(hass).save_device(msg["device"], new=msg["new"])
 
 
 @websocket_api.websocket_command(
@@ -233,13 +233,15 @@ async def ws_delete_device(hass, msg):
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "homepower/schedule/save", vol.Required("schedule"): dict}
+    {vol.Required("type"): "homepower/schedule/save", vol.Required("schedule"): dict, vol.Optional("new", default=False): bool}
 )
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
 async def ws_save_schedule(hass, msg):
     mgr = _mgr(hass)
+    if msg["new"] and str(msg["schedule"].get("id") or "").strip() in mgr.schedules:     # added (or renamed to) a name in use
+        raise ValidationError("A schedule with that name already exists.")
     saved = await mgr.save_schedule(msg["schedule"])
     return {**saved, "warnings": mgr.warnings_for("schedule", saved)}
 
@@ -417,12 +419,14 @@ async def ws_confirm(hass, msg):
     return {}
 
 
-@websocket_api.websocket_command({vol.Required("type"): "homepower/goal/save", vol.Required("goal"): dict})
+@websocket_api.websocket_command({vol.Required("type"): "homepower/goal/save", vol.Required("goal"): dict, vol.Optional("new", default=False): bool})
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
 async def ws_save_goal(hass, msg):
     mgr = _mgr(hass)
+    if msg["new"] and str(msg["goal"].get("id") or "").strip() in mgr.goals:
+        raise ValidationError("A goal with that name already exists.")
     saved = await mgr.save_goal(msg["goal"])
     return {**saved, "warnings": mgr.warnings_for("goal", saved)}
 
@@ -496,12 +500,16 @@ async def ws_test(hass, msg):
     return await _coord(hass).test_control(msg["device_id"])
 
 
-@websocket_api.websocket_command({vol.Required("type"): "homepower/scene/save", vol.Required("scene"): dict})
+@websocket_api.websocket_command({vol.Required("type"): "homepower/scene/save", vol.Required("scene"): dict,
+                                  vol.Optional("new", default=False): bool})
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
 async def ws_save_scene(hass, msg):
-    return await _mgr(hass).save_scene(msg["scene"])
+    mgr = _mgr(hass)
+    if msg["new"] and str(msg["scene"].get("name") or "").strip() in mgr.scenes:     # added (or renamed to) a name in use
+        raise ValidationError("A scene with that name already exists.")
+    return await mgr.save_scene(msg["scene"])
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/scene/delete", vol.Required("name"): str})

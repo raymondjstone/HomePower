@@ -138,8 +138,9 @@ export default (U) => {
     const mode = lv.mode && MODES[lv.mode];
     const want = lv.desired_mode && MODES[lv.desired_mode];
     const chips = [];
-    if (want) chips.push(`<span class="chip m" style="background:${want.color};color:${U.onFill(want.color)}" title="${esc(want.help)}">Target: ${want.label}${lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : ""}</span>`);
-    else if (r.online) chips.push(`<span class="chip">Device's own control</span>`);
+    const sent = d.control_enabled !== false && !this.data.paused;   // monitor only or paused: nothing is sent, so no "Target" (their own chips say why)
+    if (want && sent) chips.push(`<span class="chip m" style="background:${want.color};color:${U.onFill(want.color)}" title="${esc(want.help)}">Target: ${want.label}${lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : ""}</span>`);
+    else if (r.online && !this.data.paused) chips.push(`<span class="chip">Device's own control</span>`);
     if (r.stale || r.waiting) chips.push(this._linkChip(r));
     if (mode) chips.push(`<span class="chip"><span class="dot" style="background:${mode.color}"></span>Mode: ${mode.label}</span>`);
     const room = ((this.live.solar_room || {}).batteries || {})[d.device_id];

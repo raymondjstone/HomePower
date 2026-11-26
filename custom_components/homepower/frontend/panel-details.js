@@ -181,7 +181,12 @@ This is sent to the battery now.`)) return;
       ["Temperature", lv.temp_c != null ? lv.temp_c.toFixed(1) + " °C" : null],
       ["Battery pack readings", (A.pack_v || []).length ? esc(A.pack_v.join(", ")) + " (raw, one per pack)" : null],
       ["Software version", t(lv.firmware)], ["Mode it reports", t((MODES[lv.mode] || {}).label || lv.mode)],
-      ["HomePower wants", lv.desired_mode ? esc((MODES[lv.desired_mode] || {}).label || lv.desired_mode) + (lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : "") : "Nothing (the battery runs itself)"],
+      ["HomePower wants", (() => {
+        const plan = lv.desired_mode ? esc((MODES[lv.desired_mode] || {}).label || lv.desired_mode) + (lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : "") : null;
+        const idle = d.control_enabled === false ? "monitor only" : this.data.paused ? "HomePower is paused" : null;   // then nothing is sent to it
+        if (idle) return `Nothing: ${idle}` + (plan && lv.desired_mode !== "auto" ? ` (the plan would say ${plan})` : "");
+        return plan || "Nothing (the battery runs itself)";
+      })()],
       ["Because", t(lv.reason)], ["Why idle", lv.why && !lv.last_error ? esc(lv.why) : null],
       ["Battery's own limits", L ? `charges to ${L[0]}%, stops discharging at ${L[1]}%${L[3] ? `, backup reserve ${L[2]}%` : ""}` : null],
       ["Charges at (measured)", lv.measured_charge_w ? fmtW(lv.measured_charge_w) : null],
@@ -192,6 +197,7 @@ This is sent to the battery now.`)) return;
       ["Last write failed", t(lv.last_error)],
       ["Charge command", lv.charge_verdict === "unreliable" ? "Not working (no effect)" : null],
       ["Command results", (lv.traces || []).length ? (lv.traces || []).map((x) => esc(`${(x.at || "").slice(5, 16).replace("T", " ")} ${x.mode}: ${x.ok ? "reacted after " + x.reaction_s + " s" : "no effect"}, peak ${x.peak_w} W`)).join("<br>") : null],
+      ["Battery ID (for actions)", `<code>${esc(id)}</code>`],
       ["Settings changed", (lv.setting_changes || []).length ? lv.setting_changes.map((c) => esc(`${c.at} ${c.key}: ${c.from} → ${c.to}`)).join("<br>") : null],
     ]);
     const loading = `<div class="sub" style="font-size:13px;color:var(--secondary-text-color)">Loading…</div>`;

@@ -30,13 +30,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
          HomeBattery(coord, entry), DailyShare(coord, entry, "self_consumption", "Solar self-consumption today"),
          DailyShare(coord, entry, "cheap_share", "Cheap-rate share of grid import today")])
     known: set[str] = set()
+    names: dict[str, str] = {}              # each battery's name when its sensors were made, to follow a rename
+    made: dict[str, list] = {}
+
+    def _rename(did: str, old: str, new: str) -> None:
+        """Renamed in the panel: its sensors' names follow straight away (their entity ids stay, so automations keep working)."""
+        for e in made.get(did, []):
+            if isinstance(e._attr_name, str) and e._attr_name.startswith(old):
+                e._attr_name = new + e._attr_name[len(old):]
+                if e.hass is not None:
+                    e.async_write_ha_state()
 
     def _sync() -> None:
         known.intersection_update({a.config.device_id for a in coord.adapters})   # a re-added battery gets fresh sensors
+        for a in coord.adapters:
+            did, n = a.config.device_id, a.config.name
+            if did in known and names.get(did) not in (None, n):
+                _rename(did, names[did], n)
+            names[did] = n
         new = [a.config for a in coord.adapters if a.config.device_id not in known]
         known.update(c.device_id for c in new)
         ents = []
         for c in new:
+            first = len(ents)
             ents += [BatterySoc(coord, entry, c.device_id, c.name), BatteryDevicePower(coord, entry, c.device_id, c.name),
                      BatterySolarPower(coord, entry, c.device_id, c.name),
                      BatteryTarget(coord, entry, c.device_id, c.name),
@@ -47,6 +63,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
                 ents.append(PvTotal(coord, entry, c.device_id, c.name))
                 for i in range(8):
                     ents += [PvString(coord, entry, c.device_id, c.name, i, kind) for kind in ("voltage", "current", "power")]
+            made[c.device_id], names[c.device_id] = ents[first:], c.name
         add(ents)
 
     _sync()
@@ -118,7 +135,12 @@ class BatteryTarget(_Base):
         st = self.coordinator._snap.devices.get(self._did)
         if not st:
             return None
-        return "paused" if self.coordinator.paused else (st.desired.mode.value if st.desired else "unmanaged")
+        if self.coordinator.paused:
+            return "paused"
+        a = next((x for x in self.coordinator.adapters if x.config.device_id == self._did), None)
+        if a is not None and not a.config.extra.get("control_enabled", True):
+            return "monitor_only"           # what the plan would want is never sent to it: don't show it as if it were
+        return st.desired.mode.value if st.desired else "unmanaged"
 
     @property
     def extra_state_attributes(self):

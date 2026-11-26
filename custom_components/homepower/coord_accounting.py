@@ -104,7 +104,9 @@ class AccountingMixin:
             st = self._snap.devices.get(did)
             want = st.desired if st else None
             planned = None
-            if want is not None and want.mode is not Mode.AUTO:
+            # only what it was actually told: monitor-only, paused or under test it is sent nothing (decision None), so it is
+            # not scored against a plan it never got
+            if want is not None and want.mode is not Mode.AUTO and st.decision is not None:
                 planned = {Mode.CHARGE: 1, Mode.DISCHARGE: -1}.get(want.mode, 0) * float(want.power_w or 0)
             self.plan_log.add(now, did, planned, act.power_w if act.online else None)
 

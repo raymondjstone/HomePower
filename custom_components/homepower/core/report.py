@@ -31,12 +31,20 @@ def _name(d: dict) -> str:
     return d.get("name") or d.get("device_id") or "a battery"
 
 
+def _monitor_only(row: dict, by_id: dict) -> list[str]:
+    """Batteries picked by name that HomePower only reads (control off): the schedule or goal does nothing to them."""
+    return [f"{_name(by_id[i])} is monitor-only (control is off in its battery settings), so this does nothing to it until you turn control on."
+            for i in (row.get("device_ids") or []) if i in by_id and by_id[i].get("control_enabled") is False]
+
+
 def schedule_warnings(s: dict, devices: list[dict]) -> list[str]:
     """Things worth telling the user about right after they save a schedule (it is still saved)."""
     by_id = {d["device_id"]: d for d in devices}
     picked = [by_id[i] for i in (s.get("device_ids") or []) if i in by_id] or list(by_id.values())
-    mode, out = s.get("mode"), []
+    mode, out = s.get("mode"), _monitor_only(s, by_id)
     for d in picked:
+        if d.get("control_enabled") is False:
+            continue
         modes = set(d.get("supported_modes") or [])
         if mode in ("charge", "discharge", "hold") and modes and mode not in modes:
             out.append(f"{_name(d)} cannot {mode} on command, so this schedule will not do anything to it.")
@@ -53,9 +61,9 @@ def schedule_warnings(s: dict, devices: list[dict]) -> list[str]:
 def goal_warnings(g: dict, devices: list[dict]) -> list[str]:
     by_id = {d["device_id"]: d for d in devices}
     picked = [by_id[i] for i in (g.get("device_ids") or []) if i in by_id] or list(by_id.values())
-    out = []
-    able = [d for d in picked if "charge" in set(d.get("supported_modes") or ["charge"])]
-    if picked and not able:
+    out = _monitor_only(g, by_id)
+    able = [d for d in picked if "charge" in set(d.get("supported_modes") or ["charge"]) and d.get("control_enabled") is not False]
+    if any(d.get("control_enabled") is not False for d in picked) and not able:
         out.append("None of the batteries this goal covers can charge on command, so it cannot be met.")
     for d in able:
         floor = d.get("min_soc")

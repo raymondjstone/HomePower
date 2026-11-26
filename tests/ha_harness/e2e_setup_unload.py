@@ -56,7 +56,20 @@ async def main():
     from hp.drivers.modbus import to_i32
     print("service  : setpoint", to_i32(dev.hold[10071], dev.hold[10072], "big"))
     assert to_i32(dev.hold[10071], dev.hold[10072], "big") == -1200
-    await hass.services.async_call(DOMAIN, "clear_override", {}, blocking=True)
+    try:                                                  # a mistyped id is refused, and the override stays (it is not quietly kept forced)
+        await hass.services.async_call(DOMAIN, "clear_override", {"device_ids": ["A"]}, blocking=True)
+        raise AssertionError("clearing an unknown battery must say so")
+    except ServiceValidationError as err:
+        assert "no battery called A" in str(err) and "a" in coord.overrides
+    await hass.services.async_call(DOMAIN, "override", {"mode": "hold", "minutes": 5, "device_ids": "a"}, blocking=True)   # a single id, as YAML often has it
+    assert coord.overrides["a"][0].mode.value == "hold"
+    await hass.services.async_call(DOMAIN, "clear_override", {"device_ids": "a"}, blocking=True)
+    assert "a" not in coord.overrides
+    try:
+        await hass.services.async_call(DOMAIN, "test_control", {"device_id": "nope"}, blocking=True)
+        raise AssertionError("testing an unknown battery must say so")
+    except ServiceValidationError as err:
+        assert "no battery called nope" in str(err)
     await hass.services.async_call(DOMAIN, "pause", {}, blocking=True); assert mgr.paused
     await hass.services.async_call(DOMAIN, "resume", {}, blocking=True); assert not mgr.paused
     res = await hass.services.async_call(DOMAIN, "test_control", {"device_id": "a"}, blocking=True, return_response=True)

@@ -17,17 +17,11 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        python-version: ["3.13", "3.14"]   # Home Assistant 2026.3+ runs on Python 3.14
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: python -m pip install pytest pillow pyyaml
-      - run: python -m pytest -q
+    # the whole Tests workflow: unit tests on Python 3.13 and 3.14, the checks against the oldest and newest real Home
+    # Assistant, and the panel tests, so a release never ships something only the separate Tests run caught
+    uses: ./.github/workflows/tests.yml
+    permissions:
+      contents: read      # the tests only read the code; writing is for the release job alone
 
   hassfest:
     runs-on: ubuntu-24.04

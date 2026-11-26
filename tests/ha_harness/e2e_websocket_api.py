@@ -74,6 +74,11 @@ async def main():
     await must("homepower/schedule/save", schedule={"id": "S1", "start": "23:30", "end": "07:30", "mode": "charge", "power_w": 2000, "presence": "any", "total_power_w": None})
     await must("homepower/schedule/save", schedule={"id": "S2", "start": "23:30", "end": "07:30", "mode": "discharge", "power_w": 900})
     await must("homepower/goal/save", goal={"id": "G", "target_soc": 90, "by": "07:00", "days": [0, 1, 2, 3, 4, 5, 6], "use_forecast": True})
+    # adding (new) a schedule or goal under a name in use is refused; the existing one is kept
+    dup = await call("homepower/schedule/save", new=True, schedule={"id": "S1", "start": "01:00", "end": "02:00", "mode": "hold"})
+    assert dup[0] == "err" and "already exists" in str(dup) and mgr.schedules["S1"]["mode"] == "charge", dup
+    dup = await call("homepower/goal/save", new=True, goal={"id": "G", "target_soc": 50, "by": "06:00"})
+    assert dup[0] == "err" and "already exists" in str(dup) and mgr.goals["G"]["target_soc"] == 90, dup
     s = await must("homepower/settings/save", settings={"price_peak": "30", "price_offpeak": "7.5", "offpeak_start": "23:30", "offpeak_end": "05:30",
                                                           "peak_shaving": True, "load_rules": [{"entity": "sensor.ev", "above_w": "1000", "block": "discharge"}]})
     assert s["price_peak"] == 30.0 and coord.settings.engine.peak_shaving
@@ -161,6 +166,10 @@ async def main():
     await must("homepower/schedule/delete", schedule_id="S2")
     bad = await call("homepower/device/save", device={"device_id": "x", "name": "X", "kind": "anker_e5000_pro", "connection": {}})
     assert bad[0] == "err", bad
+    # adding (new) a battery whose id is taken is refused: the existing one is not overwritten
+    name_before = mgr.devices["a"]["name"]
+    dup = await call("homepower/device/save", new=True, device={"device_id": "a", "name": "Other", "kind": "anker_e5000_pro", "connection": conn_cfg})
+    assert dup[0] == "err" and "already exists" in str(dup) and mgr.devices["a"]["name"] == name_before, dup
     # live subscription pushes JSON-serialisable events
     handler, schema = cmds["homepower/subscribe"]
     out.pop("r", None); handler(hass, conn, {"id": 999, "type": "homepower/subscribe"} if schema is False else schema({"id": 999, "type": "homepower/subscribe"}))
@@ -194,6 +203,8 @@ async def main():
     assert mgr.away and coord.settings.engine.import_limit_w == 5000
     r = await call("homepower/scene/apply", name="missing"); assert r[0] == "err", r
     r = await call("homepower/scene/save", scene={"name": ""}); assert r[0] == "err", r
+    r = await call("homepower/scene/save", new=True, scene={"name": "WS scene", "backup": True})
+    assert r[0] == "err" and "already exists" in str(r) and mgr.scenes["WS scene"].get("away") is True, r
     await must("homepower/scene/apply", name="Normal"); assert not mgr.away
     dump = await must("homepower/export")
     assert dump["homepower_export"] == 1 and dump["devices"] and not dump["includes_secrets"]

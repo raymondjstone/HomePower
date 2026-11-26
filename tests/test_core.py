@@ -84,3 +84,15 @@ def test_materially_different_bypasses_cooldown_only_for_real_changes():
     assert md(a, Desired(Mode.CHARGE, 1000)) and md(a, Desired(Mode.CHARGE, 2500))
     assert not md(Desired(Mode.AUTO), Desired(Mode.AUTO))
     assert md(Desired(Mode.CHARGE, None), Desired(Mode.CHARGE, 500))
+
+
+def test_schedules_and_goals_naming_a_monitor_only_battery_say_it_does_nothing_to_it():
+    from core.report import goal_warnings, schedule_warnings
+    devs = [{"device_id": "a", "name": "Garage", "min_soc": 10, "supported_modes": ["charge", "hold"]},
+            {"device_id": "b", "name": "Shed", "min_soc": 10, "supported_modes": ["charge", "hold"], "control_enabled": False}]
+    w = schedule_warnings({"mode": "charge", "device_ids": ["b"], "target_soc": 5}, devs)
+    assert w == ["Shed is monitor-only (control is off in its battery settings), so this does nothing to it until you turn control on."]
+    assert schedule_warnings({"mode": "charge", "device_ids": []}, devs) == []           # "all batteries": monitor-only ones are expected
+    g = goal_warnings({"target_soc": 80, "device_ids": ["b"]}, devs)
+    assert len(g) == 1 and "Shed is monitor-only" in g[0]                               # not also "none can charge on command"
+    assert goal_warnings({"target_soc": 80, "device_ids": ["a"]}, devs) == []
