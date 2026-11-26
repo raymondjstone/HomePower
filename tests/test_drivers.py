@@ -1753,3 +1753,22 @@ def test_live_messages_after_stop_or_with_the_loop_closed_are_dropped_quietly():
     live.stop()
     made[0].on_message(None, None, msg)                   # stopped: a late message is not delivered to the old drivers
     assert len(live.loop.sent) == 1
+
+
+def test_a_generic_set_point_that_does_not_fit_is_refused_not_wrapped_round():
+    writes = []
+
+    class Client:
+        async def write_multiple(self, addr, values):
+            writes.append((addr, values))
+
+    mp = {"soc": {"addr": 1}, "power": {"addr": 2, "type": "i16"},
+          "setpoint": {"addr": 10, "scale": 0.1}, "mode": {"addr": 11, "control_value": 3, "auto_value": 0}}
+    drv = GenericModbusDriver(DeviceConfig("g", "G", "modbus_map", Capabilities(10000, 5000, 5000, 10),
+                                           extra={"connection": {"host": "x", "map": mp}}), client=Client())
+    assert drv.map["setpoint"]["type"] == "i16"            # a set point has a sign, also when the type is left out
+    with pytest.raises(ValueError):                        # 5000 W in 0.1 W steps is 50000: as 16 bits that reads as charging
+        asyncio.run(drv.apply(Desired(Mode.DISCHARGE, 5000)))
+    assert writes == []                                    # nothing written, not even the control mode
+    asyncio.run(drv.apply(Desired(Mode.CHARGE, 3000)))
+    assert writes == [(11, [3]), (10, [(-30000) & 0xFFFF])]
