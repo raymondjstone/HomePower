@@ -252,7 +252,8 @@ export default (U) => {
     if (r.missing === "forecast" || r.forecast_kwh == null) return "No solar forecast found, so solar is counted as zero and batteries charge fully. Add the Forecast.Solar or Solcast integration (Settings > Devices & services > Add integration).";
     if (r.missing === "sun") return "Sunrise and sunset could not be worked out: check your home location in Home Assistant's settings.";
     const b = Object.values(r.batteries || {}).map((x) => `${x.name}: up to ${x.ceiling}% (${x.solar_kwh} kWh of solar)`).join("; ");
-    return `Forecast for ${r.day}: ${r.forecast_kwh} kWh, sunrise ${r.sunrise}, sunset ${r.sunset}. Charging ends ${r.charge_ends}. ${b}. Solar is shared between the batteries with panels by capacity; the base load by all batteries' capacity.`;
+    const pct = (this.live.solar_forecast || {}).use_pct;
+    return `Forecast for ${r.day}: ${r.forecast_kwh} kWh${pct != null && pct !== 100 ? ` (${+pct}% of the forecast)` : ""}, sunrise ${r.sunrise}, sunset ${r.sunset}. Charging ends ${r.charge_ends}. ${b}. Solar is shared between the batteries with panels by capacity; the base load by all batteries' capacity.`;
   },
 
   _forecastReserveText() {

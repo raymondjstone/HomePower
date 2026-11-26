@@ -189,6 +189,7 @@
           "offpeak_start": "Cheap rate starts",
           "offpeak_end": "Cheap rate ends",
           "forecast_entity": "Tomorrow's solar forecast (kWh)",
+          "forecast_use_pct": "Use this much of the solar forecast (%)",
           "backup_reserve_pct": "Backup reserve (%)",
           "storm_entity": "Turn backup on while this is on",
           "away_entity": "Away entity",

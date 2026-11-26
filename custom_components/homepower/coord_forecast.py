@@ -99,7 +99,7 @@ class ForecastMixin:
     def _note_solar(self, now: datetime) -> None:
         """Each cycle: today's forecast total (kept as first seen) and the latest hourly profiles, for forecast-vs-actual."""
         today = now.date().isoformat()
-        fc = self._forecast_by_day(now)
+        fc = self._forecast_as_given(now)       # kept as given, to be compared with what really came
         total = fc.get(today)
         if total is None and self.solar_hours.get(today):
             total = sum(self.solar_hours[today])
@@ -125,15 +125,15 @@ class ForecastMixin:
         fc, hours = self._forecast_by_day(now), self.solar_hours.get(today)
         total = fc.get(today)
         if total is None and hours:
-            total = round(sum(hours), 2)
+            total = round(self._used_kwh(sum(hours)), 2)
         if total is None and fc.get(tomorrow) is None:
             return None
         measured = bool(self.manager.pv_seen)
         return {"today_kwh": None if total is None else round(total, 2),
                 "tomorrow_kwh": None if fc.get(tomorrow) is None else round(fc[tomorrow], 2),
-                "remaining_kwh": remaining_kwh(hours, now),
+                "remaining_kwh": remaining_kwh([self._used_kwh(h) for h in hours] if hours else None, now),
                 "so_far_kwh": round((self.daily.days.get(today) or {}).get("pv", 0.0), 2) if measured else None,
-                "source": self.forecast_source}
+                "source": self.forecast_source, "use_pct": self.settings.forecast_use_pct}
 
     def solar_comparison(self, days: int = 30, day: str | None = None) -> dict:
         """Forecast against the solar HomePower measured: the last `days` days, and one day hour by hour (today by default)."""
@@ -149,7 +149,7 @@ class ForecastMixin:
             for r in rows[now.hour + 1:]:
                 r["actual"] = None              # hours still to come have nothing measured yet (not "0 kWh")
         return {"days": compare_days(self.solar_log, actual, today, days), "day": day,
-                "hours": rows, "measured": measured, "source": self.forecast_source}
+                "hours": rows, "measured": measured, "source": self.forecast_source, "use_pct": self.settings.forecast_use_pct}
 
     def _kwh(self, entity_id: str) -> float | None:
         st = self.hass.states.get(entity_id)
@@ -159,7 +159,16 @@ class ForecastMixin:
             return None
         return v / 1000 if str(st.attributes.get("unit_of_measurement", "")).lower() == "wh" else v
 
+    def _used_kwh(self, kwh: float | None) -> float | None:
+        """A forecast figure as HomePower counts on it (Settings > Solar forecast: how much of the forecast to use)."""
+        pct = self.settings.forecast_use_pct
+        return kwh if kwh is None or pct == 100 else round(kwh * pct / 100, 4)
+
     def _forecast_by_day(self, now: datetime) -> dict[str, float]:
+        """The forecast to plan with: {day: kWh} for today and tomorrow, after the user's percentage."""
+        return {day: self._used_kwh(v) for day, v in self._forecast_as_given(now).items()}
+
+    def _forecast_as_given(self, now: datetime) -> dict[str, float]:
         """Solar forecast kWh for today and tomorrow. The sensor picked in Settings is "tomorrow"; what it said yesterday
         is remembered as today's. Otherwise Forecast.Solar / Solcast are found by themselves."""
         today, tomorrow = now.date().isoformat(), (now.date() + timedelta(days=1)).isoformat()
@@ -217,7 +226,7 @@ class ForecastMixin:
         day = sun[0].date().isoformat()
         forecast = fc.get(day)
         info.update({"day": day, "sunrise": sun[0].strftime("%H:%M"), "sunset": sun[1].strftime("%H:%M"),
-                     "charge_ends": t0.strftime("%H:%M"), "forecast_kwh": forecast})
+                     "charge_ends": t0.strftime("%H:%M"), "forecast_kwh": None if forecast is None else round(forecast, 2)})
         if forecast is None:
             info["missing"] = "forecast"
             return {}
@@ -238,6 +247,23 @@ class ForecastMixin:
                 out[did] = pct
         return out
 
+    @staticmethod
+    def _coming_solar_day(now: datetime) -> str:
+        """The day whose sun is still to come: today before midday, tomorrow after it (the night and morning ahead)."""
+        return (now.date() if now.hour < 12 else now.date() + timedelta(days=1)).isoformat()
+
+    def _sunsets(self, now: datetime) -> dict[str, datetime]:
+        """Sunset today and the next two days (goals can be due up to 36 hours ahead)."""
+        days = (now.date() + timedelta(days=i) for i in range(3))
+        return {d.isoformat(): sun[1] for d in days if (sun := self._sun(d)) is not None}
+
+    def _goal_forecast(self, now: datetime) -> float | None:
+        """The coming day's forecast (today until sunset, then tomorrow), noted with each decision: the sensor picked in
+        Settings or else Forecast.Solar / Solcast, after the user's percentage."""
+        sunset = self._sunsets(now).get(now.date().isoformat())
+        day = self._coming_solar_day(now) if sunset is None else (now.date() + timedelta(days=int(now >= sunset))).isoformat()
+        return self._forecast_by_day(now).get(day)
+
     def _forecast_floor(self, now: datetime) -> int:
         """Settings > Backup: on a day forecast to be dull, batteries are not drained below a set charge. Before midday it
         is today's forecast that counts, after it tomorrow's (the night and morning ahead). No forecast, no floor."""
@@ -246,7 +272,7 @@ class ForecastMixin:
         if not s.forecast_reserve_kwh:
             return 0
         fc = self._forecast_by_day(now)
-        day = (now.date() if now.hour < 12 else now.date() + timedelta(days=1)).isoformat()
+        day = self._coming_solar_day(now)
         kwh = fc.get(day)
         low = kwh is not None and kwh < s.forecast_reserve_kwh
         self.forecast_floor = {"day": day, "forecast_kwh": None if kwh is None else round(kwh, 1), "below_kwh": s.forecast_reserve_kwh,

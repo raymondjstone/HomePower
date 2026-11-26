@@ -117,8 +117,9 @@ export default (U) => {
     const sub = [sf.so_far_kwh != null ? `${k(sf.so_far_kwh)} so far` : null, sf.remaining_kwh != null ? `${k(sf.remaining_kwh)} still to come` : null,
       sf.tomorrow_kwh != null ? `tomorrow ${k(sf.tomorrow_kwh)}` : null].filter(Boolean).join(" · ");
     const src = { forecast_solar: "Forecast.Solar", solcast_solar: "Solcast" }[sf.source] || "your solar forecast";
+    const pct = sf.use_pct != null && sf.use_pct !== 100 ? ` (${+sf.use_pct}% of its figures, as set in Settings)` : "";
     return tile("Solar forecast today", sf.today_kwh != null ? k(sf.today_kwh) : "–", esc(sub || src))
-      .replace('<div class="card tile"', `<div class="card tile" title="From ${esc(src)}. Forecast against what really came: Insights."`);
+      .replace('<div class="card tile"', `<div class="card tile" title="From ${esc(src)}${pct}. Forecast against what really came: Insights."`);
   },
 
   _ring(soc, size = 96) {

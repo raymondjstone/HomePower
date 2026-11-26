@@ -18,7 +18,7 @@ from .core.settings import DEFAULTS, SettingsError, clean
 from .runtime import running_manager
 
 FLOW_SETTING_KEYS = ("import_limit_w", "peak_shaving", "export_limit_w", "grid_import_entity", "grid_export_entity", "rates_entity", "price_peak",
-                     "price_offpeak", "offpeak_start", "offpeak_end", "offpeak_auto", "forecast_entity", "backup_reserve_pct", "storm_entity",
+                     "price_offpeak", "offpeak_start", "offpeak_end", "offpeak_auto", "forecast_entity", "forecast_use_pct", "backup_reserve_pct", "storm_entity",
                      "away_entity", "notify_service")
 MONEY_SETTING_KEYS = ("export_price", "export_rates_entity", "export_discharge", "export_keep_pct", "hold_for_dearer", "wear_cost",
                       "event_entity", "event_charge_pct")
@@ -406,6 +406,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             opt("offpeak_start", sel.TimeSelector()): sel.TimeSelector(),
             opt("offpeak_end", sel.TimeSelector()): sel.TimeSelector(),
             opt("forecast_entity", ent(["sensor"])): ent(["sensor"]),
+            opt("forecast_use_pct", _num(0, 200, "%"), 100): _num(0, 200, "%"),
             opt("backup_reserve_pct", _num(0, 100, "%")): _num(0, 100, "%"),
             opt("storm_entity", ent(["binary_sensor", "input_boolean", "switch"])): ent(["binary_sensor", "input_boolean", "switch"]),
             opt("away_entity", ent(["binary_sensor", "input_boolean", "person", "device_tracker"])): ent(["binary_sensor", "input_boolean", "person", "device_tracker"]),

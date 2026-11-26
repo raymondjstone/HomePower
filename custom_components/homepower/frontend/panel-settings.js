@@ -53,6 +53,7 @@ export default (U) => {
         { k: "solar_room", t: "bool", label: "Leave room for the solar forecast: charge batteries with panels overnight only as far as the next day's solar allows" },
         num("base_load_w", "House base load (W)", "Your steady use (fridge, standby...). Outside cheap hours it is assumed to come from the batteries, which frees room for solar before the sun is strong. 0 = none."),
         { k: "solar_room_note", t: "note", label: this._solarRoomText() },
+        num("forecast_use_pct", "Use this much of the solar forecast (%)", "100 takes the forecast as it is; 75 plans with three quarters of it. It applies to room for solar, goals, the dull-day reserve and the Overview. Insights compares the forecast as given with what came, which shows what to put here."),
         { k: "forecast_entity", t: "entity", dom: ["sensor"], label: "Tomorrow's solar forecast (kWh) - optional", hint: "Leave empty to use Forecast.Solar or Solcast automatically. If you pick one, use its 'tomorrow' sensor." },
         num("forecast_share", "Share of forecast solar that reaches the battery (0-1)", "", "0.05")]],
       ["Cold weather", "mdi:snowflake-thermometer", [

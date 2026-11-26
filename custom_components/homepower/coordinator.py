@@ -377,7 +377,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             overrides=self._active_overrides(now), grid_w=grid, condition_ok=self._condition_ok, usage_wh=self.profile.expected_wh,
             backup_active=self.backup_active, away=self.away, load_blocks=self._load_blocks(), reserve_floor_pct=self._forecast_floor(now),
             grid_fresh=self.grid_age_s is None or self.grid_age_s <= GRID_STALE_AFTER_S,
-            rates=rates, forecast_kwh=self._forecast_kwh(), cheap_now=self._is_cheap(rates, now, self._price_now(rates, now)),
+            rates=rates, forecast_kwh=self._goal_forecast(now), forecast_by_day=self._forecast_by_day(now), sunsets=self._sunsets(now), cheap_now=self._is_cheap(rates, now, self._price_now(rates, now)),
             devices=[DevIn(self._effective_config(a.config), actuals[a.config.device_id],
                            self._snap.devices[a.config.device_id].release_pending,
                            self._snap.devices[a.config.device_id].guard_held,

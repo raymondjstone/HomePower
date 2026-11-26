@@ -275,6 +275,16 @@ def test_a_string_quiet_at_dusk_is_not_called_dead_through_the_night():
     assert "for 33 min" in pv.warnings("x1", "2026-06-06", t)[3]
 
 
+def test_forecast_use_setting():
+    assert build({}).forecast_use_pct == 100
+    assert clean({"forecast_use_pct": "75"}) == {"forecast_use_pct": 75} and build({"forecast_use_pct": 75}).forecast_use_pct == 75
+    assert build({"forecast_use_pct": 0}).forecast_use_pct == 0
+    assert clean({"forecast_use_pct": ""}) == {"forecast_use_pct": 100}      # a cleared box is not "ignore the solar"
+    for bad in (-5, -0.5, 201, "lots"):
+        with pytest.raises(SettingsError):
+            clean({"forecast_use_pct": bad})
+
+
 def test_offline_after_setting():
     assert build({}).offline_after_min == 5
     assert clean({"offline_after_min": "10"}) == {"offline_after_min": 10} and build({"offline_after_min": 10}).offline_after_min == 10

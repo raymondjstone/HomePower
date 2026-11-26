@@ -553,3 +553,14 @@ def test_solar_only_charging_does_not_count_another_batterys_own_panel_charging_
     b2 = DevIn(b.config, Actual(online=True, soc=50, power_w=1500, mode=Mode.AUTO, pv_w=0), controllable=True)
     r2 = compute(world([a, b2], schedules=[sc], grid_w=-1000, grid_fresh=True, now=datetime(2026, 11, 10, 12, 0, tzinfo=UTC)))
     assert r2.wants["a"].mode is Mode.CHARGE and r2.wants["a"].power_w >= 2000, r2.wants["a"]
+
+
+def test_sunset_decides_which_days_solar_a_goal_counts():
+    from core.engine import _goal_solar_kwh
+    at = lambda d, h: datetime(2026, 11, d, h, 0, tzinfo=UTC)
+    w = world([dev(soc=50)], forecast_by_day={"2026-11-11": 3.0, "2026-11-12": 9.0},
+              sunsets={"2026-11-11": at(11, 17), "2026-11-12": at(12, 17)})
+    assert _goal_solar_kwh(w, at(12, 7)) == 9.0       # due tomorrow morning
+    assert _goal_solar_kwh(w, at(11, 16)) == 3.0      # due before today's sunset
+    assert _goal_solar_kwh(w, at(11, 22)) == 9.0      # due after it: the next day's
+    assert _goal_solar_kwh(w, at(12, 22)) is None     # no forecast that far ahead

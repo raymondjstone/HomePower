@@ -11,7 +11,7 @@ Safety clamps always apply: device limits, SOC limits (with hysteresis), load ru
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 
 from .dayplan import DayPlan
@@ -75,7 +75,9 @@ class World:
     away: bool = False
     load_blocks: set[str] = field(default_factory=set)
     rates: RateTable | None = None
-    forecast_kwh: float | None = None
+    forecast_kwh: float | None = None              # solar forecast for the coming day (today until sunset, then tomorrow)
+    forecast_by_day: dict[str, float] = field(default_factory=dict)   # {ISO date: kWh}, for goals: which day counts depends on the deadline
+    sunsets: dict[str, datetime] = field(default_factory=dict)        # {ISO date: sunset}
     export_better: bool = False                    # selling surplus pays more than storing it and buying cheap later
     cheap_now: bool | None = None                  # is this a cheap-rate period? None = unknown / flat tariff
     usage_wh: Callable[[datetime, float], float | None] | None = None   # learned household use: (from, hours) -> Wh
@@ -160,6 +162,18 @@ def _auto_target(w: World, g: Goal, devs: list[DevIn], deadline: datetime, res: 
     return target
 
 
+def _goal_solar_kwh(w: World, deadline: datetime) -> float | None:
+    """The solar that follows a goal's deadline: that day's when it is due before sunset, else the next day's (None
+    when not known, so nothing is taken off). Without a sunset time, midday decides."""
+    if not w.forecast_by_day:
+        return w.forecast_kwh
+    day = deadline.date()
+    sunset = w.sunsets.get(day.isoformat())
+    if deadline >= sunset if sunset else deadline.hour >= 12:
+        day += timedelta(days=1)
+    return w.forecast_by_day.get(day.isoformat())
+
+
 def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str, str]]:
     out: dict[str, tuple[Desired, str, str]] = {}      # device -> (instruction, reason, source: grid / solar / both)
     if not w.goals:
@@ -184,7 +198,7 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str, str]]:
             target = _auto_target(w, g, devs, deadline, res)
         if g.use_forecast:
             target = adjust_target_for_forecast(
-                target, w.forecast_kwh, sum(d.config.caps.capacity_wh for d in devs) / 1000, w.settings.forecast_share)
+                target, _goal_solar_kwh(w, deadline), sum(d.config.caps.capacity_wh for d in devs) / 1000, w.settings.forecast_share)
         if w.cold_extra_wh > 0:
             pts = boost_points(w.cold_extra_wh, sum(d.config.caps.capacity_wh for d in devs))
             top = g.target_soc if g.auto_target else 100          # an auto target stays within the target the user set

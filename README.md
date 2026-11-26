@@ -247,8 +247,12 @@ more than five minutes old is not used to steer solar charging.
     not limited. The battery card shows "Room for solar: up to X%", and Settings > Solar forecast explains the figures.
   - Without a forecast, solar counts as zero and batteries charge fully; the setup check suggests adding Forecast.Solar or
     Solcast. Only batteries marked as having panels (or that have reported solar power) are limited.
-- **Solar forecast for goals:** a goal can also charge less when tomorrow's forecast is good, using the share of forecast
-  solar that reaches the battery.
+- **How much of the forecast to use** (Settings > Solar forecast, 100% by default): 75% means HomePower plans with three
+  quarters of every forecast figure, for room for solar, goals, the dull-day reserve and the Overview tile. The Insights
+  comparison keeps the forecast as given, so its percentage shows what to set.
+- **Solar forecast for goals:** a goal can also charge less when the solar after its deadline is forecast to be good (a goal
+  due before sunset uses that day's forecast; one due after sunset, the next day's), using the share of forecast solar that reaches the battery. The forecast is the sensor you pick, or
+  else Forecast.Solar / Solcast, found automatically.
 - **Solar string health (Anker X1, EcoFlow STREAM):** each PV input's volts, amps and watts are shown in the battery's details sheet and
   under Insights > Solar strings. Every string is compared with the others on the same inverter, so the weather cancels
   out. An alert is raised when a string that normally produces gives almost nothing for half an hour while the others
@@ -445,7 +449,7 @@ EcoFlow keys are only included if you tick the box.
 | Tariff & prices | Quick-fill presets, rates sensor, rates unit, standard rate, cheap rate, export price, estimate the cheap period from history, cheap-rate start and end, more cheap periods, save the battery for peak hours, keep stored energy for dearer hours, battery wear per kWh, currency symbol |
 | Paid export | Export price sensor, discharge to the grid while exporting pays, the lowest charge to export down to |
 | Grid events | Entities that say when a saving session runs (binary sensor, calendar, the Octopus event entity, input_boolean), charge up before the next one |
-| Solar forecast | Leave room for the solar forecast, house base load, tomorrow's forecast sensor (optional), share that reaches the battery (goals) |
+| Solar forecast | Leave room for the solar forecast, house base load, how much of the forecast to use, tomorrow's forecast sensor (optional), share that reaches the battery (goals) |
 | Backup & away | Backup reserve, reserve by solar forecast, entity that turns backup mode on, away entity |
 | Protect loads | Entities that block charging and/or discharging while busy |
 | Alerts & heads-ups | Extra notify service, battery full, battery low level, cheap-rate-soon warning and its level, daily summary time |

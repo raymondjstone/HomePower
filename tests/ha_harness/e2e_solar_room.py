@@ -57,6 +57,28 @@ async def main():
                           "offpeak_start": hhmm(now - dtm.timedelta(hours=1)), "offpeak_end": hhmm(now + dtm.timedelta(hours=1))})
     await coord._async_update_data()
     room = coord.view()["solar_room"]
+    # --- "use 75% of the forecast": planning and the Overview use 30 of the 40 kWh, the comparison keeps 40
+    full = sum(b["solar_kwh"] for b in room["batteries"].values())
+    # --- the coming day's forecast: today's until sunset, tomorrow's after (also with no sensor picked)
+    morning, evening = dt_util.now().replace(hour=2), dt_util.now().replace(hour=23)
+    kept, found = coord._forecast_as_given, {morning.date().isoformat(): 12.0, (morning.date() + dtm.timedelta(days=1)).isoformat(): 20.0}
+    coord._forecast_as_given = lambda _now: dict(found)           # as Forecast.Solar / Solcast found by themselves would
+    assert not coord.settings.forecast_entity or coord._forecast_kwh() == 40.0
+    assert coord._goal_forecast(morning) == 12.0 and coord._goal_forecast(evening) == 20.0
+    coord._forecast_as_given = kept
+    coord.apply_settings({"price_peak": 30.0, "price_offpeak": 14.0, "base_load_w": 300, "forecast_entity": "sensor.fc_tomorrow",
+                          "offpeak_start": hhmm(now - dtm.timedelta(hours=1)), "offpeak_end": hhmm(now + dtm.timedelta(hours=1)),
+                          "forecast_use_pct": 75})
+    assert coord._goal_forecast(evening) == 30.0
+    await coord._async_update_data()
+    view = coord.view()
+    assert abs(sum(b["solar_kwh"] for b in view["solar_room"]["batteries"].values()) - full * 0.75) < 0.02
+    assert view["solar_forecast"]["tomorrow_kwh"] == 30.0 and view["solar_forecast"]["use_pct"] == 75
+    assert coord._forecast_as_given(dt_util.now())[(now.date() + dtm.timedelta(days=1)).isoformat()] == 40.0
+    coord.apply_settings({"price_peak": 30.0, "price_offpeak": 14.0, "base_load_w": 300, "forecast_entity": "sensor.fc_tomorrow",
+                          "offpeak_start": hhmm(now - dtm.timedelta(hours=1)), "offpeak_end": hhmm(now + dtm.timedelta(hours=1))})
+    await coord._async_update_data()
+    room = coord.view()["solar_room"]
     print("room     :", {k: room.get(k) for k in ("day", "sunrise", "sunset", "charge_ends", "forecast_kwh")}, room["batteries"])
     assert {i["key"]: i for i in coord.setup_check()}["solar_forecast"]["ok"]
     assert room["forecast_kwh"] == 40.0 and room["sunrise"] < room["sunset"]

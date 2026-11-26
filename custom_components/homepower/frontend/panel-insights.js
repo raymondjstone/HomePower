@@ -241,7 +241,7 @@ export default (U) => {
       ${this._fcChart(c.days, { xlab: (r) => md(r.day), title: (r) => (r.day === today ? `${r.day} (today, so far)` : r.day), aria: "Solar forecast and measured solar for each day" })}
       <h3 style="margin:14px 0 4px;font-size:14px">By hour, ${md(c.day)} <span class="durs">${dayBtn(yday, "Yesterday")} ${dayBtn(today, "Today")}</span></h3>
       ${this._fcChart(c.hours, { xlab: (r) => String(r.hour).padStart(2, "0"), title: (r) => `${c.day} ${String(r.hour).padStart(2, "0")}:00`, aria: "Solar forecast and measured solar for each hour" })}
-      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Forecast from ${esc(src)}: by day, the total first seen that day (what the day was planned with); by hour, the last forecast made before each hour. Today's bar is the solar so far, so it is left out of the percentage. Measured solar is what your batteries report, so panels on a separate inverter are not included. ${csv}</p></div>`;
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Forecast from ${esc(src)}: by day, the total first seen that day (what the day was planned with); by hour, the last forecast made before each hour. Today's bar is the solar so far, so it is left out of the percentage. Measured solar is what your batteries report, so panels on a separate inverter are not included.${c.use_pct != null && c.use_pct !== 100 ? ` These charts show the forecast as given; HomePower plans with ${+c.use_pct}% of it (Settings > Solar forecast).` : ""} ${csv}</p></div>`;
   },
 
   _solarStringsCard() {
