@@ -268,7 +268,8 @@ more than five minutes old is not used to steer solar charging.
 - **House import limit:** caps total charging so charging never pushes import over it.
 - **Peak shaving:** with it on, batteries also discharge to keep whole-house import under the limit.
 - **Export limit (G98/G99):** trims discharge, then charges, to stay under an export limit.
-- **Overall caps** on total charge and total discharge power across all batteries.
+- **Overall caps** on total charge and total discharge power across all batteries. A battery that picks its own charge rate only
+  charges when the cap has room for its full rate.
 - **Charge-level limits:** each battery's minimum charge is respected with a margin so it does not flap on and off.
 - **Protect loads:** don't charge and/or discharge while a chosen entity is on or above a power (EV charger, heat pump...).
   The setup check points out the power sensor of a common EV charger (evcc, zappi, Ohme, Wallbox, Easee, Hypervolt,

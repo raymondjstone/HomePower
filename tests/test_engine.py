@@ -564,3 +564,24 @@ def test_sunset_decides_which_days_solar_a_goal_counts():
     assert _goal_solar_kwh(w, at(11, 16)) == 3.0      # due before today's sunset
     assert _goal_solar_kwh(w, at(11, 22)) == 9.0      # due after it: the next day's
     assert _goal_solar_kwh(w, at(12, 22)) is None     # no forecast that far ahead
+
+
+def test_export_limit_charging_carries_on_once_it_has_worked():
+    from dataclasses import replace
+    st = Settings(import_limit_w=None, export_limit_w=3000)
+    d = replace(dev(soc=40, power=2150, mode=Mode.CHARGE, release=True), commanded=Mode.CHARGE)
+    r = compute(world([d], settings=st, grid_w=-2850))        # at the limit only because it is charging
+    assert r.wants["a"].mode is Mode.CHARGE and r.wants["a"].power_w == 2150
+    r = compute(world([d], settings=st, grid_w=-1850))        # the surplus has shrunk: charge that much less
+    assert r.wants["a"].power_w == 1150
+    r = compute(world([d], settings=st, grid_w=0))            # and when it has gone, it is handed back
+    assert r.wants["a"].mode is Mode.AUTO
+
+
+def test_export_limit_trim_stays_while_it_is_needed():
+    st = Settings(import_limit_w=None, export_limit_w=3000)
+    s = [sched(mode=Mode.DISCHARGE, power=2500)]
+    r = compute(world([dev(soc=80, power=-1350)], settings=st, schedules=s, grid_w=-2850))
+    assert r.wants["a"].power_w == 1350 and "trimmed" in r.reasons["a"]
+    r = compute(world([dev(soc=80, power=-1350)], settings=st, schedules=s, grid_w=-1000))   # more room: back up to the schedule
+    assert r.wants["a"].power_w == 2500

@@ -118,7 +118,7 @@ export default (U) => {
       <div class="f"><label>Charge from</label><select id="gl-source">${[["grid", "Grid: the cheapest half-hours before the deadline"], ["solar", "Solar only: spare solar, nothing from the grid"], ["both", "Solar first, then the cheapest grid half-hours for what is still missing"]].map(([v, l]) => `<option value="${v}" ${(g.source || "grid") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
         <span class="hint">Solar charging follows your grid meter and takes only what would otherwise be exported. Between times the battery runs itself as usual.</span></div>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-auto" ${g.auto_target ? "checked" : ""}>Work the target out from my usual use (the target above becomes the maximum; it learns for a few days first)</label>
-      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-forecast" ${g.use_forecast ? "checked" : ""}>Charge less when tomorrow's solar forecast is good (set the forecast entity in Settings)</label>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-forecast" ${g.use_forecast ? "checked" : ""}>Charge less when the coming solar forecast is good (Forecast.Solar, Solcast or the sensor picked in Settings)</label>
       <div class="f"><label>Max total charge power for this goal (W, optional)</label><input type="number" id="gl-max" min="0" step="100" value="${g.max_power_w ?? ""}"></div>
       <div class="err" id="m-err"></div>
       <div class="foot">${isNew ? "<span></span>" : `<button class="btn danger" data-act="del-goal" data-id="${esc(g.id)}">Delete</button>`}

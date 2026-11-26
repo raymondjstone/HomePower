@@ -93,7 +93,7 @@ export default (U) => {
     const tiles = `<div class="grid g-tiles">
       ${tile("Battery flow", fmtW(Math.abs(net)), netTxt + (s.total_charge_limit_w && net > 0 ? ` · cap ${fmtW(s.total_charge_limit_w)}` : "") + (s.total_discharge_limit_w && net < 0 ? ` · cap ${fmtW(s.total_discharge_limit_w)}` : ""), net > 20 ? U.INK.charge : net < -20 ? U.INK.discharge : "")}
       ${tile("Stored energy", fmtKwh(stored), `${cap ? Math.round((stored / cap) * 100) : 0}% of ${fmtKwh(cap)}`)}
-      ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid sensor set (Settings)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? U.INK.err : grid < -20 ? U.INK.charge : "")}
+      ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid reading (Settings > Grid meter)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? U.INK.err : grid < -20 ? U.INK.charge : "")}
       ${tile("Batteries online", `${online} / ${ds.length}`, "Reading directly from the batteries")}
       ${this.live.savings ? tile("Saved today", `${esc(this.live.currency || "£")}${(+this.live.savings.today || 0).toFixed(2)}`, `This month ${esc(this.live.currency || "£")}${(+this.live.savings.month || 0).toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? U.INK.charge : U.INK.err) : ""}
       ${this._solarTile(tile)}

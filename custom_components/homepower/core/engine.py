@@ -421,14 +421,18 @@ def compute(w: World) -> Result:
         if S.export_limit_w:
             discharging = {did: max(0.0, -(by_id[did].actual.power_w or 0.0)) for did, x in res.wants.items()
                            if x.mode is Mode.DISCHARGE and res.reasons[did] != "manual override" and by_id[did].actual.online}
-            chargers = []
+            commanded = {did: float(res.wants[did].power_w if res.wants[did].power_w is not None else by_id[did].config.caps.max_discharge_w)
+                         for did in discharging}
+            chargers, held = [], {}
             for d in free:
                 c = d.config.caps
                 if (d.config.device_id not in res.wants and Mode.CHARGE in c.supported_modes and c.max_charge_w > 0 and c.power_control
                         and d.actual.soc < 98 and "charge" not in w.load_blocks):
                     chargers.append((d.config.device_id, max(0.0, d.actual.power_w or 0.0), c.max_charge_w,
                                      max(c.capacity_wh * (100 - d.actual.soc) / 100, 1.0)))
-            trims, charges = export_guard(w.grid_w, S.export_limit_w, {k: v for k, v in discharging.items() if v > 0}, chargers)
+                    if d.release_pending and d.commanded is Mode.CHARGE:
+                        held[d.config.device_id] = max(0.0, (d.actual.power_w or 0.0) - max(0.0, d.actual.pv_w or 0.0))
+            trims, charges = export_guard(w.grid_w, S.export_limit_w, discharging, chargers, commanded, held)
             for did, p in trims.items():
                 old = res.wants[did]
                 res.wants[did] = replace(old, power_w=p) if p > 0 else Desired(Mode.HOLD)

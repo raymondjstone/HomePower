@@ -372,7 +372,7 @@
         "step": {
           "init": {
             "title": "Use the cheap hours from the price history?",
-            "description": "{message}\n\nSubmit to clear the cheap-rate start and end typed in HomePower's settings, so the hours found in your tariff's price history are used instead. You can type them again at any time."
+            "description": "{message}\n\nSubmit to clear the cheap-rate start and end typed in HomePower's settings, so the hours found in your tariff's price history are used instead. If you have listed more cheap periods, they are kept and the history's hours are typed in as the start and end instead. You can type them again at any time."
           }
         },
         "abort": {

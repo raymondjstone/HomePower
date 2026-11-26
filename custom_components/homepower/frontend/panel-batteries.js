@@ -108,7 +108,7 @@ export default (U) => {
       box.innerHTML = `${help}
         <div class="three"><div class="f" style="grid-column:span 2"><label>Device IP address *</label><input type="text" id="c-host" value="${esc(conn.host || "")}" placeholder="192.168.1.60"></div>
           <div class="f"><label>Port</label><input type="number" id="c-port" value="${conn.port || 502}"></div></div>
-        <div class="f"><label>Modbus unit ID</label><input type="number" id="c-unit_id" value="${conn.unit_id || prof.default_unit || 1}"></div>
+        <div class="f"><label>Modbus unit ID</label><input type="number" id="c-unit_id" value="${conn.unit_id ?? prof.default_unit ?? 1}"></div>
         <div class="f"><label>Register map (JSON)</label><textarea id="c-map" rows="9" style="font-family:monospace;font-size:12px;width:100%;padding:8px;border-radius:8px;border:1px solid var(--divider-color);background:var(--secondary-background-color);color:var(--primary-text-color)">${esc(JSON.stringify(mp, null, 2))}</textarea>
           <span class="hint">Needs at least "soc" and "power". Add "setpoint" and "mode" only if you want HomePower to control it.</span></div>
         <button class="btn" data-act="test-battery"><ha-icon icon="mdi:lan-check" style="--mdc-icon-size:16px"></ha-icon>Test connection</button>`;
@@ -176,7 +176,7 @@ export default (U) => {
   _collectConnection(prof, spec) {
     const r = this.shadowRoot, v = (k) => (r.getElementById("c-" + k) || {}).value || "";
     const c = Object.fromEntries(spec.connection.map((f) => [f.k, v(f.k).trim()]));
-    if (prof.driver === "modbus_generic") { c.port = +c.port || 502; c.unit_id = +c.unit_id || 1; c.map = v("map"); }
+    if (prof.driver === "modbus_generic") { c.port = +c.port || 502; c.unit_id = c.unit_id === "0" ? 0 : +c.unit_id || 1; c.map = v("map"); }
     if (prof.driver === "anker_modbus") { c.port = +c.port || 502; c.unit_id = +c.unit_id || 1; }
     if (prof.driver === "ecoflow_modbus") { c.port = +c.port || 502; c.unit_id = +c.unit_id || 1; c.reverse_sign = !!(r.getElementById("c-reverse_sign") || {}).checked; }
     return c;

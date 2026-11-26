@@ -147,6 +147,13 @@ class HomePowerPanel extends HTMLElement {
     return `<span class="chip bad">Offline</span>`;
   }
 
+  // A power entity in W: a kW sensor read as it stands would show 1000 times too small (the server scales it the same way).
+  _watts(eid) {
+    const v = this._num(eid);
+    const unit = v == null ? "" : String((this._hass.states[eid].attributes || {}).unit_of_measurement || "").trim().toLowerCase();
+    return unit === "kw" ? v * 1000 : v;
+  }
+
   _reading(d) {
     const e = d.entities || {};
     const lv = (this.live.devices || {})[d.device_id] || {};
@@ -160,10 +167,10 @@ class HomePowerPanel extends HTMLElement {
     const online = probe ? !bad(probe) : false;
     let p;
     if (e.charge_power || e.discharge_power) {
-      const ch = this._num(e.charge_power), dis = this._num(e.discharge_power);
+      const ch = this._watts(e.charge_power), dis = this._watts(e.discharge_power);
       p = ch == null && dis == null ? null : (ch || 0) - (dis || 0);
     } else {
-      p = this._num(e.power);
+      p = this._watts(e.power);
       if (p != null && d.invert_power) p = -p;
     }
     // its integration reports it unavailable, but not for long yet: waiting, not offline (the same rule as a direct battery)
@@ -171,11 +178,9 @@ class HomePowerPanel extends HTMLElement {
   }
 
   _gridW() {
-    const s = this.data.settings || {};
-    if (this.live.grid_w != null) return this.live.grid_w;  // worked out server-side (meter sensors, units, export, Glow)
-    const v = this._num(s.grid_import_entity);
-    if (v == null) return null;
-    return s.grid_invert ? -v : v;
+    // Only the server's figure (meter sensors, units, energy counters, export, Glow): the sensor's own state may be a kWh
+    // counter or in kW, so it is never shown as it stands.
+    return this.live.grid_w ?? null;
   }
 
   _sample() {
