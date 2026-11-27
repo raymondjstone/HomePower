@@ -7,7 +7,7 @@ export default (U) => {
     const r = this.live.readiness;
     if (!r) return "";
     const txt = r.hours == null ? "not worked out yet (no usual-use pattern learned and no load reading)" : `${r.capped ? "more than " : "about "}${r.hours} h`;
-    return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:home-lightning-bolt-outline"></ha-icon>If the grid went down now</h2>
+    return `<div class="card" style="margin:16px 0"><h2><ha-icon icon="mdi:home-lightning-bolt-outline"></ha-icon>If the grid went down now</h2>
       <p style="margin:4px 0">The batteries could run the house for <b>${txt}</b> (${r.usable_kwh} kWh usable, at ${esc(r.basis)}, ignoring solar).</p></div>`;
   },
 

@@ -44,6 +44,20 @@ export default (U) => {
     this._render();
   },
 
+  // GitHub's "new issue" page with the versions and battery types filled in, for the user to finish and send. Only model names
+  // from HomePower's own list go in: never a battery's name, address, serial number or key.
+  _issueUrl() {
+    const v = this.data.versions || {}, profiles = (this.data.catalogue || {}).profiles || [], count = new Map();
+    for (const d of this.data.devices || []) {
+      const label = (profiles.find((p) => p.id === d.kind) || {}).label || "Unknown type";
+      count.set(label, (count.get(label) || 0) + 1);
+    }
+    const batteries = [...count].map(([label, n]) => `- ${label}${n > 1 ? ` x${n}` : ""}`).join("\n") || "- none added yet";
+    const body = `### What happened\n\n\n### What you expected\n\n\n### Steps to reproduce\n\n\n---\n`
+      + `- HomePower: ${v.homepower || "unknown"}\n- Home Assistant: ${v.home_assistant || (this._hass.config || {}).version || "unknown"}\n\n**Batteries**\n${batteries}\n`;
+    return `https://github.com/raymondjstone/HomePower/issues/new?body=${encodeURIComponent(body)}`;
+  },
+
   _diagView() {
     const dg = this._diag;
     if (!dg) return `<div class="bar-actions"><h2>Diagnostics</h2></div><div class="card">Loading…</div>`;
@@ -66,7 +80,7 @@ export default (U) => {
         i.reserve_floor_pct ? `reserve floor ${i.reserve_floor_pct}%` : "", i.solar_ceiling_pct != null ? `room-for-solar limit ${i.solar_ceiling_pct}%` : ""].filter(Boolean);
       return `<details><summary><span class="t">${esc(new Date(e.t).toLocaleTimeString([], this._tzOpt()))}</span> <b>${esc(e.name)}</b> → ${esc(e.mode)}${e.power_w ? " " + fmtW(e.power_w) : ""}: ${esc(e.reason)}</summary><div class="sub" style="margin:4px 0 8px 12px">${esc(bits.join(" · ") || "no readings")}${(i.notes || []).length ? "<br>" + esc(i.notes.join("; ")) : ""}</div></details>`;
     }).join("");
-    return `<div class="bar-actions"><h2>Diagnostics</h2><span><button class="btn" data-act="download-debug" title="One file with the readings, command results, plan against actual and recent events (no keys or serial numbers): attach it to a bug report"><ha-icon icon="mdi:download" style="--mdc-icon-size:16px"></ha-icon>Download debug file</button> <button class="btn" data-act="copy-debug"><ha-icon icon="mdi:content-copy" style="--mdc-icon-size:16px"></ha-icon>Copy debug info</button> <button class="btn" data-act="download-hw-report" title="How each battery really responded to HomePower's commands (model, firmware, Test control and command results; no names, keys, serial numbers or addresses). Sharing it lets that model be marked as proven on real hardware."><ha-icon icon="mdi:clipboard-check-outline" style="--mdc-icon-size:16px"></ha-icon>Hardware report</button></span></div>
+    return `<div class="bar-actions"><h2>Diagnostics</h2><span><a class="btn" href="${esc(this._issueUrl())}" target="_blank" rel="noopener noreferrer" title="Opens GitHub with your HomePower and Home Assistant versions and battery types filled in (no names, addresses or serial numbers). You add the details and send it; it is public."><ha-icon icon="mdi:bug-outline" style="--mdc-icon-size:16px"></ha-icon>Report an issue</a> <button class="btn" data-act="download-debug" title="One file with the readings, command results, plan against actual and recent events (no keys or serial numbers): attach it to a bug report"><ha-icon icon="mdi:download" style="--mdc-icon-size:16px"></ha-icon>Download debug file</button> <button class="btn" data-act="copy-debug"><ha-icon icon="mdi:content-copy" style="--mdc-icon-size:16px"></ha-icon>Copy debug info</button> <button class="btn" data-act="download-hw-report" title="How each battery really responded to HomePower's commands (model, firmware, Test control and command results; no names, keys, serial numbers or addresses). Sharing it lets that model be marked as proven on real hardware."><ha-icon icon="mdi:clipboard-check-outline" style="--mdc-icon-size:16px"></ha-icon>Hardware report</button></span></div>
       ${this.live.startup ? `<p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin:0 0 8px">${esc(this.live.startup)}</p>` : ""}
       ${(dg.alerts || []).length ? `<div class="banner warn">Active alerts: ${esc(dg.alerts.join(", "))}</div>` : ""}${this._setupCard(true)}${rows || '<div class="card empty">No batteries yet.</div>'}${this._portScanCard()}
       <div class="card" style="margin-bottom:12px"><h2>Why it did that</h2><p class="sub" style="font-size:12px;color:var(--secondary-text-color);margin-top:0">Each time a battery's instruction changed: what it was told, the reason, and the readings behind it. Click one to open it.</p>${dec || '<span class="sub">Nothing yet.</span>'}</div>

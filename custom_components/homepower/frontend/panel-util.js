@@ -79,8 +79,8 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .legend button.lg{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
 .legend button.lg.off{opacity:.45;text-decoration:line-through}
 .sw{width:12px;height:12px;border-radius:3px;display:inline-block}
-button.btn{font:inherit;font-weight:500;border-radius:8px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);padding:8px 14px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
-button.btn:hover{background:var(--secondary-background-color)}
+button.btn,a.btn{text-decoration:none;font:inherit;font-weight:500;border-radius:8px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);padding:8px 14px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+button.btn:hover,a.btn:hover{background:var(--secondary-background-color)}
 button.btn.pri{background:var(--primary-color);color:var(--text-primary-color,#fff);border-color:transparent}
 button.btn.danger{color:var(--hp-err)}
 button.btn.sm{padding:4px 10px;font-size:13px}

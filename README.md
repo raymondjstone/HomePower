@@ -4,7 +4,7 @@ A Home Assistant custom integration that is a **central battery manager** for ho
 batteries **directly** (it does not need, use or depend on any other Anker or EcoFlow integration), shows them in a
 sidebar panel, and schedules and optimises how they charge and discharge.
 
-**Contents:** [Install](#install) · [Supported batteries](#supported-batteries) · [Getting started](#getting-started) ·
+**Contents:** [Install](#install) · [Screenshots](#screenshots) · [Supported batteries](#supported-batteries) · [Getting started](#getting-started) ·
 [How HomePower decides](#how-homepower-decides) · [Schedules](#schedules) · [Goals](#goals) ·
 [Tariff and prices](#tariff-and-prices) · [Grid reading](#grid-reading) · [Solar](#solar) ·
 [Limits and protection](#limits-and-protection) · [Taking and handing back control](#taking-and-handing-back-control) ·
@@ -34,6 +34,40 @@ download it, restart, then use the button above or *Settings > Devices & service
 
 HomePower is set up once per Home Assistant (a second copy cannot be added). Tested on Home Assistant Core 2026.2 and
 2026.11.3 (Python 3.13 and 3.14).
+
+## Screenshots
+
+The HomePower panel, shown with a made-up home.
+
+### Overview
+
+All batteries together, each battery, savings and the price now.
+
+![The Overview tab: all batteries together, each battery, savings and the price now](https://raw.githubusercontent.com/raymondjstone/HomePower/develop/docs/images/overview.png)
+
+### Plan
+
+Goals, prices with the planned charging, and what happens next.
+
+![The Plan tab: goals, prices with the planned charging, and what happens next](https://raw.githubusercontent.com/raymondjstone/HomePower/develop/docs/images/plan.png)
+
+### Schedules
+
+Today at a glance, and each schedule.
+
+![The Schedules tab: today at a glance, and each schedule](https://raw.githubusercontent.com/raymondjstone/HomePower/develop/docs/images/schedules.png)
+
+### Batteries
+
+Add, edit and control each battery.
+
+![The Batteries tab: add, edit and control each battery](https://raw.githubusercontent.com/raymondjstone/HomePower/develop/docs/images/batteries.png)
+
+### Insights
+
+Savings, battery health and plan against actual.
+
+![The Insights tab: savings, battery health and plan against actual](https://raw.githubusercontent.com/raymondjstone/HomePower/develop/docs/images/insights.png)
 
 ## Supported batteries
 
@@ -432,7 +466,7 @@ notifications. Both optionally go to a `notify.*` service as well.
 | Batteries | Add, edit and delete batteries; allow control; role, priority, solar panels, whether its meter measures the whole house |
 | Insights | Savings today and this month, energy totals, solar forecast against measured solar (by day and by hour), solar self-consumption and cheap-rate share, what exporting pays now, solar strings (Anker X1, EcoFlow), battery health (weekly round-trip efficiency), long-term history charts. On any chart with a clickable legend, click an item to hide that series and again to show it (also on the Overview power chart) |
 | Settings | Everything in the [settings reference](#settings-reference) |
-| Diagnostics | Setup check, per-battery status and last command, Test control, the raw readings received, event log, copy debug info, hardware report |
+| Diagnostics | Setup check, per-battery status and last command, Test control, the raw readings received, event log, copy debug info, hardware report, **Report an issue** (opens GitHub with your HomePower and Home Assistant versions and battery types filled in, for you to complete and send) |
 
 **Settings > Devices & Services > HomePower > Configure** offers the essentials as native Home Assistant forms, with no
 panel needed: add and remove batteries, allow control, add / change / remove schedules, add and remove goals, the

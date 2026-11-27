@@ -18,15 +18,23 @@ class Segment:
     source: str
 
 
+def _steps(start: datetime, hours: int, step_min: int):
+    """(from, to) pieces of the look-ahead, cut on the clock (quarter hours) and not counted from the minute it was asked
+    for: otherwise a 23:30 start asked about at 08:08 would show as 23:38."""
+    end, t = start + timedelta(hours=hours), start
+    while t < end:
+        nxt = t - timedelta(minutes=t.minute % step_min, seconds=t.second, microseconds=t.microsecond) + timedelta(minutes=step_min)
+        yield t, min(nxt, end)
+        t = nxt
+
+
 def preview(
     schedules: list[ScheduleEntry], device_ids: list[str], start: datetime, hours: int = 24, step_min: int = 15,
     condition_ok=None, away: bool = False, allocs: list[Alloc] | None = None,
 ) -> dict[str, list[Segment]]:
     """Per battery, merged segments of schedule (or planned goal) behaviour. Gaps mean 'no instruction'."""
-    step = timedelta(minutes=step_min)
     out: dict[str, list[Segment]] = {d: [] for d in device_ids}
-    t = start
-    while t < start + timedelta(hours=hours):
+    for t, nxt in _steps(start, hours, step_min):
         for did in device_ids:
             e = resolve_entry(schedules, did, t, condition_ok, away)
             if e is not None:
@@ -38,10 +46,9 @@ def preview(
             if key is None:
                 continue
             if segs and segs[-1].end == t and (segs[-1].mode, segs[-1].power_w, segs[-1].source) == key:
-                segs[-1].end = t + step
+                segs[-1].end = nxt
             else:
-                segs.append(Segment(t, t + step, *key))
-        t += step
+                segs.append(Segment(t, nxt, *key))
     return out
 
 
@@ -50,10 +57,8 @@ def find_conflicts(
     condition_ok=None, away: bool = False,
 ) -> list[dict]:
     """Times where two enabled schedules tie for the top priority but ask for different things."""
-    step = timedelta(minutes=step_min)
     found: dict[tuple, dict] = {}
-    t = start
-    while t < start + timedelta(hours=hours):
+    for t, nxt in _steps(start, hours, step_min):
         for did in device_ids:
             hits = [
                 e for e in schedules
@@ -68,9 +73,8 @@ def find_conflicts(
                 ids = tuple(sorted(e.id for e in tied))
                 key = (did, ids)
                 if key in found and found[key]["end"] == t:
-                    found[key]["end"] = t + step
+                    found[key]["end"] = nxt
                 else:
-                    found[(did, ids, t)] = {"device_id": did, "schedules": list(ids), "start": t, "end": t + step}
+                    found[(did, ids, t)] = {"device_id": did, "schedules": list(ids), "start": t, "end": nxt}
                     found[key] = found[(did, ids, t)]
-        t += step
     return sorted({id(v): v for v in found.values()}.values(), key=lambda c: c["start"])

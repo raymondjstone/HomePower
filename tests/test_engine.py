@@ -609,3 +609,14 @@ def test_surplus_a_battery_is_soaking_up_still_counts_as_solar_so_it_is_not_held
     # another battery's discharge going out is not solar either: this one is held rather than left to soak it up
     r = compute(world([dev(power=0), dev("b", power=-2500)], settings=st, grid_w=-2100.0, cheap_now=True))
     assert r.wants["a"].mode is Mode.HOLD
+
+
+def test_preview_starts_and_ends_on_the_clock_whatever_minute_it_is_asked_for():
+    asked = NOW.replace(hour=8, minute=8, second=10)
+    s = sched(start=time(23, 30), end=time(5, 30))
+    seg = preview([s], ["a"], asked, hours=24)["a"][0]
+    assert (seg.start.hour, seg.start.minute, seg.end.hour, seg.end.minute) == (23, 30, 5, 30)
+    clash = find_conflicts([s, sched("t", mode=Mode.DISCHARGE, start=time(23, 30), end=time(5, 30))], ["a"], asked, hours=24)[0]
+    assert (clash["start"].minute, clash["end"].minute) == (30, 30)
+    live = preview([sched(start=time(8), end=time(9))], ["a"], asked, hours=24)["a"][0]
+    assert live.start == asked and (live.end.hour, live.end.minute) == (9, 0)       # already running: from now

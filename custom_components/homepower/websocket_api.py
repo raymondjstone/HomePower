@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from homeassistant.components import websocket_api
+from homeassistant.const import __version__ as HA_VERSION
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
@@ -38,8 +39,11 @@ def _settings(entry) -> dict:
 
 
 def _payload(hass: HomeAssistant) -> dict:
+    from . import VERSION                          # here, not at the top: __init__ imports this module
+
     mgr, entry = _mgr(hass), _entry(hass)
     return {
+        "versions": {"homepower": VERSION, "home_assistant": HA_VERSION},
         "devices": mgr.public_devices(),
         "schedules": list(mgr.schedules.values()),
         "goals": list(mgr.goals.values()),
