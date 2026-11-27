@@ -91,11 +91,11 @@ export default (U) => {
     const netTxt = Math.abs(net) < 20 ? "Idle" : net > 0 ? "Charging" : "Discharging";
     const tile = (l, v, sub, c) => `<div class="card tile"><div class="lbl">${l}</div><div class="val" ${c ? `style="color:${c}"` : ""}>${v}</div><div class="sub">${sub}</div></div>`;
     const tiles = `<div class="grid g-tiles">
-      ${tile("Battery flow", fmtW(Math.abs(net)), netTxt + (s.total_charge_limit_w && net > 0 ? ` · cap ${fmtW(s.total_charge_limit_w)}` : "") + (s.total_discharge_limit_w && net < 0 ? ` · cap ${fmtW(s.total_discharge_limit_w)}` : ""), net > 20 ? MODES.charge.color : net < -20 ? MODES.discharge.color : "")}
+      ${tile("Battery flow", fmtW(Math.abs(net)), netTxt + (s.total_charge_limit_w && net > 0 ? ` · cap ${fmtW(s.total_charge_limit_w)}` : "") + (s.total_discharge_limit_w && net < 0 ? ` · cap ${fmtW(s.total_discharge_limit_w)}` : ""), net > 20 ? U.INK.charge : net < -20 ? U.INK.discharge : "")}
       ${tile("Stored energy", fmtKwh(stored), `${cap ? Math.round((stored / cap) * 100) : 0}% of ${fmtKwh(cap)}`)}
-      ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid sensor set (Settings)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? "#dc2626" : grid < -20 ? MODES.charge.color : "")}
+      ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid reading (Settings > Grid meter)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? U.INK.err : grid < -20 ? U.INK.charge : "")}
       ${tile("Batteries online", `${online} / ${ds.length}`, "Reading directly from the batteries")}
-      ${this.live.savings ? tile("Saved today", `${esc(this.live.currency || "£")}${(+this.live.savings.today || 0).toFixed(2)}`, `This month ${esc(this.live.currency || "£")}${(+this.live.savings.month || 0).toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? MODES.charge.color : "#dc2626") : ""}
+      ${this.live.savings ? tile("Saved today", `${esc(this.live.currency || "£")}${(+this.live.savings.today || 0).toFixed(2)}`, `This month ${esc(this.live.currency || "£")}${(+this.live.savings.month || 0).toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? U.INK.charge : U.INK.err) : ""}
       ${this._solarTile(tile)}
       ${this.live.price_now != null ? tile("Price now", `${esc(this.live.currency || "£")}${this.live.price_now.toFixed(3)}/kWh`, "From your rates") : ""}
     </div>`;
@@ -117,13 +117,14 @@ export default (U) => {
     const sub = [sf.so_far_kwh != null ? `${k(sf.so_far_kwh)} so far` : null, sf.remaining_kwh != null ? `${k(sf.remaining_kwh)} still to come` : null,
       sf.tomorrow_kwh != null ? `tomorrow ${k(sf.tomorrow_kwh)}` : null].filter(Boolean).join(" · ");
     const src = { forecast_solar: "Forecast.Solar", solcast_solar: "Solcast" }[sf.source] || "your solar forecast";
+    const pct = sf.use_pct != null && sf.use_pct !== 100 ? ` (${+sf.use_pct}% of its figures, as set in Settings)` : "";
     return tile("Solar forecast today", sf.today_kwh != null ? k(sf.today_kwh) : "–", esc(sub || src))
-      .replace('<div class="card tile"', `<div class="card tile" title="From ${esc(src)}. Forecast against what really came: Insights."`);
+      .replace('<div class="card tile"', `<div class="card tile" title="From ${esc(src)}${pct}. Forecast against what really came: Insights."`);
   },
 
   _ring(soc, size = 96) {
     const r = 40, c = 2 * Math.PI * r, v = soc == null ? 0 : Math.max(0, Math.min(100, soc));
-    const col = soc == null ? "#9ca3af" : soc < 20 ? "#dc2626" : soc < 50 ? "#f59e0b" : "#16a34a";
+    const col = soc == null ? "var(--divider-color)" : soc < 20 ? U.INK.err : soc < 50 ? U.INK.warn : U.INK.ok;
     return `<svg class="ring" width="${size}" height="${size}" viewBox="0 0 100 100" role="img" aria-label="State of charge ${soc == null ? "unknown" : Math.round(soc) + " percent"}">
       <circle cx="50" cy="50" r="${r}" fill="none" stroke="var(--divider-color)" stroke-width="10"/>
       <circle cx="50" cy="50" r="${r}" fill="none" stroke="${col}" stroke-width="10" stroke-linecap="round" stroke-dasharray="${(v / 100) * c} ${c}" transform="rotate(-90 50 50)"/>
@@ -134,12 +135,13 @@ export default (U) => {
     const lv = r.lv || {};
     const p = r.power;
     const state = r.waiting ? "Waiting for readings" : !r.online ? "Offline" : p == null ? "–" : Math.abs(p) < 20 ? "Idle" : p > 0 ? "Charging" : "Discharging";
-    const col = !r.online ? "#9ca3af" : p > 20 ? MODES.charge.color : p < -20 ? MODES.discharge.color : "var(--secondary-text-color)";
+    const col = !r.online ? "var(--secondary-text-color)" : p > 20 ? U.INK.charge : p < -20 ? U.INK.discharge : "var(--secondary-text-color)";
     const mode = lv.mode && MODES[lv.mode];
     const want = lv.desired_mode && MODES[lv.desired_mode];
     const chips = [];
-    if (want) chips.push(`<span class="chip m" style="background:${want.color}" title="${esc(want.help)}">Target: ${want.label}${lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : ""}</span>`);
-    else if (r.online) chips.push(`<span class="chip">Device's own control</span>`);
+    const sent = d.control_enabled !== false && !this.data.paused;   // monitor only or paused: nothing is sent, so no "Target" (their own chips say why)
+    if (want && sent) chips.push(`<span class="chip m" style="background:${want.color};color:${U.onFill(want.color)}" title="${esc(want.help)}">Target: ${want.label}${lv.desired_power_w ? " " + fmtW(lv.desired_power_w) : ""}</span>`);
+    else if (r.online && !this.data.paused) chips.push(`<span class="chip">Device's own control</span>`);
     if (r.stale || r.waiting) chips.push(this._linkChip(r));
     if (mode) chips.push(`<span class="chip"><span class="dot" style="background:${mode.color}"></span>Mode: ${mode.label}</span>`);
     const room = ((this.live.solar_room || {}).batteries || {})[d.device_id];
@@ -152,7 +154,7 @@ export default (U) => {
     if (lv.temp_c != null) chips.push(`<span class="chip" title="Inverter internal temperature">${lv.temp_c.toFixed(0)}°C</span>`);
     for (const al of lv.alarms || []) chips.push(`<span class="chip warn" title="The device itself reports this">${esc(al)}</span>`);
     if (lv.reason) chips.push(`<span class="chip" title="Why HomePower is doing this">${esc(lv.reason)}</span>`);
-    if (lv.override) chips.push(`<span class="chip m" style="background:#7c3aed">Manual: ${(MODES[lv.override.mode] || {}).label} until ${new Date(lv.override.until).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}</span>`);
+    if (lv.override) chips.push(`<span class="chip m" style="background:#7c3aed;color:${U.onFill("#7c3aed")}">Manual: ${(MODES[lv.override.mode] || {}).label} until ${new Date(lv.override.until).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}</span>`);
     if (d.control_enabled === false) chips.push(`<span class="chip warn" title="HomePower reads this battery but never sends it commands">Monitor only</span>`);
     if (lv.guard_held) chips.push(`<span class="chip" title="Held by the SOC limit">SOC limit reached</span>`);
     if (lv.last_error) chips.push(`<span class="chip bad" title="${esc(lv.last_error)}">Last write failed</span>`);

@@ -69,6 +69,8 @@ class FakeAnker:
                 await w.drain()
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
+        finally:
+            w.close()                       # its side of the connection, once the client has gone
 
 
 @asynccontextmanager
@@ -1462,7 +1464,11 @@ def test_anker_driver_records_why_it_went_quiet_and_how_long_for():
         srv = await asyncio.start_server(dev.handle, "127.0.0.1", port)
         assert (await d.read()).online
         assert d.last_error is None and len(d.outages) == 1 and d.outages[0]["seconds"] >= 0 and d.outages[0]["at"]
-        await d.close(); srv.close()
+        await d.close()
+        for w in dev.conns:                  # the fake battery's side of each connection too
+            w.close()
+        srv.close()
+        await srv.wait_closed()
     asyncio.run(go())
 
 
@@ -1662,3 +1668,107 @@ def test_es5000_reserve_switch_missing_from_the_reading_is_unknown_not_off():
         await d.apply(Desired(Mode.AUTO))
         assert d.api.sent == [{"workMode": "TIMER_TASK"}]          # the mode goes back; the reserve is not switched off
     asyncio.run(go())
+
+
+def test_ecoflow_logs_a_failing_cloud_once_and_says_when_it_is_back(caplog):
+    import logging
+    from hp.drivers.ecoflow import EcoFlowError
+
+    class Failing(FakeApi):
+        async def quota(self, sn):
+            err = EcoFlowError("EcoFlow error 500: server busy")
+            err.code = "500"
+            raise err
+
+    async def go():
+        d = eco({"soc": 40, "backupReverseSoc": 10})
+        d.api = Failing({})
+        caplog.set_level(logging.DEBUG)
+        for _ in range(4):
+            d._cache = None
+            await d.read()
+        assert len([r for r in caplog.records if r.levelno == logging.WARNING and "read failed" in r.getMessage()]) == 1
+        d.api = FakeApi({"soc": 40, "backupReverseSoc": 10})
+        d._cache = None
+        await d.read()
+        assert any("readings are back" in r.getMessage() for r in caplog.records)
+    asyncio.run(go())
+
+
+def test_one_odd_device_never_stops_the_network_scan(monkeypatch):
+    from hp.drivers import discovery
+
+    async def probe(h, port=502, unit=1, timeout=1.0):
+        if h == "10.0.0.2":
+            raise ValueError("not text")                 # a device on 502 that answers with something unexpected
+        return {"host": h, "soc": 50}
+
+    async def go():
+        async def fake_open(h, port):
+            class W:
+                def close(self): pass
+                async def wait_closed(self): pass
+            return None, W()
+        monkeypatch.setattr(discovery.asyncio, "open_connection", fake_open)
+        monkeypatch.setattr(discovery, "probe_host", probe)
+        return await discovery.scan(["10.0.0.1", "10.0.0.2", "10.0.0.3"])
+    found = asyncio.run(go())
+    assert {f["host"] for f in found} == {"10.0.0.1", "10.0.0.3"}       # the odd one is skipped, the others are still found
+
+
+def test_live_messages_after_stop_or_with_the_loop_closed_are_dropped_quietly():
+    import types
+    from hp.drivers.ecoflow_live import EcoFlowLive
+
+    class FakeClient:
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    class Loop:
+        def __init__(self):
+            self.sent, self.closed = [], False
+
+        def call_soon_threadsafe(self, *a):
+            if self.closed:
+                raise RuntimeError("Event loop is closed")
+            self.sent.append(a)
+
+        def is_closed(self):
+            return self.closed
+
+        def run_in_executor(self, _ex, fn, *a):
+            fn(*a)
+    made = []
+    mqtt = types.SimpleNamespace(Client=lambda *a, **k: made.append(FakeClient()) or made[-1],
+                                 CallbackAPIVersion=types.SimpleNamespace(VERSION2=2))
+    live = EcoFlowLive(None, None)
+    live.loop = Loop()
+    live._connect(mqtt, {"certificateAccount": "acc", "certificatePassword": "pw", "url": "x", "port": 8883}, live._gen)
+    msg = types.SimpleNamespace(topic="/open/acc/SN1/quota", payload=b"{}")
+    made[0].on_message(None, None, msg)
+    assert len(live.loop.sent) == 1                       # delivered while running
+    live.loop.closed = True
+    made[0].on_message(None, None, msg)                   # Home Assistant stopping: no error raised in paho's thread
+    live.loop.closed = False
+    live.stop()
+    made[0].on_message(None, None, msg)                   # stopped: a late message is not delivered to the old drivers
+    assert len(live.loop.sent) == 1
+
+
+def test_a_generic_set_point_that_does_not_fit_is_refused_not_wrapped_round():
+    writes = []
+
+    class Client:
+        async def write_multiple(self, addr, values):
+            writes.append((addr, values))
+
+    mp = {"soc": {"addr": 1}, "power": {"addr": 2, "type": "i16"},
+          "setpoint": {"addr": 10, "scale": 0.1}, "mode": {"addr": 11, "control_value": 3, "auto_value": 0}}
+    drv = GenericModbusDriver(DeviceConfig("g", "G", "modbus_map", Capabilities(10000, 5000, 5000, 10),
+                                           extra={"connection": {"host": "x", "map": mp}}), client=Client())
+    assert drv.map["setpoint"]["type"] == "i16"            # a set point has a sign, also when the type is left out
+    with pytest.raises(ValueError):                        # 5000 W in 0.1 W steps is 50000: as 16 bits that reads as charging
+        asyncio.run(drv.apply(Desired(Mode.DISCHARGE, 5000)))
+    assert writes == []                                    # nothing written, not even the control mode
+    asyncio.run(drv.apply(Desired(Mode.CHARGE, 3000)))
+    assert writes == [(11, [3]), (10, [(-30000) & 0xFFFF])]

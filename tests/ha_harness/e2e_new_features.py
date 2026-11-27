@@ -26,7 +26,7 @@ async def main():
                         title="HomePower", unique_id="homepower", version=1)
     mgr = HomePowerManager(hass); await mgr.async_load()
     coord = HomePowerCoordinator(hass, entry, mgr, *mgr.build()); mgr.coordinator = coord
-    hass.data["homepower"] = {"manager": mgr}
+    _harness.attach(hass, entry, mgr)
     hass.config_entries = SimpleNamespace(async_get_known_entry=lambda i: entry, async_entries=lambda d: [entry],
                                           async_update_entry=lambda e, options=None, **kw: coord.apply_settings(options) or True)
     hass.data.setdefault("websocket_api", {})

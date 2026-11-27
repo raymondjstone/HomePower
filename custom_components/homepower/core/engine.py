@@ -11,7 +11,7 @@ Safety clamps always apply: device limits, SOC limits (with hysteresis), load ru
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable
 
 from .dayplan import DayPlan
@@ -75,7 +75,9 @@ class World:
     away: bool = False
     load_blocks: set[str] = field(default_factory=set)
     rates: RateTable | None = None
-    forecast_kwh: float | None = None
+    forecast_kwh: float | None = None              # solar forecast for the coming day (today until sunset, then tomorrow)
+    forecast_by_day: dict[str, float] = field(default_factory=dict)   # {ISO date: kWh}, for goals: which day counts depends on the deadline
+    sunsets: dict[str, datetime] = field(default_factory=dict)        # {ISO date: sunset}
     export_better: bool = False                    # selling surplus pays more than storing it and buying cheap later
     cheap_now: bool | None = None                  # is this a cheap-rate period? None = unknown / flat tariff
     usage_wh: Callable[[datetime, float], float | None] | None = None   # learned household use: (from, hours) -> Wh
@@ -160,6 +162,18 @@ def _auto_target(w: World, g: Goal, devs: list[DevIn], deadline: datetime, res: 
     return target
 
 
+def _goal_solar_kwh(w: World, deadline: datetime) -> float | None:
+    """The solar that follows a goal's deadline: that day's when it is due before sunset, else the next day's (None
+    when not known, so nothing is taken off). Without a sunset time, midday decides."""
+    if not w.forecast_by_day:
+        return w.forecast_kwh
+    day = deadline.date()
+    sunset = w.sunsets.get(day.isoformat())
+    if deadline >= sunset if sunset else deadline.hour >= 12:
+        day += timedelta(days=1)
+    return w.forecast_by_day.get(day.isoformat())
+
+
 def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str, str]]:
     out: dict[str, tuple[Desired, str, str]] = {}      # device -> (instruction, reason, source: grid / solar / both)
     if not w.goals:
@@ -184,7 +198,7 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str, str]]:
             target = _auto_target(w, g, devs, deadline, res)
         if g.use_forecast:
             target = adjust_target_for_forecast(
-                target, w.forecast_kwh, sum(d.config.caps.capacity_wh for d in devs) / 1000, w.settings.forecast_share)
+                target, _goal_solar_kwh(w, deadline), sum(d.config.caps.capacity_wh for d in devs) / 1000, w.settings.forecast_share)
         if w.cold_extra_wh > 0:
             pts = boost_points(w.cold_extra_wh, sum(d.config.caps.capacity_wh for d in devs))
             top = g.target_soc if g.auto_target else 100          # an auto target stays within the target the user set
@@ -406,15 +420,20 @@ def compute(w: World) -> Result:
                 res.reasons[did] = "peak shaving"
         if S.export_limit_w:
             discharging = {did: max(0.0, -(by_id[did].actual.power_w or 0.0)) for did, x in res.wants.items()
-                           if x.mode is Mode.DISCHARGE and res.reasons[did] != "manual override" and by_id[did].actual.online}
-            chargers = []
+                           if x.mode is Mode.DISCHARGE and res.reasons[did] != "manual override" and by_id[did].actual.online
+                           and by_id[did].actual.power_w is not None}      # unknown is not 0: trimming from 0 would flap
+            commanded = {did: float(res.wants[did].power_w if res.wants[did].power_w is not None else by_id[did].config.caps.max_discharge_w)
+                         for did in discharging}
+            chargers, held = [], {}
             for d in free:
                 c = d.config.caps
                 if (d.config.device_id not in res.wants and Mode.CHARGE in c.supported_modes and c.max_charge_w > 0 and c.power_control
                         and d.actual.soc < 98 and "charge" not in w.load_blocks):
                     chargers.append((d.config.device_id, max(0.0, d.actual.power_w or 0.0), c.max_charge_w,
                                      max(c.capacity_wh * (100 - d.actual.soc) / 100, 1.0)))
-            trims, charges = export_guard(w.grid_w, S.export_limit_w, {k: v for k, v in discharging.items() if v > 0}, chargers)
+                    if d.release_pending and d.commanded is Mode.CHARGE:
+                        held[d.config.device_id] = max(0.0, (d.actual.power_w or 0.0) - max(0.0, d.actual.pv_w or 0.0))
+            trims, charges = export_guard(w.grid_w, S.export_limit_w, discharging, chargers, commanded, held)
             for did, p in trims.items():
                 old = res.wants[did]
                 res.wants[did] = replace(old, power_w=p) if p > 0 else Desired(Mode.HOLD)
@@ -428,8 +447,15 @@ def compute(w: World) -> Result:
         return any(o.config.extra.get("role") != "reserve" and o.actual.online and o.actual.soc is not None
                    and o.actual.soc > _floor(o.config.caps, w) + SOC_MARGIN + margin for o in w.devices)
 
-    # Never get in the way of solar charging: not this battery's own panels, nor surplus from anywhere else in the house.
-    solar_about = any((o.actual.pv_w or 0) > 50 for o in w.devices if o.actual.online) or (w.grid_w is not None and w.grid_w < -50)
+    # Battery power that passes the house meter. Charging from a battery's own panels never does: counting it would make the house
+    # look like it imports less than it does, and the import-limit headroom would let the others charge past the limit.
+    online_net = sum((p - min(max(0.0, x.actual.pv_w or 0.0), p)) if (p := x.actual.power_w or 0.0) > 0 else p
+                     for x in w.devices if x.actual.online)
+    # Never get in the way of solar charging: not this battery's own panels, nor surplus from anywhere else in the house. Surplus a
+    # battery is soaking up never shows at the meter, and a battery's discharge going out is not solar: so the batteries are taken out of
+    # the reading (else: hold, release, hold...).
+    solar_about = (any((o.actual.pv_w or 0) > 50 for o in w.devices if o.actual.online)
+                   or (w.grid_w is not None and w.grid_w <= 100 and w.grid_w - online_net < -50))   # clearly importing: not surplus
     for d in w.devices:
         did, caps = d.config.device_id, d.config.caps
         if (did in res.wants or not d.controllable or not d.actual.online or Mode.HOLD not in caps.supported_modes or solar_about
@@ -460,10 +486,6 @@ def compute(w: World) -> Result:
             res.wants[did], res.reasons[did] = Desired(Mode.AUTO), "handing back to the battery"
 
     # ---- 6. overall caps across everything combined
-    # Battery power that passes the house meter. Charging from a battery's own panels never does: counting it would make the house
-    # look like it imports less than it does, and the import-limit headroom would let the others charge past the limit.
-    online_net = sum((p - min(max(0.0, x.actual.pv_w or 0.0), p)) if (p := x.actual.power_w or 0.0) > 0 else p
-                     for x in w.devices if x.actual.online)
     res.wants.update(apply_totals(
         {k: (v, by_id[k].config.caps, by_id[k].config.priority) for k, v in res.wants.items()},
         charge_ceiling(S.charge_cap_w, S.import_limit_w, w.grid_w, online_net),

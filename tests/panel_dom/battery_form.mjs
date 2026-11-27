@@ -50,4 +50,37 @@ await wait(50);
 must("editing shows the saved host, port and flag", root.getElementById("c-host").value === "10.0.0.9" && root.getElementById("c-port").value === "5020" && root.getElementById("c-reverse_sign").checked === true);
 const out2 = el._collectBattery("es");
 must("saving the edit keeps them", out2.connection.host === "10.0.0.9" && out2.connection.port === 5020 && out2.connection.reverse_sign === true, JSON.stringify(out2.connection));
+
+// a power entity in kW is shown in W, and the grid figure only ever comes from the server (the meter may be a kWh counter)
+el.hass = { ...el._hass, states: { "sensor.p": { state: "-1.25", attributes: { unit_of_measurement: "kW" } }, "sensor.kwh": { state: "8123", attributes: { unit_of_measurement: "kWh" } } } };
+const kw = el._reading({ device_id: "x", entities: { power: "sensor.p" } });
+must("a kW power entity is read as W", kw.power === -1250, String(kw.power));
+el.data.settings = { ...el.data.settings, grid_import_entity: "sensor.kwh" };
+el.live = { ...el.live, grid_w: null };
+must("no server grid reading shows none, not the meter's counter", el._gridW() === null, String(el._gridW()));
+
+// unit id 0 is kept for a register-map device
+el._closeModal();
+el._batteryModal({ device_id: "m", name: "M", kind: "modbus_map", entities: {}, mode_map: {}, connection: { host: "10.0.0.9", port: 502, unit_id: 0 }, control_enabled: false }, false);
+await wait(50);
+const out3 = el._collectBattery("m");
+must("unit id 0 survives an edit", root.getElementById("c-unit_id").value === "0" && out3.connection.unit_id === 0, JSON.stringify(out3.connection.unit_id));
+
+// legends: clicking hides a series, clicking again shows it; the scale follows and the choice is remembered
+el._modal = null; el.tab = "batteries"; el._render();
+const pts = (v) => [{ t: 1000, v }, { t: 2000, v }];
+const draw = () => el._lineChart([{ key: "a", name: "A", color: "#111", pts: pts(400) }, { key: "b", name: "B", color: "#222", pts: pts(9000) }], "W", "power");
+const host = () => { let h = root.getElementById("lg-host"); if (!h) { h = document.createElement("div"); h.id = "lg-host"; root.getElementById("app").appendChild(h); } h.innerHTML = draw(); return h; };
+const btn = () => host().querySelector('[data-act="legend"][data-key="b"]');
+const click = () => btn().dispatchEvent(new w.MouseEvent("click", { bubbles: true, composed: true }));
+const lines = () => host().querySelectorAll(".plot-main svg path").length;
+const top = () => host().querySelector(".plot-y span:last-child").textContent;
+must("legend items are buttons, shown to start with", btn().getAttribute("aria-pressed") === "true" && lines() === 2);
+const full = top();
+click();
+must("a click on the legend hides that series only", lines() === 1 && btn().getAttribute("aria-pressed") === "false");
+must("the scale fits what is left", top() !== full, `${full} -> ${top()}`);
+must("the choice is remembered", localStorage.getItem("homepower.hidden").includes("power"));
+click();
+must("a second click shows it again", lines() === 2 && top() === full);
 process.exit(failures ? 1 : 0);

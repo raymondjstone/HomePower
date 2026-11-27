@@ -59,6 +59,16 @@ const svgs = [...app().querySelectorAll('svg[role="img"]')].filter((s) => /Solar
 check(svgs.length === 2, "insights: two labelled charts");
 check(svgs.every((s) => s.querySelectorAll("rect[rx]").length > 0 && s.querySelector("path[stroke-dasharray]") && s.querySelectorAll("circle").length > 0),
   "insights: measured bars, the forecast as a dashed line with dots");
+// axis labels are plain numbers (a floating-point step once printed 0.6000000000000001)
+const ylabels = svgs.flatMap((s) => [...s.querySelectorAll('text[text-anchor="end"]')].map((x) => x.textContent));
+check(ylabels.length > 0 && ylabels.every((x) => /^-?\d+(\.\d{1,3})?$/.test(x)), `insights: axis labels are tidy numbers (${ylabels.join(", ")})`);
+el._solarCmp = { ...clone(cmp), hours: cmp.hours.map((r, h) => ({ ...r, forecast: h === 12 ? 0.65 : 0, actual: h === 12 ? 0.6 : 0 })) };
+draw("insights", { solar_forecast: SF });
+const small = [...app().querySelectorAll('svg[role="img"]')].filter((s) => /each hour/.test(s.getAttribute("aria-label")))
+  .flatMap((s) => [...s.querySelectorAll('text[text-anchor="end"]')].map((x) => x.textContent));
+check(small.join(",") === "0,0.2,0.4,0.6,0.8", `insights: a small hourly range has steps 0, 0.2 ... 0.8, not 0.6000000000000001 (${small.join(", ")})`);
+el._solarCmp = clone(cmp);
+draw("insights", { solar_forecast: SF });
 const tips = [...svgs[1].querySelectorAll("title")].map((x) => x.textContent);
 check(tips.length === 24 && tips[12].includes("forecast 1.60 kWh") && tips[20].includes("measured –"), "insights: every hour has a tooltip with both values (future hours: nothing measured)");
 check(t.includes("Measured solar") && t.includes("Forecast") && html.includes("Download CSV"), "insights: legend and a CSV of the figures");

@@ -15,16 +15,17 @@ export default (U) => {
       statistic_ids: list, period: hours > 48 ? "hour" : "5minute", types: ["mean"] });
   },
 
-  _lineChart(series, unit) {
+  _lineChart(series, unit, id) {
     const all = series.flatMap((s) => s.pts);
     if (all.length < 2) return `<div class="sub" style="color:var(--secondary-text-color)">No history yet. It fills in as Home Assistant records the sensors.</div>`;
     const tmin = Math.min(...all.map((p) => p.t)), tmax = Math.max(...all.map((p) => p.t));
+    const shown = series.filter((s) => !this._isHidden(id, s.key)), vis = shown.flatMap((s) => s.pts);
     let nt;
     if (unit === "%") nt = { lo: 0, hi: 100, ticks: [0, 25, 50, 75, 100] };
-    else { const m = Math.max(500, ...all.map((p) => Math.abs(p.v))); nt = this._niceTicks(Math.min(0, ...all.map((p) => p.v)) < 0 ? -m : 0, m, 4); }
-    const ser = series.map((s) => ({ color: s.color, pts: this._downsample(s.pts) }));
+    else { const m = Math.max(500, ...vis.map((p) => Math.abs(p.v))); nt = this._niceTicks(Math.min(0, ...vis.map((p) => p.v)) < 0 ? -m : 0, m, 4); }
+    const ser = shown.map((s) => ({ color: s.color, pts: this._downsample(s.pts) }));
     return `${this._plot(ser, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin, tmax, fmtY: (v) => (unit === "%" ? `${v}%` : v === 0 ? "0" : fmtW(v)), height: 220, ariaLabel: unit === "%" ? "Charge level history" : "Power history" })}
-      <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div>`;
+      <div class="legend">${this._legend(id, series)}</div>`;
   },
 
   _cyclingText(c) {
@@ -39,13 +40,14 @@ export default (U) => {
       const x = pa[d.device_id];
       if (!x || !(x.rows || []).some((r) => r[1] != null || r[2] != null)) return "";
       const t = (r) => Date.parse(r[0]) + 900000, mk = (k) => x.rows.filter((r) => r[k] != null).map((r) => ({ t: t(r), v: r[k] }));
-      const series = [{ name: "Planned", color: "#9ca3af", dash: true, pts: mk(1) }, { name: "Actual", color: this._color(i), pts: mk(2) }];
-      const vs = series.flatMap((s) => s.pts.map((p) => p.v)).concat([0]), nt = this._niceTicks(Math.min(...vs), Math.max(...vs), 4);
+      const series = [{ key: "planned", name: "Planned", color: "#9ca3af", dash: true, pts: mk(1) }, { key: "actual", name: "Actual", color: this._color(i), pts: mk(2) }];
+      const id = `plan:${d.device_id}`, shown = series.filter((s) => !this._isHidden(id, s.key));
+      const vs = shown.flatMap((s) => s.pts.map((p) => p.v)).concat([0]), nt = this._niceTicks(Math.min(...vs), Math.max(...vs), 4);
       const tmin = Date.parse(x.rows[0][0]), tmax = Date.parse(x.rows[x.rows.length - 1][0]) + 1800000;
       const verdict = x.match_pct == null ? "Not enough time under HomePower's control yet to compare." : `Followed the plan ${x.match_pct}% over the slots it was given one.`;
       return `<div style="margin:10px 0"><b>${esc(d.name)}</b> <span class="sub" style="font-size:12px;color:var(--secondary-text-color)">${verdict}</span>
-        ${this._plot(series, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin, tmax, fmtY: (v) => (v === 0 ? "0" : fmtW(v)), height: 130, ariaLabel: `${d.name}: planned and actual power, last 24 hours` })}
-        <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${s.name}</span>`).join("")}</div></div>`;
+        ${this._plot(shown, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin, tmax, fmtY: (v) => (v === 0 ? "0" : fmtW(v)), height: 130, ariaLabel: `${d.name}: planned and actual power, last 24 hours` })}
+        <div class="legend">${this._legend(id, series)}</div></div>`;
     }).join("");
     if (!blocks) return "";
     return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-timeline-variant"></ha-icon>Plan versus actual (last 24 hours)</h2>${blocks}
@@ -76,7 +78,7 @@ export default (U) => {
   _healthCard() {
     const h = (this.live.health || {}), rows = this.data.devices.map((d) => {
       const x = h[d.device_id] || { efficiency: [], warning: null }, e = x.efficiency || [];
-      return `<tr><td>${esc(d.name)}</td><td>${e.length ? e.map(([, v]) => v + "%").join(" → ") : "not enough history yet"}</td><td>${x.warning ? `<span style="color:#dc2626">${esc(x.warning)}</span>` : e.length >= 3 ? "Steady" : "–"}</td><td>${this._cyclingText(x.cycling)}</td></tr>`;
+      return `<tr><td>${esc(d.name)}</td><td>${e.length ? e.map(([, v]) => v + "%").join(" → ") : "not enough history yet"}</td><td>${x.warning ? `<span style="color:var(--hp-err)">${esc(x.warning)}</span>` : e.length >= 3 ? "Steady" : "–"}</td><td>${this._cyclingText(x.cycling)}</td></tr>`;
     }).join("");
     if (!rows) return "";
     return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:heart-pulse"></ha-icon>Battery health (weekly round-trip efficiency)</h2>
@@ -127,15 +129,15 @@ export default (U) => {
     const tr = this.live.trend || {};
     const rows = this.data.devices.filter((d) => ((tr[d.device_id] || {}).days || []).some((r) => r[1] != null || r[2] != null)).map((d) => {
       const x = tr[d.device_id], f = (i, dp) => x.days.slice(-14).map((r) => (r[i] == null ? "–" : r[i].toFixed(dp))).join(" ");
-      return `<tr><td>${esc(d.name)}</td><td>${f(1, 0)}</td><td>${f(2, 1)}</td><td>${x.warning ? `<span style="color:#dc2626">${esc(x.warning)}</span>` : "Steady"}</td></tr>`;
+      return `<tr><td>${esc(d.name)}</td><td>${f(1, 0)}</td><td>${f(2, 1)}</td><td>${x.warning ? `<span style="color:var(--hp-err)">${esc(x.warning)}</span>` : "Steady"}</td></tr>`;
     }).join("");
     if (!rows) return "";
-    const series = this.data.devices.map((d, i) => ({ name: d.name, color: this._color(i), pts: (((tr[d.device_id] || {}).days) || []).filter((r) => r[1] != null).map((r) => ({ t: Date.parse(r[0]), v: r[1] })) })).filter((s) => s.pts.length >= 2);
+    const series = this.data.devices.map((d, i) => ({ key: d.device_id, name: d.name, color: this._color(i), pts: (((tr[d.device_id] || {}).days) || []).filter((r) => r[1] != null).map((r) => ({ t: Date.parse(r[0]), v: r[1] })) })).filter((s) => s.pts.length >= 2);
     let chart = "";
     if (series.length) {
-      const all = series.flatMap((s) => s.pts), vs = all.map((p) => p.v), nt = this._niceTicks(Math.floor(Math.min(...vs) - 2), Math.ceil(Math.max(...vs) + 2), 4);
-      chart = this._plot(series, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin: Math.min(...all.map((p) => p.t)), tmax: Math.max(...all.map((p) => p.t)), fmtY: (v) => `${Math.round(v)}°`, height: 150, ariaLabel: "Hottest temperature each day" })
-        + `<div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div>`;
+      const all = series.flatMap((s) => s.pts), shown = series.filter((s) => !this._isHidden("temp", s.key)), vs = (shown.length ? shown : series).flatMap((s) => s.pts).map((p) => p.v), nt = this._niceTicks(Math.floor(Math.min(...vs) - 2), Math.ceil(Math.max(...vs) + 2), 4);
+      chart = this._plot(shown, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin: Math.min(...all.map((p) => p.t)), tmax: Math.max(...all.map((p) => p.t)), fmtY: (v) => `${Math.round(v)}°`, height: 150, ariaLabel: "Hottest temperature each day" })
+        + `<div class="legend">${this._legend("temp", series)}</div>`;
     }
     return `<div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:thermometer-lines"></ha-icon>Battery temperature and pack balance</h2>${chart}
       <table class="tbl"><tr><th>Battery</th><th>Hottest each day (°C)</th><th>Pack voltage spread (%)</th><th>Status</th></tr>${rows}</table>
@@ -157,14 +159,15 @@ export default (U) => {
   _monthChart(m, cur) {
     const names = Object.keys((m || {}).totals || {}), months = (m || {}).months || [];
     if (months.length < 2 || !names.length) return "";
-    const vals = names.flatMap((n) => m.totals[n]), hi = Math.max(1, ...vals), lo = Math.min(0, ...vals);
-    const W = 640, H = 210, L = 52, B = 26, T = 8, pw = W - L - 8, ph = H - B - T, gw = pw / months.length, bw = Math.min(26, (gw - 8) / names.length);
+    const shown = names.filter((n) => !this._isHidden("month", n));
+    const vals = shown.flatMap((n) => m.totals[n]), hi = Math.max(1, ...vals), lo = Math.min(0, ...vals);
+    const W = 640, H = 210, L = 52, B = 26, T = 8, pw = W - L - 8, ph = H - B - T, gw = pw / months.length, bw = Math.min(26, (gw - 8) / shown.length);
     const nt = this._niceTicks(lo, hi, 4);                       // the scale runs to the rounded ticks, so the top line and label stay inside the chart
     const y = (v) => T + ph * (1 - (v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo));
     let g = (nt.ticks || []).map((tv) => `<line x1="${L}" x2="${W - 8}" y1="${y(tv).toFixed(1)}" y2="${y(tv).toFixed(1)}" stroke="currentColor" stroke-opacity=".15"/><text x="${L - 6}" y="${(y(tv) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="currentColor">${cur}${Number.isInteger(tv) ? tv : tv.toFixed(2)}</text>`).join("");
     months.forEach((mo, i) => {
-      names.forEach((n, j) => {
-        const v = m.totals[n][i], x = L + i * gw + (gw - bw * names.length) / 2 + j * bw;
+      shown.forEach((n, k) => {
+        const j = names.indexOf(n), v = m.totals[n][i], x = L + i * gw + (gw - bw * shown.length) / 2 + k * bw;      // a tariff keeps its colour
         g += `<rect x="${x.toFixed(1)}" y="${Math.min(y(v), y(0)).toFixed(1)}" width="${(bw - 2).toFixed(1)}" height="${Math.max(1, Math.abs(y(v) - y(0))).toFixed(1)}" fill="${SERIES[j % SERIES.length]}"><title>${esc(n)}, ${mo}: ${cur}${v.toFixed(2)}</title></rect>`;
       });
       g += `<text x="${(L + i * gw + gw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle" font-size="11" fill="currentColor">${mo.slice(2)}${i === months.length - 1 ? "*" : ""}</text>`;
@@ -173,7 +176,7 @@ export default (U) => {
     return `<h3 style="margin:14px 0 4px;font-size:14px">Month by month</h3>
       ${f ? `<div class="banner warn">${esc(f.tariff)} has been cheaper than ${esc(f.current)} for the last ${f.months} months running (about ${cur}${f.saved.toFixed(2)} less in total).</div>` : ""}
       <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;color:var(--primary-text-color)" role="img" aria-label="Cost of each tariff by month">${g}</svg>
-      <div class="legend">${names.map((n, j) => `<span><i class="sw" style="background:${SERIES[j % SERIES.length]}"></i>${esc(n)}</span>`).join("")}</div>
+      <div class="legend">${this._legend("month", names.map((n, j) => ({ key: n, name: n, color: SERIES[j % SERIES.length] })))}</div>
       <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">* the month is still in progress. The first tariff you list is taken to be the one you are on.</p>`;
   },
 
@@ -195,11 +198,12 @@ export default (U) => {
   // forecast also differs by shape (dashed line + dots) so colour is never the only cue.
   _fcChart(rows, o) {
     const FC = "#4c8bf5", ACT = "#e26c08";
-    const vals = rows.flatMap((r) => [r.forecast, r.actual]).filter((v) => v != null);
-    if (!vals.length) return `<div class="sub" style="color:var(--secondary-text-color)">Nothing recorded yet.</div>`;
+    const showF = !this._isHidden("solar", "forecast"), showA = !this._isHidden("solar", "actual");
+    if (!rows.some((r) => r.forecast != null || r.actual != null)) return `<div class="sub" style="color:var(--secondary-text-color)">Nothing recorded yet.</div>`;
     // drawn at about the width it is shown at, so the labels stay readable on a phone instead of shrinking with the chart
     const W = Math.round(Math.max(340, Math.min(640, (this.offsetWidth || 680) - 72))), H = W < 480 ? 180 : 200;
     const L = 40, B = 24, T = 8, pw = W - L - 8, ph = H - B - T, n = rows.length, gw = pw / n, bw = Math.max(2, Math.min(18, gw * 0.62));
+    const vals = rows.flatMap((r) => [showF ? r.forecast : null, showA ? r.actual : null]).filter((v) => v != null);
     const nt = this._niceTicks(0, Math.max(0.1, ...vals), 4);
     const y = (v) => T + ph * (1 - (v - nt.lo) / Math.max(1e-9, nt.hi - nt.lo));
     const cx = (i) => L + i * gw + gw / 2;
@@ -207,17 +211,17 @@ export default (U) => {
     let g = (nt.ticks || []).map((tv) => `<line x1="${L}" x2="${W - 8}" y1="${y(tv).toFixed(1)}" y2="${y(tv).toFixed(1)}" stroke="currentColor" stroke-opacity=".12"/><text x="${L - 6}" y="${(y(tv) + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="currentColor" fill-opacity=".7">${tv}</text>`).join("");
     const every = Math.ceil(n / Math.max(4, Math.floor(pw / 60)));          // about one label per 60 units of width
     rows.forEach((r, i) => {
-      if (r.actual != null && r.actual > 0) g += `<rect x="${(cx(i) - bw / 2).toFixed(1)}" y="${y(r.actual).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, y(0) - y(r.actual)).toFixed(1)}" rx="2" fill="${ACT}"/>`;
+      if (showA && r.actual != null && r.actual > 0) g += `<rect x="${(cx(i) - bw / 2).toFixed(1)}" y="${y(r.actual).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(1, y(0) - y(r.actual)).toFixed(1)}" rx="2" fill="${ACT}"/>`;
       if ((i % every === 0 && n - 1 - i >= every / 2) || i === n - 1) g += `<text x="${cx(i).toFixed(1)}" y="${H - 7}" text-anchor="middle" font-size="11" fill="currentColor" fill-opacity=".7">${esc(o.xlab(r, i))}</text>`;
     });
     let d = "", pen = false;                                     // the forecast line breaks where the forecast is not known
-    rows.forEach((r, i) => { if (r.forecast == null) { pen = false; return; } d += `${pen ? "L" : "M"}${cx(i).toFixed(1)},${y(r.forecast).toFixed(1)}`; pen = true; });
+    rows.forEach((r, i) => { if (!showF || r.forecast == null) { pen = false; return; } d += `${pen ? "L" : "M"}${cx(i).toFixed(1)},${y(r.forecast).toFixed(1)}`; pen = true; });
     if (d) g += `<path d="${d}" fill="none" stroke="${FC}" stroke-width="2" stroke-dasharray="6 4" stroke-linejoin="round"/>`;
-    rows.forEach((r, i) => { if (r.forecast) g += `<circle cx="${cx(i).toFixed(1)}" cy="${y(r.forecast).toFixed(1)}" r="4" fill="${FC}" stroke="var(--card-background-color, #fff)" stroke-width="2"/>`; });
+    rows.forEach((r, i) => { if (showF && r.forecast) g += `<circle cx="${cx(i).toFixed(1)}" cy="${y(r.forecast).toFixed(1)}" r="4" fill="${FC}" stroke="var(--card-background-color, #fff)" stroke-width="2"/>`; });
     // hover: the whole column is the target (bigger than the marks), and says both values
     rows.forEach((r, i) => { g += `<rect x="${(L + i * gw).toFixed(1)}" y="${T}" width="${gw.toFixed(1)}" height="${ph}" fill="transparent"><title>${esc(o.title(r))}: forecast ${fmt(r.forecast)}, measured ${fmt(r.actual)}</title></rect>`; });
     return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;color:var(--primary-text-color)" role="img" aria-label="${esc(o.aria)}">${g}</svg>
-      <div class="legend"><span><i class="sw" style="background:${ACT}"></i>Measured solar</span><span><svg width="22" height="10" aria-hidden="true" style="vertical-align:middle;margin-right:4px"><line x1="0" x2="22" y1="5" y2="5" stroke="${FC}" stroke-width="2" stroke-dasharray="5 3"/><circle cx="11" cy="5" r="3.5" fill="${FC}"/></svg>Forecast</span><span style="color:var(--secondary-text-color)">kWh</span></div>`;
+      <div class="legend">${this._legend("solar", [{ key: "actual", name: "Measured solar", color: ACT }, { key: "forecast", name: "Forecast", mark: `<svg width="22" height="10" aria-hidden="true" style="vertical-align:middle"><line x1="0" x2="22" y1="5" y2="5" stroke="${FC}" stroke-width="2" stroke-dasharray="5 3"/><circle cx="11" cy="5" r="3.5" fill="${FC}"/></svg>` }])}<span style="color:var(--secondary-text-color)">kWh</span></div>`;
   },
 
   _solarForecastCard() {
@@ -241,7 +245,7 @@ export default (U) => {
       ${this._fcChart(c.days, { xlab: (r) => md(r.day), title: (r) => (r.day === today ? `${r.day} (today, so far)` : r.day), aria: "Solar forecast and measured solar for each day" })}
       <h3 style="margin:14px 0 4px;font-size:14px">By hour, ${md(c.day)} <span class="durs">${dayBtn(yday, "Yesterday")} ${dayBtn(today, "Today")}</span></h3>
       ${this._fcChart(c.hours, { xlab: (r) => String(r.hour).padStart(2, "0"), title: (r) => `${c.day} ${String(r.hour).padStart(2, "0")}:00`, aria: "Solar forecast and measured solar for each hour" })}
-      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Forecast from ${esc(src)}: by day, the total first seen that day (what the day was planned with); by hour, the last forecast made before each hour. Today's bar is the solar so far, so it is left out of the percentage. Measured solar is what your batteries report, so panels on a separate inverter are not included. ${csv}</p></div>`;
+      <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">Forecast from ${esc(src)}: by day, the total first seen that day (what the day was planned with); by hour, the last forecast made before each hour. Today's bar is the solar so far, so it is left out of the percentage. Measured solar is what your batteries report, so panels on a separate inverter are not included.${c.use_pct != null && c.use_pct !== 100 ? ` These charts show the forecast as given; HomePower plans with ${+c.use_pct}% of it (Settings > Solar forecast).` : ""} ${csv}</p></div>`;
   },
 
   _solarStringsCard() {
@@ -256,9 +260,9 @@ export default (U) => {
     const L = this.live, E = L.energy || {}, cur = esc(L.currency || "£"), ids = this.data.entity_ids || {}, H = this._hist2 || {};
     const pts = (eid) => (H[eid] || []).filter((r) => r.mean != null).map((r) => ({ t: typeof r.start === "number" ? r.start : Date.parse(r.start), v: r.mean }));
     const powerSeries = [];
-    if (ids.battery_power) powerSeries.push({ name: "Battery power (+ charging)", color: SERIES[0], pts: pts(ids.battery_power) });
-    if (ids.grid_power) powerSeries.push({ name: "Grid (+ importing)", color: SERIES[1], pts: pts(ids.grid_power) });
-    const socSeries = this.data.devices.map((d, i) => ({ name: d.name, color: this._color(i), pts: pts(((ids.devices || {})[d.device_id] || {}).soc) }));
+    if (ids.battery_power) powerSeries.push({ key: "battery", name: "Battery power (+ charging)", color: SERIES[0], pts: pts(ids.battery_power) });
+    if (ids.grid_power) powerSeries.push({ key: "grid", name: "Grid (+ importing)", color: SERIES[1], pts: pts(ids.grid_power) });
+    const socSeries = this.data.devices.map((d, i) => ({ key: d.device_id, name: d.name, color: this._color(i), pts: pts(((ids.devices || {})[d.device_id] || {}).soc) }));
     const kwh = (k) => (E[k] || 0).toFixed(1);
     const rows = this.data.devices.map((d) => {
       const cin = E[`bat:${d.device_id}_in`] || 0, out = E[`bat:${d.device_id}_out`] || 0;
@@ -280,7 +284,7 @@ export default (U) => {
         <table class="tbl"><tr><th>Battery</th><th>Charged</th><th>Discharged</th><th>Round-trip</th><th>Cycles</th></tr>${rows || ""}</table>
         <p class="sub" style="font-size:12px;color:var(--secondary-text-color)">These are also Home Assistant sensors, so you can add them to the Energy dashboard.</p></div>
       <div class="card" style="margin-top:16px"><h2><ha-icon icon="mdi:chart-areaspline"></ha-icon>History ${rng}</h2>${this._tabError ? `<div class="err">${esc(this._tabError)}</div>` : ""}
-        ${this._lineChart(powerSeries, "W")}<h2 style="margin-top:16px">Charge level</h2>${this._lineChart(socSeries, "%")}</div>`;
+        ${this._lineChart(powerSeries, "W", "power")}<h2 style="margin-top:16px">Charge level</h2>${this._lineChart(socSeries, "%", "soc")}</div>`;
   },
 
   };

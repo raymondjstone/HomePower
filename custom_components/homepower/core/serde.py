@@ -166,7 +166,7 @@ def device_from_dict(d: dict) -> DeviceConfig:
         if not isinstance(raw_ents, dict) or not isinstance(raw_mm, dict):
             raise ValidationError("the entities and mode names must be given as name: value pairs")
         ents = {k: v.strip() for k, v in raw_ents.items() if k in valid_keys and isinstance(v, str) and v.strip()}
-        for k, v in ents.items():
+        for v in ents.values():
             if not _ENTITY_ID.fullmatch(v):
                 raise ValidationError(f"'{v[:60]}' is not an entity id (like sensor.battery_level)")
         for f in spec["entities"]:

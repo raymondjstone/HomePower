@@ -32,7 +32,7 @@ async def main():
                         title="HomePower", unique_id="homepower", version=1)
     mgr = HomePowerManager(hass); await mgr.async_load()
     coord = HomePowerCoordinator(hass, entry, mgr, *mgr.build()); mgr.coordinator = coord
-    hass.data["homepower"] = {"manager": mgr}
+    _harness.attach(hass, entry, mgr)
     hass.config_entries = SimpleNamespace(async_get_known_entry=lambda i: entry, async_entries=lambda d: [entry],
                                           async_update_entry=lambda e, options=None, **kw: coord.apply_settings(options) or True)
     hass.data.setdefault("websocket_api", {})
@@ -224,6 +224,14 @@ async def main():
     hass.config_entries.async_update_entry = lambda e, options=None, **kw: entry_opts.update(options or {}) or True
     assert (await tflow.async_step_init())["type"] == "form"
     assert (await tflow.async_step_init({}))["type"] == "create_entry" and entry_opts["offpeak_start"] == "" and entry_opts["offpeak_auto"] is True
+    # with more cheap periods listed, the history's hours are typed in as the main one (an empty one would be taken from the list)
+    from datetime import time as _time_of_day
+    object.__setattr__(hass.config_entries.async_entries("homepower")[0], "options", {"offpeak_extra": "13:00-14:00"})
+    coord._tariff = None
+    assert (await tflow.async_step_init({}))["type"] == "abort"
+    coord._tariff = SimpleNamespace(start=_time_of_day(0, 30), end=_time_of_day(5, 30), days=6)
+    assert (await tflow.async_step_init({}))["type"] == "create_entry"
+    assert (entry_opts["offpeak_start"], entry_opts["offpeak_end"], entry_opts["offpeak_extra"]) == ("00:30", "05:00", "13:00-14:00"), entry_opts
     print("repairs  : fix flows switch a battery to monitor-only and reset typed cheap hours")
 
     # string history is saved and loaded again

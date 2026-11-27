@@ -98,8 +98,12 @@ class GenericModbusDriver:
             await write(sp_reg, 0)
             await write(mode_reg, mode_reg["auto_value"] * mode_reg["scale"])
             return
-        await write(mode_reg, mode_reg["control_value"] * mode_reg["scale"])
         limit = self.config.caps.max_charge_w if desired.mode is Mode.CHARGE else self.config.caps.max_discharge_w
         watts = 0 if desired.mode is Mode.HOLD else int(max(0, min(desired.power_w if desired.power_w is not None else limit, limit)))
         signed = watts if desired.mode is Mode.DISCHARGE else -watts if desired.mode is Mode.CHARGE else 0
-        await write(sp_reg, -signed if sp_reg["positive_is"] == "charge" else signed)
+        value = -signed if sp_reg["positive_is"] == "charge" else signed
+        top = 0x7FFF if sp_reg["type"] == "i16" else 0x7FFFFFFF
+        if abs(round(value / sp_reg["scale"])) > top:     # it would wrap round and could mean the opposite direction
+            raise ValueError(f"{watts} W does not fit the set point register: check its type and scale, or lower the power limit")
+        await write(mode_reg, mode_reg["control_value"] * mode_reg["scale"])
+        await write(sp_reg, value)

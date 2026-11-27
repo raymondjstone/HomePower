@@ -80,6 +80,17 @@ async def main():
     print("hourly   :", hours and [round(x, 2) for x in hours[8:15]], "| source", coord.forecast_source)
     assert hours and abs(sum(hours) - 4.0) < 1e-6 and hours[9] == 0.4 and hours[12] == 1.6   # 10:00-ended hour starts at 09:00
 
+    # a second plane that is not ready yet: one plane alone is not the whole forecast, so what there was stands
+    fs2 = entry_for("forecast_solar", "fs2")
+    entries["forecast_solar"] = [fs, fs2]
+    for kept in (dict(coord.solar_hours), {}):
+        coord.solar_hours, coord._solar_at = dict(kept), -1e9
+        await coord._refresh_solar_hours()
+        assert coord.solar_hours == kept, ("part of the planes taken as the whole", coord.solar_hours)
+    entries["forecast_solar"] = [fs]
+    coord._solar_at = -1e9
+    await coord._refresh_solar_hours()
+
     coord.daily.days[today.isoformat()] = {"pv": 1.25, "export": 0, "import": 0, "import_cheap": 0, "import_known": 0}
     coord.usage.days[today.isoformat()] = {"imp": [0.0] * 48, "exp": [0.0] * 48, "load": [0.0] * 48, "pv": [0.0] * (2 * now.hour) + [0.3, 0.35] + [0.0] * (46 - 2 * now.hour)}   # this hour
     await coord._async_update_data()                       # the cycle notes the forecast history

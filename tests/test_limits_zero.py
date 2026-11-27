@@ -131,3 +131,14 @@ def test_charge_ceiling_import_headroom():
     # no grid sensor: use the limit itself; nothing configured: no ceiling
     assert charge_ceiling(None, 7000, None, 0.0) == 7000
     assert charge_ceiling(None, None, None, 0.0) is None
+
+
+def test_a_battery_that_picks_its_own_rate_needs_room_for_all_of_it():
+    from core.limits import apply_totals
+    from core.models import Capabilities, Desired, Mode
+    caps = Capabilities(10000, 2000, 2000, 10, power_control=False)
+    items = {"a": (Desired(Mode.CHARGE, 500), caps, 1)}      # the 500 W asked for cannot be sent to it
+    assert apply_totals(items, 800, None)["a"].mode is Mode.HOLD
+    assert apply_totals(items, 2000, None)["a"].mode is Mode.CHARGE
+    other = {**items, "b": (Desired(Mode.CHARGE, 1000), Capabilities(10000, 3000, 3000, 10), 2)}
+    assert apply_totals(other, 2500, None)["b"].power_w == 500      # what is left after all 2000 W of the first

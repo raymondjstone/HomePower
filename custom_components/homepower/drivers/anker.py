@@ -20,6 +20,7 @@ from ..core.models import Actual, Desired, DeviceConfig, Mode
 import time
 
 from ..core.anker_x1_map import alarm_texts
+from .stamp import stamp
 from .modbus import ModbusError, ModbusTcpClient, describe_failure, known_down, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
 
 _LOGGER = logging.getLogger(__name__)
@@ -199,7 +200,7 @@ class AnkerModbusDriver:
     def _note_up(self) -> None:
         if self._down_since is not None:
             seconds = round(time.monotonic() - self._down_since)
-            self.outages = (self.outages + [{"at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self._down_wall)), "seconds": seconds}])[-10:]
+            self.outages = (self.outages + [{"at": stamp(self._down_wall), "seconds": seconds}])[-10:]
             _LOGGER.info("%s: the battery answers again after %d s", self.config.device_id, seconds)
             self._down_since = None
         self.last_error = None

@@ -41,6 +41,7 @@ class HomePowerPanel extends HTMLElement {
   set hass(h) {
     const first = !this._hass;
     this._hass = h;
+    this.toggleAttribute("dark", !!(h && h.themes && h.themes.darkMode));     // theme-aware text colours (panel-util CSS)
     if (first) this._init();
     this._sample();
   }
@@ -89,6 +90,11 @@ class HomePowerPanel extends HTMLElement {
       return;
     }
     this.shadowRoot.innerHTML = `<style>${CSS}</style><div id="app"></div><div id="modal"></div>`;
+    // Whatever is drawn (pages, dialogs, the parts of the battery form filled in later), each field's label is linked to it.
+    if (!this._labelObs && typeof MutationObserver !== "undefined") {
+      this._labelObs = new MutationObserver(() => this._linkLabels(this.shadowRoot));
+      this._labelObs.observe(this.shadowRoot, { childList: true, subtree: true });
+    }
     this.shadowRoot.addEventListener("click", (e) => this._click(e));
     this.shadowRoot.addEventListener("change", (e) => this._change(e));
     this.shadowRoot.addEventListener("input", (e) => this._input(e));
@@ -141,6 +147,13 @@ class HomePowerPanel extends HTMLElement {
     return `<span class="chip bad">Offline</span>`;
   }
 
+  // A power entity in W: a kW sensor read as it stands would show 1000 times too small (the server scales it the same way).
+  _watts(eid) {
+    const v = this._num(eid);
+    const unit = v == null ? "" : String((this._hass.states[eid].attributes || {}).unit_of_measurement || "").trim().toLowerCase();
+    return unit === "kw" ? v * 1000 : v;
+  }
+
   _reading(d) {
     const e = d.entities || {};
     const lv = (this.live.devices || {})[d.device_id] || {};
@@ -154,10 +167,10 @@ class HomePowerPanel extends HTMLElement {
     const online = probe ? !bad(probe) : false;
     let p;
     if (e.charge_power || e.discharge_power) {
-      const ch = this._num(e.charge_power), dis = this._num(e.discharge_power);
+      const ch = this._watts(e.charge_power), dis = this._watts(e.discharge_power);
       p = ch == null && dis == null ? null : (ch || 0) - (dis || 0);
     } else {
-      p = this._num(e.power);
+      p = this._watts(e.power);
       if (p != null && d.invert_power) p = -p;
     }
     // its integration reports it unavailable, but not for long yet: waiting, not offline (the same rule as a direct battery)
@@ -165,11 +178,9 @@ class HomePowerPanel extends HTMLElement {
   }
 
   _gridW() {
-    const s = this.data.settings || {};
-    if (this.live.grid_w != null) return this.live.grid_w;  // worked out server-side (meter sensors, units, export, Glow)
-    const v = this._num(s.grid_import_entity);
-    if (v == null) return null;
-    return s.grid_invert ? -v : v;
+    // Only the server's figure (meter sensors, units, energy counters, export, Glow): the sensor's own state may be a kWh
+    // counter or in kW, so it is never shown as it stands.
+    return this.live.grid_w ?? null;
   }
 
   _sample() {
@@ -271,6 +282,18 @@ ${esc(where)}</pre></div>`;
   _hours(h) { return h == null ? "–" : h < 1 ? `${Math.round(h * 60)} min` : h >= 48 ? `${Math.round(h / 24)} days` : `${h.toFixed(1)} h`; }
 
   // ---- events --------------------------------------------------------------
+  // A field's <label> sits beside its control (<div class="f"><label>..</label><input ..>) without for=: link them, so a
+  // screen reader names the field and a click on the label focuses it. Checkboxes and radio buttons are left alone (a label
+  // there usually names the whole group), and an existing for= or aria-label is never changed.
+  _linkLabels(root) {
+    for (const lab of root.querySelectorAll(".f > label:not([for])")) {
+      const ctl = lab.parentElement.querySelector("input:not([type=checkbox]):not([type=radio]):not([type=hidden]), select, textarea");
+      if (!ctl || ctl.closest("label") || ctl.hasAttribute("aria-label") || ctl.hasAttribute("aria-labelledby")) continue;
+      if (ctl.id) lab.htmlFor = ctl.id;
+      else ctl.setAttribute("aria-label", lab.textContent.trim());
+    }
+  }
+
   _openModal(html) { this._modal = true; this.shadowRoot.getElementById("modal").innerHTML = html; }
 
   _closeModal() { this._modal = null; this.shadowRoot.getElementById("modal").innerHTML = ""; this._render(); }
@@ -286,6 +309,12 @@ ${esc(where)}</pre></div>`;
     }
     if (tpl === "evening") return { ...base, id: "Evening discharge", mode: "discharge", start: "17:00", end: "22:00", target_soc: null, reserve_soc: 20 };
     return base;
+  }
+
+  // Today's date (YYYY-MM-DD) on the home's clock, for file names: toISOString() is UTC, a day out in the evening west of it.
+  _today() {
+    try { return new Intl.DateTimeFormat("en-CA", this._tzOpt({ year: "numeric", month: "2-digit", day: "2-digit" })).format(new Date()); }
+    catch (e) { return new Date().toISOString().slice(0, 10); }
   }
 
   async _call(msg, errTarget, wantResult) {
@@ -330,7 +359,7 @@ ${esc(where)}</pre></div>`;
         if (!r) return;
         const a = document.createElement("a");
         a.href = URL.createObjectURL(new Blob([JSON.stringify(r, null, 2)], { type: "application/json" }));
-        a.download = `homepower-${hw ? "hardware-report" : "debug"}-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = `homepower-${hw ? "hardware-report" : "debug"}-${this._today()}.json`;
         a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
         return;
       }
@@ -347,7 +376,7 @@ ${esc(where)}</pre></div>`;
         if (!s.id) return this._err("Give the schedule a name.");
         if (orig !== s.id && this.data.schedules.some((x) => x.id === s.id)) return this._err("A schedule with that name already exists.");
         if (orig) s.enabled = (this.data.schedules.find((x) => x.id === orig) || {}).enabled !== false;
-        const saved = await this._call({ type: "homepower/schedule/save", schedule: s }, undefined, true);
+        const saved = await this._call({ type: "homepower/schedule/save", schedule: s, new: orig !== s.id }, undefined, true);
         if (!saved) return;
         if (orig && orig !== s.id) await this._call({ type: "homepower/schedule/delete", schedule_id: orig });
         await this._reload(); this._closeModal();
@@ -447,7 +476,7 @@ ${esc(where)}</pre></div>`;
         const d = this._collectBattery(t.dataset.id);
         if (!d.name) return this._err("Give the battery a name.");
         if (!t.dataset.id && this.data.devices.some((x) => x.device_id === d.device_id)) return this._err("A battery with that name already exists.");
-        if (!(await this._call({ type: "homepower/device/save", device: d }))) return;     // the dialog stays open: Test still tests this battery
+        if (!(await this._call({ type: "homepower/device/save", device: d, new: !t.dataset.id }))) return;     // the dialog stays open: Test still tests this battery
         this._editingId = null;
         await this._reload(); return this._closeModal();
       }
@@ -457,7 +486,11 @@ ${esc(where)}</pre></div>`;
         await this._reload(); return this._closeModal();
       case "save-settings": {
         const msg = this.shadowRoot.getElementById("g-msg");
-        const ok = await this._call({ type: "homepower/settings/save", settings: this._collectSettings() }, (m) => { msg.style.color = ""; msg.textContent = m; });
+        const named = (m) => String(m).replace(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g, (k) => {     // a setting's key in an error: shown as its label
+          const lab = this.shadowRoot.getElementById(`st-${k}`)?.closest(".f")?.querySelector("label")?.textContent;
+          return lab ? `"${lab}"` : k;
+        });
+        const ok = await this._call({ type: "homepower/settings/save", settings: this._collectSettings() }, (m) => { msg.style.color = ""; msg.textContent = named(m); });
         if (ok) {
           this._savedNote = true;   // survives the re-render that follows
           await this._reload();
@@ -479,7 +512,7 @@ ${esc(where)}</pre></div>`;
         if (!g.id) return this._err("Give the goal a name.");
         if (orig !== g.id && (this.data.goals || []).some((x) => x.id === g.id)) return this._err("A goal with that name already exists.");
         if (orig) g.enabled = ((this.data.goals || []).find((x) => x.id === orig) || {}).enabled !== false;
-        const saved = await this._call({ type: "homepower/goal/save", goal: g }, undefined, true);
+        const saved = await this._call({ type: "homepower/goal/save", goal: g, new: orig !== g.id }, undefined, true);
         if (!saved) return;
         if (orig && orig !== g.id) await this._call({ type: "homepower/goal/delete", goal_id: orig });
         await this._reload(); this._closeModal(); this._tabLoad();
@@ -510,7 +543,7 @@ ${esc(where)}</pre></div>`;
         const sc = this._collectScene(), orig = t.dataset.orig;
         if (!sc.name) return this._err("Give the scene a name.");
         if (orig !== sc.name && (this.data.scenes || []).some((x) => x.name === sc.name)) return this._err("A scene with that name already exists.");
-        if (!(await this._call({ type: "homepower/scene/save", scene: sc }, (m) => this._err(m)))) return;
+        if (!(await this._call({ type: "homepower/scene/save", scene: sc, new: orig !== sc.name }, (m) => this._err(m)))) return;
         if (orig && orig !== sc.name) await this._call({ type: "homepower/scene/delete", name: orig });
         await this._reload(); return this._closeModal();
       }
@@ -524,7 +557,7 @@ ${esc(where)}</pre></div>`;
         if (!dump) return;
         const a = document.createElement("a");
         a.href = URL.createObjectURL(new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" }));
-        a.download = `homepower-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click();
+        a.download = `homepower-backup-${this._today()}.json`; a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 5000);
         return;
       }
@@ -541,6 +574,7 @@ ${esc(where)}</pre></div>`;
         alert(`Restored ${a.devices || 0} batteries, ${a.schedules || 0} schedules, ${a.goals || 0} goals and ${a.scenes || 0} scenes.` + ((res.skipped || []).length ? `\n\nSkipped:\n- ${res.skipped.join("\n- ")}` : ""));
         return;
       }
+      case "legend": return this._toggleSeries(t.dataset.chart, t.dataset.key);
       case "flowdur":
         this._flowMinV = parseInt(t.dataset.m, 10);
         try { localStorage.setItem("homepower.flowMin", String(this._flowMinV)); } catch (e) { /* optional */ }

@@ -16,17 +16,19 @@ sidebar panel, and schedules and optimises how they charge and discharge.
 
 ## Install
 
-**Marketplace (Home Assistant 2026.11 and newer, recommended):** *Settings > Marketplace*, search for **HomePower Battery
-Manager**, install it and restart Home Assistant. Then *Settings > Devices & Services > Add integration > HomePower*.
-Add batteries from the **HomePower** sidebar panel or the integration's **Configure** menu.
+**Home Assistant Marketplace (recommended):** HomePower is listed in the Marketplace, so there is no repository to add.
 
-**HACS (before 2026.11):** open HACS, search for **HomePower Battery Manager**, download it, restart, then add the
-integration as above. (From 2026.11 HACS is part of Home Assistant as the Marketplace, and an installed copy is moved
-there automatically.)
+1. This button opens your own Home Assistant and starts setting up HomePower:
 
-If the search finds nothing, the catalog does not list HomePower yet: add it once by link instead. Marketplace: *Add from
-link* with `https://github.com/raymondjstone/HomePower`. HACS: three-dot menu > *Custom repositories* > add that address as
-an *Integration*. Then search and install as above.
+   [![Open your Home Assistant instance and start setting up HomePower.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=homepower)
+
+2. If Home Assistant does not have HomePower yet, go to *Settings > Marketplace*, search for **HomePower Battery
+   Manager** and select **Install**, which takes you into its setup.
+3. Add batteries from the **HomePower** sidebar panel or the integration's **Configure** menu.
+
+The Marketplace is what used to be called HACS: from Home Assistant 2026.11 it is built in, and an existing HACS
+installation is moved into it automatically. On an older Home Assistant, open **HACS** instead, search for the same name,
+download it, restart, then use the button above or *Settings > Devices & services > Add integration > HomePower*.
 
 **Manual:** copy `custom_components/homepower` into your Home Assistant `custom_components` folder and restart.
 
@@ -100,7 +102,7 @@ already doing it, and reads back to confirm. For each battery the first of these
 Then, for batteries nobody has instructed: **peak shaving** and **export limiting**, **hold-back** (reserve role, save for
 peak hours), and finally **hand-back** to the battery's own control. Device limits, charge-level limits and the overall
 caps are applied to whatever was decided. Every decision has a visible reason: the *Why* chip on each battery, and the
-battery's *target* sensor.
+battery's *target* sensor (`paused` while HomePower is paused, `monitor_only` for a battery whose control is off).
 
 ## Schedules
 
@@ -247,8 +249,12 @@ more than five minutes old is not used to steer solar charging.
     not limited. The battery card shows "Room for solar: up to X%", and Settings > Solar forecast explains the figures.
   - Without a forecast, solar counts as zero and batteries charge fully; the setup check suggests adding Forecast.Solar or
     Solcast. Only batteries marked as having panels (or that have reported solar power) are limited.
-- **Solar forecast for goals:** a goal can also charge less when tomorrow's forecast is good, using the share of forecast
-  solar that reaches the battery.
+- **How much of the forecast to use** (Settings > Solar forecast, 100% by default): 75% means HomePower plans with three
+  quarters of every forecast figure, for room for solar, goals, the dull-day reserve and the Overview tile. The Insights
+  comparison keeps the forecast as given, so its percentage shows what to set.
+- **Solar forecast for goals:** a goal can also charge less when the solar after its deadline is forecast to be good (a goal
+  due before sunset uses that day's forecast; one due after sunset, the next day's), using the share of forecast solar that reaches the battery. The forecast is the sensor you pick, or
+  else Forecast.Solar / Solcast, found automatically.
 - **Solar string health (Anker X1, EcoFlow STREAM):** each PV input's volts, amps and watts are shown in the battery's details sheet and
   under Insights > Solar strings. Every string is compared with the others on the same inverter, so the weather cancels
   out. An alert is raised when a string that normally produces gives almost nothing for half an hour while the others
@@ -264,7 +270,8 @@ more than five minutes old is not used to steer solar charging.
 - **House import limit:** caps total charging so charging never pushes import over it.
 - **Peak shaving:** with it on, batteries also discharge to keep whole-house import under the limit.
 - **Export limit (G98/G99):** trims discharge, then charges, to stay under an export limit.
-- **Overall caps** on total charge and total discharge power across all batteries.
+- **Overall caps** on total charge and total discharge power across all batteries. A battery that picks its own charge rate only
+  charges when the cap has room for its full rate.
 - **Charge-level limits:** each battery's minimum charge is respected with a margin so it does not flap on and off.
 - **Protect loads:** don't charge and/or discharge while a chosen entity is on or above a power (EV charger, heat pump...).
   The setup check points out the power sensor of a common EV charger (evcc, zappi, Ohme, Wallbox, Easee, Hypervolt,
@@ -307,7 +314,8 @@ state, so a Home Assistant restart while a battery is held does not lose it.
 
 When no schedule, goal or override needs it any more; when you switch control off for it (monitor-only); when you delete
 it; on **Safe mode**; when HomePower is reloaded, removed or Home Assistant shuts down; after a restart if it was left
-held; from the *Hand back to Auto* button on a phone alert. **Pause** does not hand back: it leaves batteries as they are.
+held; from the *Hand back to Auto* button on a phone alert. **Pause** does not hand back: it leaves batteries as they are
+(except that an Anker X1 is no longer kept alive while paused, so its watchdog returns it to its own control after 10 minutes).
 
 A hand-back that fails (the battery is offline, EcoFlow's cloud refuses or rate-limits it) is retried until it works,
 and a *command failed* alert says so meanwhile. If Home Assistant stops while a battery is held, nothing is handed back
@@ -331,7 +339,8 @@ HomePower left them.
   *Also set the X1's own import and export limits to HomePower's* (Settings): HomePower takes its limits back off, putting
   back what each one had before (an installer's limit, or off), when you clear the limit, turn the option off, switch the
   X1 to monitor-only, delete it or remove HomePower. They are deliberately left in place over a restart or reload, so they
-  still hold while Home Assistant is down, and they stay if the X1 cannot be reached at that moment (the log says so).
+  still hold while Home Assistant is down, and they stay if the X1 cannot be reached at that moment (the log says so; when
+  you delete an X1 that cannot be reached, a Home Assistant notification tells you to check its limits in the Anker app).
   Check them in the app, or with your installer if the limits are part of your grid connection agreement.
 - **EcoFlow app (Ultra / Ultra X):** the backup reserve, and that the energy strategy is still the one you use.
 - **EcoFlow app (STREAM 5000 series):** the backup reserve switch and level, and the operating mode (timer tasks, AI
@@ -351,7 +360,7 @@ battery was "left as it is". EcoFlow's app can take a few minutes to show the se
 - **Test run (dry run):** Settings > Test run. HomePower works out its plan as normal but sends nothing; each command it would have sent is listed under Events as `DRY RUN: would send ...`. Unlike Pause, the plan keeps being worked out, so it is the safe way to try new schedules, goals or a new battery.
 - **Grid down (Anker X1):** when an X1 reports the grid is lost it is running the house itself, so HomePower sends it no commands until the grid is back, shows a *Grid down* chip and raises an alert. Backup mode is not switched on for you, because it would stop the battery discharging below the reserve during the outage.
 - **Tariff comparison (Insights):** HomePower records your grid import and export every half-hour (about 200 days; the half-hourly house load and solar are kept for the what-if below). List other tariffs in Settings > Compare tariffs, one per line (`Octopus Go; peak=0.28; cheap=0.07; window=00:30-05:30; export=0.15; standing=0.45`; rates per kWh, standing per day), and Insights prices the same recorded usage on each. It is what your house and battery actually did, so a tariff that suits a different battery schedule could do better than shown. A *Month by month* chart shows each tariff's cost per month, and if another tariff would have been cheaper than the first one you list (taken to be the one you are on) for the last three or more complete months, Insights says so and sends one heads-up a day.
-- **Surplus load in cheap hours:** the solar-surplus switch can also be switched on during cheap-rate hours (Settings > Solar-surplus load).
+- **Surplus load in cheap hours:** the solar-surplus switch can also be switched on during cheap-rate hours (Settings > Solar surplus).
 - **Anker X1 own limits (experimental, off by default):** mirrors HomePower's import and export limit into the X1's own limit registers so they hold if Home Assistant is down. A limit HomePower wrote itself follows your setting up and down; a limit set by anyone else (an installer's grid-code limit) is only ever tightened, never raised or switched off. When HomePower's limit is no longer wanted (cleared, option off, X1 monitor-only or deleted, HomePower removed) the slot gets back exactly what it had before HomePower first wrote it, so a tightened installer limit returns to the installer's value rather than to off. The addresses (10074-10079) are the ones in Anker's own X1 Modbus protocol document.
 - **Battery details (the cog on a battery card, or *Details* on the Batteries tab):** everything about one battery in one place, laid out like its page in Home Assistant. *Readings now* and *HomePower's settings for it*; *Settings you can change*, with the same limits and rules as the vendor's own integration (see below); *On the battery itself*, which is what the battery reports (an Anker's named registers with units, an EcoFlow's values named the way the EcoFlow integration names them); and the matching *Home Assistant device* with its controls and sensors. Changes to the battery's own settings always ask first, are checked before anything is sent, and can only be made by an administrator.
   - *Anker Solarbank:* operating mode (only the modes that battery supports), charging limit (80-100 %), discharge limit (0-20 %) and backup reserve (0-100 %, only while the reserve is switched on in the Anker app; kept between the discharge and charging limits).
@@ -380,7 +389,7 @@ battery was "left as it is". EcoFlow's app can take a few minutes to show the se
   entity (a weather alert, for example) is on.
 - **Away mode:** only schedules marked "away" (or "always") apply. Manual, or from a person / tracker / on-off entity.
 - **Manual override:** force a mode on some or all batteries for a set time, with an optional power and stop level. It beats
-  everything else and ends by itself.
+  everything else and ends by itself; a restart of Home Assistant in the meantime does not cancel it.
 - **Scenes:** saved combinations of backup / away / pause and limits. *Normal*, *Holiday*, *Storm coming* and *Hands off*
   come built in; add your own. One tap in the panel, or the `homepower.apply_scene` service.
 
@@ -421,7 +430,7 @@ notifications. Both optionally go to a `notify.*` service as well.
 | Plan | Goals, the price chart with planned charging, planned export, energy kept for dearer hours and grid events, the next 24 hours per battery, schedule clashes |
 | Schedules | Add, edit, enable and delete schedules |
 | Batteries | Add, edit and delete batteries; allow control; role, priority, solar panels, whether its meter measures the whole house |
-| Insights | Savings today and this month, energy totals, solar forecast against measured solar (by day and by hour), solar self-consumption and cheap-rate share, what exporting pays now, solar strings (Anker X1, EcoFlow), battery health (weekly round-trip efficiency), long-term history charts |
+| Insights | Savings today and this month, energy totals, solar forecast against measured solar (by day and by hour), solar self-consumption and cheap-rate share, what exporting pays now, solar strings (Anker X1, EcoFlow), battery health (weekly round-trip efficiency), long-term history charts. On any chart with a clickable legend, click an item to hide that series and again to show it (also on the Overview power chart) |
 | Settings | Everything in the [settings reference](#settings-reference) |
 | Diagnostics | Setup check, per-battery status and last command, Test control, the raw readings received, event log, copy debug info, hardware report |
 
@@ -443,7 +452,7 @@ EcoFlow keys are only included if you tick the box.
 | Tariff & prices | Quick-fill presets, rates sensor, rates unit, standard rate, cheap rate, export price, estimate the cheap period from history, cheap-rate start and end, more cheap periods, save the battery for peak hours, keep stored energy for dearer hours, battery wear per kWh, currency symbol |
 | Paid export | Export price sensor, discharge to the grid while exporting pays, the lowest charge to export down to |
 | Grid events | Entities that say when a saving session runs (binary sensor, calendar, the Octopus event entity, input_boolean), charge up before the next one |
-| Solar forecast | Leave room for the solar forecast, house base load, tomorrow's forecast sensor (optional), share that reaches the battery (goals) |
+| Solar forecast | Leave room for the solar forecast, house base load, how much of the forecast to use, tomorrow's forecast sensor (optional), share that reaches the battery (goals) |
 | Backup & away | Backup reserve, reserve by solar forecast, entity that turns backup mode on, away entity |
 | Protect loads | Entities that block charging and/or discharging while busy |
 | Alerts & heads-ups | Extra notify service, battery full, battery low level, cheap-rate-soon warning and its level, daily summary time |
@@ -454,8 +463,9 @@ EcoFlow keys are only included if you tick the box.
 
 **EcoFlow live feed (opt-in):** makes EcoFlow batteries use EcoFlow's MQTT feed with the same keys, so readings are seconds
 old instead of about 30 seconds. It is off by default because it opens a second connection on your EcoFlow account, which
-could disturb another EcoFlow integration such as EcoFlow Cloud. If it cannot connect, normal polling continues. It has not
-been tested against a live EcoFlow account.
+could disturb another EcoFlow integration such as EcoFlow Cloud. If it cannot connect, normal polling continues, and
+Settings > EcoFlow says why (and, while it works, how many live updates have arrived); Diagnostics shows the same per
+battery. It has not been tested against a live EcoFlow account.
 
 ## Entities, services and card
 
@@ -489,6 +499,9 @@ been tested against a live EcoFlow account.
 | `homepower.away` | Away mode on or off |
 | `homepower.apply_scene` | Switch to a saved scene by name |
 | `homepower.test_control` | Run the control test on a battery and return the result |
+
+Batteries are named by their ID, shown as *Battery ID (for actions)* in each battery's details in the panel; `device_ids`
+takes one ID or a list. A mistyped ID is refused with a message rather than ignored.
 
 **Dashboard card (optional):** `type: custom:homepower-card` shows the home battery. It finds the sensor by itself;
 `entity:`, `title:` and `show_batteries:` are optional.
@@ -631,7 +644,7 @@ Removing HomePower also takes any import/export limits it wrote into an X1 back 
 that moment). Afterwards, check each battery's settings in the vendor app (work mode, backup reserve, operating mode, and
 on an X1 the limits and watchdog): see [What to check in the vendor app afterwards](#what-to-check-in-the-vendor-app-afterwards).
 To erase all of it instead, tick **Erase everything when HomePower is deleted** (HomePower panel > Settings > If you remove
-HomePower) before deleting. Home Assistant cannot ask at the moment of deleting, so the choice is made there.
+HomePower) before deleting; that also deletes its daily backup copies in `homepower_backups` (other files there are left alone). Home Assistant cannot ask at the moment of deleting, so the choice is made there.
 
 ## Known limits
 
@@ -648,12 +661,12 @@ HomePower) before deleting. Home Assistant cannot ask at the moment of deleting,
 - **Self-calibrating EcoFlow:** HomePower measures the power an EcoFlow battery really charges at (the median of recent readings while it was told to charge) and plans with that instead of the per-model estimate. A cloud battery gets one cycle to show a command's effect before it counts as unconfirmed, and at most 150 commands a day are sent to each (handing it back to Auto is never blocked). Each battery card can show "Why idle", the main thing in the way, and "Settings changed" with what the EcoFlow app changed.
 - **Plan versus actual:** the Overview shows, per battery, what HomePower told it to do over the last 24 hours (dashed) against what it really did (solid), with a "followed the plan" percentage. A low figure means the battery is not following commands or something else is overriding them. The last 8 days are kept.
 - **Proving EcoFlow control:** every Hold or Charge sent to an EcoFlow battery is watched for ten minutes and logged ("Command results" on its card, `command_traces` in Diagnostics): did it react, how fast, the most power seen. After three Charge commands in a row with no effect, HomePower stops sending that battery Charge (a schedule that asks for it leaves the battery on its own control, and the plan notes it) and says so; a Test control that sees it charge turns Charge back on. Test control now checks Hold first, then Charge. Until a battery has passed Test control, its first command waits for you to press "Allow first command" on its card. Each last command shows the inputs behind it (reason, charge level, price, grid). Alert notifications on a phone (a `notify.mobile_app_...` service) carry "Pause HomePower" and "Hand back to Auto" buttons.
-- **Safe mode** (header button): hands every battery back to its own control, then sends nothing until you leave it. Pause only stops new commands and leaves batteries as they are.
+- **Safe mode** (header button): hands every battery back to its own control, then sends nothing until you leave it. Pause only stops new commands and leaves batteries as they are (an X1 returns to its own control through its watchdog after 10 minutes).
 - **EcoFlow control report** (Insights): per battery, how many commands worked, the average reaction time, the real charge rate, how well it followed the plan, and a plain verdict. The wait before a slow battery counts as "not following commands" adapts to how long it has really taken to react (up to four retries).
 - **Warnings on save:** saving a schedule or goal still works, but you are told if it cannot do anything (a battery that cannot discharge), if its power setting is ignored (EcoFlow picks its own rate), or if its target is not above the battery's minimum charge.
 - **Price changes:** if the cheap hours in the price history differ clearly from the ones in Settings for six hours, you get an alert to update them. **Keep stored energy for dearer hours** (Settings, off by default) holds a battery while the day plan (see [Paid export](#paid-export)) keeps its energy for dearer half-hours later, up to when buying it back is cheapest, but not while solar is charging it. Without prices for the coming hours it holds when a clearly dearer price is coming within six hours. When several batteries compete for a limited import, the one with the better measured efficiency gets the cheapest slots.
 - **EcoFlow STREAM 5000 over local Modbus:** pick "EcoFlow STREAM 5000 / AC 5000 (ES5000) - local Modbus" when adding a battery. First switch it on in the EcoFlow app: STREAM system > **Energy management** (not the combined System settings page, which hides it) > Device integration > **Third-party control** > Modbus TCP. It is off by default and greyed out until EcoFlow's cloud accepts the firmware. HomePower then reads the battery every few seconds and sets its battery power in watts (control point 0x1610 = battery, target 0x1611), so Charge and Discharge work like the Anker batteries instead of the cloud reserve trick, with no rate limit. It writes EcoFlow's keep-alive register every 20 s and hands the battery back to its own energy management (control point 0) on Auto. The register map is from EcoFlow's official integration (EcoFlow-oasis-official/ha-EcoFlow-official, MIT); wire addresses are the register offset + 40001, unit id 1. **Not yet verified on hardware:** the sign of the power setpoint is assumed to be + charging; if Test control does the opposite, tick "Reverse the charge/discharge sign". Do not change the same setting in the app and in HomePower at once, and keep control off until Test control passes.
-- **Find local control ports** (Diagnostics): type a device's IP address and press Scan. It checks a short fixed list of ports local control usually uses (502 Modbus TCP, 1883 MQTT, 8883 MQTT over TLS, 80/443/8080 web, 4840 OPC UA and a few others) and shows which are open. Scan again after a firmware update, or after switching something on in the vendor app, and it shows what changed. The **Wide scan** button checks every port from 1 to 10,000 on that one device (up to a minute; it gives up and says "incomplete" after 90 seconds, only one runs at a time) and lists just the open ones with a count of the rest, in case local control uses an unusual port. Both only connect and listen for a few bytes: they send nothing, try no login, and refuse any address outside your own network (192.168.x.x, 10.x.x.x, 172.16-31.x.x, link-local and loopback). Meant for batteries that may have gained a local connection, for example an EcoFlow ES5000 after firmware 1.1.7.28, which adds third-party control. That local connection is Modbus TCP on port 502 (see the previous item and [EcoFlow protocol notes](#ecoflow-protocol-notes)): after switching it on in the EcoFlow app, a scan should show 502 open.
+- **Find local control ports** (Diagnostics): type a device's IP address and press Scan. It checks a short fixed list of ports local control usually uses (502 Modbus TCP, 1883 MQTT, 8883 MQTT over TLS, 80/443/8080 web, 4840 OPC UA and a few others) and shows which are open. Scan again after a firmware update, or after switching something on in the vendor app, and it shows what changed. The **Wide scan** button checks every port from 1 to 10,000 on that one device (a minute or two; it gives up and says "incomplete" after 90 seconds, only one runs at a time) and lists just the open ones with a count of the rest, in case local control uses an unusual port. Both only connect and listen for a few bytes: they send nothing, try no login, and refuse any address outside your own network (192.168.x.x, 10.x.x.x, 172.16-31.x.x, link-local and loopback). Meant for batteries that may have gained a local connection, for example an EcoFlow ES5000 after firmware 1.1.7.28, which adds third-party control. That local connection is Modbus TCP on port 502 (see the previous item and [EcoFlow protocol notes](#ecoflow-protocol-notes)): after switching it on in the EcoFlow app, a scan should show 502 open.
 - **Debug file:** Diagnostics > Download debug file saves readings, command results, plan against actual and recent events in one file with no keys, serial numbers or addresses. The same scrubbing covers error messages and the event log, where addresses and serials otherwise end up, and "Copy debug info" gives the same text. The on-screen Diagnostics keep your own address and serial but never show keys. After each restart the Events list and Diagnostics show what was restored and which batteries could not be reached. The Setup check lists "first command allowed" for EcoFlow batteries.
 - **Cold-weather target** (Settings > Cold weather, off by default): when tomorrow is forecast to be colder than the last week, goal targets are raised by the extra energy the house is expected to use, at most 25 points (an auto-target goal stays within the target you set). The plan says why, for example "target raised to 90% for the cold (-3 °C forecast vs about 6 °C lately: about 2.1 kWh more use)". It needs two things. Tomorrow's temperature comes from the first of: your weather entity (any weather integration, daily or hourly forecast), a sensor holding tomorrow's temperature, or, only if you switch it on, Open-Meteo, which is sent your home's location rounded to about 10 km. How much more your house uses per degree of cold is learned from its own recorded days (about a week, with a spread of temperatures; today's outdoor temperature comes from your sensor or the weather entity). Until a clear link is found nothing changes, and the Settings note says how many usable days it has.
 - **Planning with EcoFlow batteries:** a battery whose charge power cannot be set is planned in whole slots at its own rate, never at a made-up fraction. The Health card shows whether cycling each battery is worth it over the next 24 hours, using its measured round-trip efficiency.
@@ -669,7 +682,7 @@ MIT, see [LICENSE](LICENSE).
 ## Releases
 
 - Work goes to the **`develop`** branch. Every push there runs the tests and publishes a **pre-release** named
-  `v<version>-beta.<n>` (in HACS: *Redownload > Show beta versions*). Only the newest five pre-releases are kept.
+  `v<version>-beta.<n>` (to install one from the Marketplace, formerly HACS: *Redownload > Show beta versions*). Only the newest five pre-releases are kept.
 - Merging `develop` into **`master`** (a pull request) publishes the real release `v<version>` and removes that version's
   pre-releases.
 - `<version>` is `"version"` in `custom_components/homepower/manifest.json`. After each release the workflow moves `develop`
@@ -689,9 +702,12 @@ split by concern: `coord_prices.py` (rates, export, wear, the day plan, grid eve
 notifications), `coord_forecast.py` (solar forecast, room for solar, weather), `coord_inputs.py` (grid and other readings
 from Home Assistant), `coord_accounting.py` (energy, savings and money totals, learning), `coord_reports.py` (the panel's
 views, setup check, debug file and hardware report) and `coord_base.py` (what they share). The manager likewise:
-`manager.py`, `manager_details.py` (registers, battery settings, the details sheet) and `manager_backup.py`. Checks against
+`manager.py`, `manager_details.py` (registers, battery settings, the details sheet) and `manager_backup.py`; a loaded
+HomePower keeps them on its config entry (`runtime.py`). Checks against
 the real Home Assistant classes are in `tests/ha_harness/` (see its README; `python tests/ha_harness/run_all.py` runs them
-all, and GitHub Actions runs them on each push). See [docs/DESIGN.md](docs/DESIGN.md).
-Other checks: `tests/*.mjs` run the panel in jsdom (`node tests/panel_features_smoke.mjs`), `tests/panel_dom/panel_browser.mjs` runs it in
-real headless Chromium (needs `npm install playwright`), and `tests/test_ecoflow_modbus.py` runs the local EcoFlow driver against a
+all, and GitHub Actions runs them on each push; a release is published only when the whole suite, these included, passes).
+See [docs/DESIGN.md](docs/DESIGN.md).
+Other checks: `tests/*.mjs` and `tests/panel_dom/*.mjs` run the panel in jsdom (`node tests/panel_features_smoke.mjs`; GitHub
+Actions runs them on each push too), `tests/panel_dom/panel_browser.mjs` runs it in real headless Chromium (needs
+`npm install playwright`), and `tests/test_ecoflow_modbus.py` runs the local EcoFlow driver against a
 fake register space that follows EcoFlow's published map.

@@ -124,6 +124,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         self.plan_log_data, self.trace_data, self.weather_data = dict(plain("plan_log")), dict(plain("traces")), dict(plain("weather"))
         self.pv_health_data = dict(plain("pv_health"))
         self.solar_forecast_data = dict(plain("solar_forecast"))
+        self.overrides_data = {k: v for k, v in plain("overrides").items() if isinstance(v, dict)}
         conf = data.get("confirmed")
         self.confirmed = {c for c in conf if isinstance(c, str)} if isinstance(conf, list) else set()
         self.charge_rates = {k: int(v) for k, v in plain("charge_rates").items() if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")}
@@ -146,6 +147,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             "ecoflow_orig": self.ecoflow_orig, "charge_rates": c.rate_learner.rates if c else self.charge_rates,
             "plan_log": c.plan_log.dump() if c else self.plan_log_data, "pv_health": c.pv_health.dump() if c else self.pv_health_data,
             "solar_forecast": c.solar_log.dump() if c else self.solar_forecast_data,
+            "overrides": c.dump_overrides() if c else getattr(self, "overrides_data", {}),
             "traces": c.traces.dump() if c else self.trace_data,
             "weather": ({"temps": c.temp_log.dump(), "model": c.cold_model.dump()} if c else self.weather_data), "confirmed": sorted(self.confirmed),
         })
@@ -195,6 +197,16 @@ class HomePowerManager(DetailsMixin, BackupMixin):
                 return None
             hub.enabled = self._live_on
         return hub
+
+    def live_status(self) -> dict | None:
+        """The EcoFlow live feed, for Settings and Diagnostics: on or off, connected, how many updates came, and why it is
+        not working when it is not (paho-mqtt missing, refused...). None when no EcoFlow battery uses it."""
+        hubs = list(self._hubs.values())
+        if not hubs:
+            return None
+        return {"on": bool(self._live_on), "connected": any(bool(h.connected) for h in hubs),
+                "messages": sum(int(getattr(h, "messages", 0) or 0) for h in hubs),
+                "problem": next((h.error for h in hubs if getattr(h, "error", None)), None)}
 
     def set_live(self, on: bool) -> None:
         self._live_on = on
@@ -326,9 +338,10 @@ class HomePowerManager(DetailsMixin, BackupMixin):
     async def set_safe(self, on: bool) -> None:
         """Safe mode: hand every battery back to its own control, then send nothing until it is switched off."""
         if on:
+            # paused first, so no cycle forces a battery again between the hand-back and the pause
+            self.paused = self.safe = True
             if self.coordinator:
                 await self.coordinator.release_all(force=True)     # even if already paused: safe mode means handed back
-            self.safe = True
             await self.set_paused(True)
             self.safe = True                               # set_paused(True) leaves it alone, but be explicit
             await self._save()
@@ -401,7 +414,10 @@ class HomePowerManager(DetailsMixin, BackupMixin):
     def _check_new_device(self, raw: dict) -> None:
         check_new_device(raw, self.devices)
 
-    async def save_device(self, raw: dict) -> dict:
+    async def save_device(self, raw: dict, new: bool = False) -> dict:
+        if new and str(raw.get("device_id") or "").strip() in self.devices:
+            # adding, not editing: never replace a battery that has the same id (one added meanwhile in another tab, say)
+            raise ValidationError("A battery with that name already exists. Give this one a different name.")
         self._check_new_device(raw)
         d = device_to_dict(device_from_dict(await self._autofill(self._with_saved_secret(raw))))
         old = self.devices.get(d["device_id"])

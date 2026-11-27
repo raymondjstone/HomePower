@@ -13,6 +13,8 @@ const fmtKwh = (wh) => `${(wh / 1000).toFixed(1)} kWh`;
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 
 const CSS = `
+:host{--hp-ok:#15803d;--hp-warn:#b45309;--hp-err:#b91c1c;--hp-auto:#1d4ed8;--hp-charge:#15803d;--hp-discharge:#b45309;--hp-hold:#4b5563}
+:host([dark]){--hp-ok:#4ade80;--hp-warn:#fbbf24;--hp-err:#f87171;--hp-auto:#60a5fa;--hp-charge:#4ade80;--hp-discharge:#fbbf24;--hp-hold:#9ca3af}
 :host{display:block;background:var(--primary-background-color);color:var(--primary-text-color);min-height:100vh;font-family:var(--paper-font-body1_-_font-family,Roboto,sans-serif)}
 *{box-sizing:border-box}
 header{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--app-header-background-color,var(--primary-color));color:var(--app-header-text-color,#fff);position:sticky;top:0;z-index:5}
@@ -60,7 +62,7 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .presets{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}
 .ordlist{display:grid;gap:6px;margin:4px 0}.ord{display:grid;grid-template-columns:24px 1fr auto auto;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--divider-color);border-radius:8px}
 .chk{display:grid;gap:6px}.chk .it{display:grid;grid-template-columns:24px 1fr auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--divider-color)}
-.chk .it:last-child{border-bottom:0}.chk .ok{color:#16a34a}.chk .no{color:#d97706}.chk small{display:block;color:var(--secondary-text-color)}
+.chk .it:last-child{border-bottom:0}.chk .ok{color:var(--hp-ok)}.chk .no{color:var(--hp-warn)}.chk small{display:block;color:var(--secondary-text-color)}
 @media(max-width:700px){header{flex-wrap:wrap;padding:10px 12px;gap:8px}header h1{flex-basis:100%;order:-1;font-size:18px}header .btn{padding:6px 10px;font-size:12px}
  main{padding:10px}.hb{grid-template-columns:1fr;justify-items:center;text-align:center}.plot-y{width:46px}.card{padding:14px}nav button{padding:12px 10px}.durs{margin-left:0;margin-top:6px;display:flex}}
 .tl{margin:8px 0 14px}
@@ -74,11 +76,13 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .axis div:last-child{display:flex;justify-content:space-between}
 .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--secondary-text-color);margin-top:8px}
 .legend span{display:inline-flex;gap:6px;align-items:center}
+.legend button.lg{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+.legend button.lg.off{opacity:.45;text-decoration:line-through}
 .sw{width:12px;height:12px;border-radius:3px;display:inline-block}
 button.btn{font:inherit;font-weight:500;border-radius:8px;border:1px solid var(--divider-color);background:var(--card-background-color);color:var(--primary-text-color);padding:8px 14px;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
 button.btn:hover{background:var(--secondary-background-color)}
 button.btn.pri{background:var(--primary-color);color:var(--text-primary-color,#fff);border-color:transparent}
-button.btn.danger{color:#dc2626}
+button.btn.danger{color:var(--hp-err)}
 button.btn.sm{padding:4px 10px;font-size:13px}
 .bar-actions{display:flex;justify-content:space-between;align-items:center;margin:0 0 14px;gap:10px;flex-wrap:wrap}
 .bar-actions h2{margin:0;font-size:18px}
@@ -130,7 +134,7 @@ input:focus,select:focus{outline:2px solid var(--primary-color);outline-offset:-
 .presets label:has(input:checked){border-color:var(--primary-color);background:color-mix(in srgb,var(--primary-color) 14%,transparent)}
 .checks{display:flex;gap:8px;flex-wrap:wrap}
 .checks label{display:flex;gap:6px;align-items:center;border:1px solid var(--divider-color);border-radius:8px;padding:6px 10px;font-size:14px;color:var(--primary-text-color)}
-.err{color:#ef4444;font-size:14px;margin-top:12px;min-height:18px}
+.err{color:var(--hp-err);font-size:14px;margin-top:12px;min-height:18px}
 .foot{display:flex;justify-content:space-between;gap:8px;margin-top:18px;flex-wrap:wrap}
 .foot .r{display:flex;gap:8px;margin-left:auto}
 details summary{cursor:pointer;color:var(--secondary-text-color);font-size:13px;margin:12px 0 0}
@@ -142,9 +146,22 @@ details summary{cursor:pointer;color:var(--secondary-text-color);font-size:13px;
 .banner.warn{background:#b45309;color:#fff}.banner.info{background:var(--secondary-background-color)}
 .seg2{position:absolute;top:3px;bottom:3px;border-radius:4px;color:#fff;font-size:11px;padding:0 5px;display:flex;align-items:center;overflow:hidden;white-space:nowrap}
 .rule{display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:8px;align-items:end;margin:6px 0}
-.steps div{padding:3px 0}.ok{color:#16a34a}.bad{color:#ef4444}
+.steps div{padding:3px 0}.ok{color:var(--hp-ok)}.bad{color:var(--hp-err)}
 @media(max-width:600px){.tl .row,.axis{grid-template-columns:80px 1fr}.two,.three{grid-template-columns:1fr}.seg-pick{grid-template-columns:repeat(2,1fr)}}
 `;
 
 
-export { MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS };
+// Meaning carried by text, icons or thin marks needs a shade per theme: no one colour reads at 4.5:1 on both a white and a
+// near-black card. These follow Home Assistant's light / dark mode (the panel sets [dark] from hass.themes.darkMode).
+const INK = { ok: "var(--hp-ok)", warn: "var(--hp-warn)", err: "var(--hp-err)", auto: "var(--hp-auto)",
+  charge: "var(--hp-charge)", discharge: "var(--hp-discharge)", hold: "var(--hp-hold)" };
+// Text on a coloured fill (mode chips, schedule bars): near-black or white, whichever has more contrast on that fill.
+const onFill = (hex) => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ""));
+  if (!m) return "#fff";
+  const ch = (i) => { const c = parseInt(m[1].slice(i, i + 2), 16) / 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  const L = 0.2126 * ch(0) + 0.7152 * ch(2) + 0.0722 * ch(4);
+  return (L + 0.05) / (0.0056 + 0.05) > 1.05 / (L + 0.05) ? "#111" : "#fff";      // #111 has a luminance of 0.0056
+};
+
+export { MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS, INK, onFill };

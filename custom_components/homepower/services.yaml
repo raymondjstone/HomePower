@@ -30,7 +30,8 @@ override:
     device_ids:
       name: Battery IDs (empty = all)
       selector:
-        object:
+        text:
+          multiple: true
 clear_override:
   name: Clear manual override
   description: Go back to schedules.
@@ -38,7 +39,8 @@ clear_override:
     device_ids:
       name: Battery IDs (empty = all)
       selector:
-        object:
+        text:
+          multiple: true
 backup:
   name: Backup mode
   description: Keep a reserve for power cuts (top up to the backup reserve and never discharge below it).

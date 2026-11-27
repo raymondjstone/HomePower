@@ -48,8 +48,12 @@ class FakeMgr:
 
 def mkflow(mgr):
     f = HomePowerOptionsFlow()
-    f.hass = SimpleNamespace(data={"homepower": {"manager": mgr}}, states=SimpleNamespace(get=lambda e: None),
-                             config_entries=SimpleNamespace(async_get_known_entry=lambda i: SimpleNamespace(options={})))
+    from homeassistant.config_entries import ConfigEntryState
+    from custom_components.homepower.runtime import HomePowerData
+    loaded = SimpleNamespace(runtime_data=HomePowerData(mgr, None), state=ConfigEntryState.LOADED)    # the running HomePower
+    f.hass = SimpleNamespace(data={}, states=SimpleNamespace(get=lambda e: None),
+                             config_entries=SimpleNamespace(async_get_known_entry=lambda i: SimpleNamespace(options={}),
+                                                            async_entries=lambda d=None: [loaded]))
     f.flow_id, f.handler = "x", "entry"
     return f
 

@@ -19,6 +19,17 @@ class PricesMixin:
     def _rates_entity(self) -> str:
         return self.settings.rates_entity or self._glow().get("rate", "")
 
+    def history_window(self) -> tuple | None:
+        """The cheap period found in the price history, as (start, end) to plan with; None until one has been found.
+        The window is read from when the sensor's value changed, and such sensors (smart-meter/DCC data in particular) lag
+        the real switch by up to an hour. A late *start* only wastes cheap time, but a late *end* would plan charging into
+        peak-rate time, so the end is pulled back one half-hour."""
+        inf = self._tariff
+        if inf is None:
+            return None
+        end = (datetime.combine(dt_util.now().date(), inf.end) - SLOT).time()
+        return inf.start, inf.end if end == inf.start else end    # a one-slot window: pulling back would leave it empty (= all day)
+
     def _rates(self) -> RateTable | None:
         s = self.settings
         slots = []
@@ -37,13 +48,7 @@ class PricesMixin:
         inf = self._tariff if s.offpeak_auto and ent else None
         if inf is not None:   # anything the user typed in wins; history only fills the blanks
             if (a is None or b is None) and not s.offpeak_extra:   # typed-in extra periods mean the user knows the hours
-                # The window is read from when the sensor's value changed, and such sensors (smart-meter/DCC data in
-                # particular) lag the real switch by up to an hour. A late *start* only wastes cheap time, but a late
-                # *end* would plan charging into peak-rate time, so the end is pulled back one half-hour.
-                a = inf.start
-                b = (datetime.combine(dt_util.now().date(), inf.end) - SLOT).time()
-                if b == a:
-                    b = inf.end                        # a one-slot window: pulling the end back would leave it empty (= all day)
+                a, b = self.history_window()
             peak = inf.peak if peak is None else peak
             off = inf.offpeak if off is None else off
         if not slots and peak is None and off is None:

@@ -12,13 +12,13 @@ from homeassistant import config_entries
 from homeassistant.helpers import selector as sel
 
 from ._schema import vol
-from .const import DOMAIN
 from .core.profiles import DRIVERS, PROFILE_BY_ID, PROFILES
 from .core.serde import ValidationError, fill_from_probe
 from .core.settings import DEFAULTS, SettingsError, clean
+from .runtime import running_manager
 
 FLOW_SETTING_KEYS = ("import_limit_w", "peak_shaving", "export_limit_w", "grid_import_entity", "grid_export_entity", "rates_entity", "price_peak",
-                     "price_offpeak", "offpeak_start", "offpeak_end", "offpeak_auto", "forecast_entity", "backup_reserve_pct", "storm_entity",
+                     "price_offpeak", "offpeak_start", "offpeak_end", "offpeak_auto", "forecast_entity", "forecast_use_pct", "backup_reserve_pct", "storm_entity",
                      "away_entity", "notify_service")
 MONEY_SETTING_KEYS = ("export_price", "export_rates_entity", "export_discharge", "export_keep_pct", "hold_for_dearer", "wear_cost",
                       "event_entity", "event_charge_pct")
@@ -40,6 +40,11 @@ def _num(lo, hi, unit=None, step=1):
     if unit:  # the validator rejects unit_of_measurement=None
         cfg["unit_of_measurement"] = unit
     return sel.NumberSelector(sel.NumberSelectorConfig(**cfg))
+
+
+def _plain(err) -> str:
+    """A settings error names the setting by its key (the panel shows its label instead): here, as words."""
+    return re.sub(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", lambda m: m.group(0).replace("_", " "), str(err))
 
 
 def _dropdown(options, custom=False):
@@ -72,7 +77,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         self._eco_devices: list[dict] = []
 
     def _mgr(self):
-        return self.hass.data.get(DOMAIN, {}).get("manager")
+        return running_manager(self.hass)
 
     def _done(self):
         return self.async_create_entry(data=dict(self.config_entry.options))
@@ -194,7 +199,8 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="ecoflow_account", errors=errors,
             data_schema=vol.Schema({vol.Required("region", default="eu"): _dropdown(region),
-                                    vol.Required("access_key"): str, vol.Required("secret_key"): str}),
+                                    vol.Required("access_key"): str,
+                                    vol.Required("secret_key"): sel.TextSelector(sel.TextSelectorConfig(type=sel.TextSelectorType.PASSWORD))}),
             description_placeholders={"error": detail})
 
     async def async_step_ecoflow_device(self, user_input=None):
@@ -377,7 +383,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                     if new.get(k):
                         new[k] = new[k][:5]
             except SettingsError as err:
-                return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
+                return self.async_abort(reason="invalid", description_placeholders={"error": _plain(err)})
             return self.async_create_entry(data={**self.config_entry.options, **new})
 
         def ent(domains):
@@ -400,6 +406,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             opt("offpeak_start", sel.TimeSelector()): sel.TimeSelector(),
             opt("offpeak_end", sel.TimeSelector()): sel.TimeSelector(),
             opt("forecast_entity", ent(["sensor"])): ent(["sensor"]),
+            opt("forecast_use_pct", _num(0, 200, "%"), 100): _num(0, 200, "%"),
             opt("backup_reserve_pct", _num(0, 100, "%")): _num(0, 100, "%"),
             opt("storm_entity", ent(["binary_sensor", "input_boolean", "switch"])): ent(["binary_sensor", "input_boolean", "switch"]),
             opt("away_entity", ent(["binary_sensor", "input_boolean", "person", "device_tracker"])): ent(["binary_sensor", "input_boolean", "person", "device_tracker"]),
@@ -417,7 +424,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                     full["event_entity"] = ", ".join(str(e) for e in ev if e)
                 new = clean({k: ("" if v is None else v) for k, v in full.items()})
             except SettingsError as err:
-                return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
+                return self.async_abort(reason="invalid", description_placeholders={"error": _plain(err)})
             return self.async_create_entry(data={**self.config_entry.options, **new})
 
         def opt(key, default=None):

@@ -87,9 +87,10 @@ export default (U) => {
           const a = Math.max(0, (Date.parse(sg.start) - t0) / span), b = Math.min(1, (Date.parse(sg.end) - t0) / span);
           if (b <= a) return "";
           const m = MODES[sg.mode] || MODES.hold;
-          return `<div class="seg2" title="${esc(sg.source)}: ${esc(m.label)}${sg.power_w ? " " + fmtW(sg.power_w) : ""}" style="left:${a * 100}%;width:${(b - a) * 100}%;background:${m.color}">${b - a > 0.12 ? esc(sg.source) : ""}</div>`;
+          return `<div class="seg2" title="${esc(sg.source)}: ${esc(m.label)}${sg.power_w ? " " + fmtW(sg.power_w) : ""}" style="left:${a * 100}%;width:${(b - a) * 100}%;background:${m.color};color:${U.onFill(m.color)}">${b - a > 0.12 ? esc(sg.source) : ""}</div>`;
         }).join("");
-        return `<div class="row"><div class="nm">${esc(d.name)}</div><div class="bar">${segs}<div class="now" style="left:0"></div></div></div>`;
+        const watch = d.control_enabled === false;    // what the plan would do, but nothing is sent to it: shown faded
+        return `<div class="row"${watch ? ' title="Monitor only: control is off for this battery, so none of this is sent to it"' : ""}><div class="nm">${esc(d.name)}${watch ? " (monitor only)" : ""}</div><div class="bar"${watch ? ' style="opacity:.4"' : ""}>${segs}<div class="now" style="left:0"></div></div></div>`;
       }).join("");
       const hrs = [0, 6, 12, 18, 24].map((h) => `<span>${new Date(t0 + h * 3600e3).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}</span>`).join("");
       const conflicts = pv.conflicts.map((c) => `<div class="banner warn">Schedules ${c.schedules.map((x) => `"${esc(x)}"`).join(" and ")} clash on ${esc((this.data.devices.find((d) => d.device_id === c.device_id) || {}).name || c.device_id)} from ${new Date(c.start).toLocaleString([], this._tzOpt({ weekday: "short", hour: "2-digit", minute: "2-digit" }))} to ${new Date(c.end).toLocaleTimeString([], this._tzOpt({ hour: "2-digit", minute: "2-digit" }))}. Give one a higher priority.</div>`).join("");
@@ -117,7 +118,7 @@ export default (U) => {
       <div class="f"><label>Charge from</label><select id="gl-source">${[["grid", "Grid: the cheapest half-hours before the deadline"], ["solar", "Solar only: spare solar, nothing from the grid"], ["both", "Solar first, then the cheapest grid half-hours for what is still missing"]].map(([v, l]) => `<option value="${v}" ${(g.source || "grid") === v ? "selected" : ""}>${l}</option>`).join("")}</select>
         <span class="hint">Solar charging follows your grid meter and takes only what would otherwise be exported. Between times the battery runs itself as usual.</span></div>
       <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-auto" ${g.auto_target ? "checked" : ""}>Work the target out from my usual use (the target above becomes the maximum; it learns for a few days first)</label>
-      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-forecast" ${g.use_forecast ? "checked" : ""}>Charge less when tomorrow's solar forecast is good (set the forecast entity in Settings)</label>
+      <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="gl-forecast" ${g.use_forecast ? "checked" : ""}>Charge less when the coming solar forecast is good (Forecast.Solar, Solcast or the sensor picked in Settings)</label>
       <div class="f"><label>Max total charge power for this goal (W, optional)</label><input type="number" id="gl-max" min="0" step="100" value="${g.max_power_w ?? ""}"></div>
       <div class="err" id="m-err"></div>
       <div class="foot">${isNew ? "<span></span>" : `<button class="btn danger" data-act="del-goal" data-id="${esc(g.id)}">Delete</button>`}

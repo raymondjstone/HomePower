@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time as _time
 from collections import deque
 from dataclasses import replace as _replace
@@ -53,7 +54,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         self.adapters, self.schedules, self.goals = adapters, schedules, goals
         self.settings: AppSettings = build_settings({**config_entry.data, **config_entry.options})
         manager.set_live(self.settings.ecoflow_live)
-        self.overrides: dict[str, tuple[Desired, datetime]] = {}   # manual "charge now" etc.
+        self.overrides: dict[str, tuple[Desired, datetime]] = self._load_overrides(getattr(manager, "overrides_data", None))   # manual "charge now" etc.: kept over a restart
         self.testing: set[str] = set()                              # batteries under a control test
         self.meter = EnergyMeter(manager.energy)
         self._meter = MeterReader()   # smart-meter sensors -> watts
@@ -78,6 +79,11 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         self.cold_model = ColdModel((manager.weather_data or {}).get("model"))   # extra use per degree of cold
         self.weather: dict = {}                                                  # tomorrow's temperature and what it means, for the panel
         self._weather_at, self._weather_busy = -1e9, False
+        self._logged_failures: dict[str, tuple[str, float]] = {}   # see _log_failure
+        # Sending commands and handing back never overlap: a hand-back waits for the commands already going out, so none of
+        # them can land after it. Once closing (unload, reload, shutdown) no cycle sends anything again.
+        self._send_lock_obj: asyncio.Lock | None = None
+        self._closing = False
         self.solar_log = SolarForecastLog(getattr(manager, "solar_forecast_data", None))   # forecast per day, for forecast vs actual
         self.solar_hours: dict[str, list[float]] = {}    # latest hourly solar forecast (kWh per local hour) by day
         self.forecast_source: str | None = None          # which forecast integration is used
@@ -181,11 +187,37 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         if device_ids and (unknown := sorted(set(device_ids) - known)):
             # a mistyped id in an automation would otherwise do nothing at all, silently
             raise ValueError(f"no battery called {', '.join(unknown)} (known: {', '.join(sorted(known)) or 'none'})")
+        if getattr(self.manager, "safe", False):     # it would never be sent: safe mode sends nothing until switched off
+            raise ValueError("Safe mode is on: HomePower sends no commands until you switch it off, so an override would do nothing")
+        watched = sorted(a.config.name for a in self.adapters
+                         if device_ids and a.config.device_id in device_ids and not a.config.extra.get("control_enabled", True))
+        if watched:      # it would never be sent: say so rather than accept an override that does nothing
+            raise ValueError(f"{', '.join(watched)} {'is' if len(watched) == 1 else 'are'} monitor-only (control is off in its "
+                             "battery settings), so HomePower sends it no commands")
         until = dt_util.now() + timedelta(minutes=minutes)
         for a in self.adapters:
             if not device_ids or a.config.device_id in device_ids:
                 self.overrides[a.config.device_id] = (desired, until)
                 self._log(a.config.device_id, f"manual override {desired.mode.value} for {minutes} min")
+
+    def dump_overrides(self) -> dict:
+        return {did: {"mode": d.mode.value, "power_w": d.power_w, "target_soc": d.target_soc, "until": until.isoformat()}
+                for did, (d, until) in self.overrides.items()}
+
+    @staticmethod
+    def _load_overrides(raw) -> dict:
+        """Overrides saved before a restart; one that has run out, or is damaged, is dropped (the next cycle drops expired ones)."""
+        out = {}
+        for did, o in (raw or {}).items() if isinstance(raw, dict) else ():
+            try:
+                until = datetime.fromisoformat(str(o["until"]))
+                if until is None or until.tzinfo is None:
+                    continue
+                num = lambda v: None if v is None or isinstance(v, bool) else int(v)
+                out[str(did)] = (Desired(Mode(o["mode"]), num(o.get("power_w")), num(o.get("target_soc"))), until)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+        return out
 
     def clear_override(self, device_ids: list[str] | None = None) -> None:
         for did in list(self.overrides):
@@ -280,6 +312,19 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         """Every battery's reading as shown (see shown_actual), for the panel's and the sensors' totals."""
         return {did: self.shown_actual(did) or st.actual for did, st in self._snap.devices.items() if st.actual}
 
+    def _log_failure(self, key: str, msg: str, *args) -> None:
+        """For the safety nets of the control loop (it runs every 10 s): the first time a failure happens, or when it
+        changes, or an hour after it was last logged, log it with its traceback; otherwise only at debug level, so a lasting
+        problem does not fill the log with the same traceback thousands of times a day."""
+        err = sys.exc_info()[1]
+        sig, now = f"{type(err).__name__}: {err}", _time.monotonic()
+        last = self._logged_failures.get(key)
+        if last is None or last[0] != sig or now - last[1] >= 3600:
+            self._logged_failures[key] = (sig, now)
+            _LOGGER.exception(msg + (" (logged once an hour while it lasts)" if last and last[0] == sig else ""), *args)
+        else:
+            _LOGGER.debug(msg + ": %s", *args, sig)
+
     def _commanded(self, did: str) -> Mode | None:
         """What HomePower last told this battery to do, if it was sent (a paused, monitor-only or tested battery was told nothing)."""
         st = self._snap.devices.get(did)
@@ -306,9 +351,9 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             self._note_link(self._snap.devices[did], act, mono)
 
         self._observe_temp(now)
-        self.hass.async_create_task(self._refresh_tariff())
-        self.hass.async_create_task(self._refresh_weather())
-        self.hass.async_create_task(self._refresh_solar_hours())
+        # tied to the config entry, so an unload or reload cancels a fetch still running (saves stay on hass: they must finish)
+        for name, job in (("tariff", self._refresh_tariff), ("weather", self._refresh_weather), ("solar forecast", self._refresh_solar_hours)):
+            self.config_entry.async_create_background_task(self.hass, job(), f"homepower {name} refresh")
         grid = self._grid_w(actuals)
         rates = self._rates()
         self._exp_table = self._export_table()
@@ -319,7 +364,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         try:
             self.day_plan = self._day_plan(rates, now, actuals)
         except Exception:  # noqa: BLE001 - without a plan the simpler rules apply
-            _LOGGER.exception("day plan failed; using the simpler rules this cycle")
+            self._log_failure("day plan", "day plan failed; using the simpler rules this cycle")
             self.day_plan = None
         before_event = self._event_goal(now)
         world = World(
@@ -332,7 +377,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             overrides=self._active_overrides(now), grid_w=grid, condition_ok=self._condition_ok, usage_wh=self.profile.expected_wh,
             backup_active=self.backup_active, away=self.away, load_blocks=self._load_blocks(), reserve_floor_pct=self._forecast_floor(now),
             grid_fresh=self.grid_age_s is None or self.grid_age_s <= GRID_STALE_AFTER_S,
-            rates=rates, forecast_kwh=self._forecast_kwh(), cheap_now=self._is_cheap(rates, now, self._price_now(rates, now)),
+            rates=rates, forecast_kwh=self._goal_forecast(now), forecast_by_day=self._forecast_by_day(now), sunsets=self._sunsets(now), cheap_now=self._is_cheap(rates, now, self._price_now(rates, now)),
             devices=[DevIn(self._effective_config(a.config), actuals[a.config.device_id],
                            self._snap.devices[a.config.device_id].release_pending,
                            self._snap.devices[a.config.device_id].guard_held,
@@ -348,10 +393,11 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         try:
             res = compute(world)
         except Exception:  # noqa: BLE001 - a decision bug must never take the integration down or send odd commands
-            _LOGGER.exception("decision engine failed; leaving the batteries alone this cycle")
+            self._log_failure("engine", "decision engine failed; leaving the batteries alone this cycle")
             res = Result(notes=["internal error in the decision engine: no commands were sent this cycle (see the Home Assistant log)"])
         self.last_result = res
 
+        to_send: list = []                 # (adapter, command) to send once every battery has been decided
         for a in adapters:
             did = a.config.device_id
             st = self._snap.devices.get(did)
@@ -366,7 +412,7 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             try:
                 self._note_decision(did, a.config.name, st, actuals[did], world, res, grid, now)
             except Exception:  # noqa: BLE001 - the decision log is for people: a bug there must not stop control of this or the next battery
-                _LOGGER.exception("could not record the decision for %s", did)
+                self._log_failure(f"decision log {did}", "could not record the decision for %s", did)
             if st.desired is None:  # nothing manages it: device runs its own logic
                 st.decision = None
                 st.unconfirmed = 0
@@ -379,6 +425,8 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             may_hand_back = handing_back and (not control_on or did in self._retry_handback or self.manager.safe)
             if did in self.testing or ((self.paused or not control_on) and not may_hand_back):
                 st.decision = None  # monitor-only / paused / being tested: read and report, never write
+                if did not in self.testing:     # nothing is being sent, so "not following" / "failed" no longer apply
+                    st.unconfirmed, st.last_error = 0, None
                 continue
             fresh = materially_different(st.last_applied, st.desired)   # new instruction: no cooldown
             st.decision, diffs = decide(st.desired, st.actual, now=mono, last_apply=None if fresh else st.last_apply,
@@ -386,9 +434,32 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             if st.decision is Decision.SKIP_PROTECTED:
                 self._log(did, f"protection active, not overriding: {diffs}")
             elif st.decision is Decision.APPLY:
-                await self._apply_and_verify(a, st, st.desired, diffs)
+                to_send.append((a, self._apply_and_verify(a, st, st.desired, diffs)))
             elif st.decision is Decision.OK:
                 st.unconfirmed = 0
+        # Every decision is made above; the commands go out together, so a battery that is slow to answer (EcoFlow's cloud
+        # can take several 15 s requests) does not hold up the commands to the others.
+        async with self._send_lock():
+            # Decided before a pause, safe mode or unload that happened while this cycle was deciding: drop what would now
+            # be refused, so nothing lands after the hand-back. Handing back is always still sent (except when closing).
+            keep = []
+            for a, job in to_send:
+                st = self._snap.devices.get(a.config.device_id)
+                auto = st is not None and st.desired is not None and st.desired.mode is Mode.AUTO
+                if getattr(self, "_closing", False) or (self.paused and not auto):
+                    job.close()
+                    if st is not None:
+                        st.decision = None
+                else:
+                    keep.append((a, job))
+            to_send = keep
+            results = await asyncio.gather(*(job for _a, job in to_send), return_exceptions=True)
+        for (a, _job), res in zip(to_send, results):
+            if isinstance(res, BaseException) and not isinstance(res, asyncio.CancelledError):
+                try:
+                    raise res
+                except Exception:  # noqa: BLE001 - logged once per problem; the other batteries' commands went out
+                    self._log_failure(f"apply {a.config.device_id}", "sending a command to %s failed", a.config.device_id)
 
         if not self._started:
             self._started = True
@@ -399,22 +470,22 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         if not self.paused:
             await self._keepalive(mono, adapters)
         self.last_grid = grid
-        for step in (lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(mono, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals), lambda: self._check_tariff_drift(wall),
+        for i, step in enumerate((lambda: self._account(now, wall, actuals, grid, rates), lambda: self._check_alerts(mono, adapters), lambda: self._learn_rates(adapters), lambda: self._record_plan(now, actuals), lambda: self._watch_traces(wall, now, actuals), lambda: self._check_tariff_drift(wall),
                      lambda: self._check_events(now, wall, actuals, rates), lambda: self._watch_pv(now, mono, actuals),
                      lambda: self._divert(mono, actuals, grid), lambda: self._sync_x1_limits(mono, adapters),
-                     lambda: self._note_solar(now)):
+                     lambda: self._note_solar(now))):
             try:   # accounting / alerts are secondary: a bug there must not stop control
                 r = step()
                 if asyncio.iscoroutine(r):
                     await r
             except Exception:  # noqa: BLE001
-                _LOGGER.exception("secondary step failed (accounting/alerts); control continues")
+                self._log_failure(f"secondary step {i}", "secondary step failed (accounting/alerts); control continues")
         if mono - self._last_persist >= PERSIST_EVERY_S:
             self._last_persist = mono
             try:
                 await self.manager.save_runtime()
             except Exception:  # noqa: BLE001
-                _LOGGER.exception("could not save HomePower state")
+                self._log_failure("save", "could not save HomePower state")
         return self._snap
 
     async def _keepalive(self, mono: float, adapters: list[DeviceAdapter]) -> None:
@@ -474,6 +545,15 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
             expected = isinstance(err, (OSError, asyncio.TimeoutError, ModbusError))
             _LOGGER.warning("could not take HomePower's limits off %s (%s); check them in the Anker app", device_id,
                             err or type(err).__name__, exc_info=not expected)
+            try:                            # the battery is being deleted: nothing will retry, so the user must be told
+                from homeassistant.components import persistent_notification
+
+                persistent_notification.async_create(
+                    self.hass, f"HomePower could not take the import/export limits it set off {a.config.name} before it was "
+                    "deleted (the X1 did not answer). Check them in the Anker app.",
+                    title="HomePower", notification_id=f"homepower_x1_limits_{device_id}")
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("could not create the notification", exc_info=True)
         for k in [k for k in self._event_state if k.startswith((f"x1lim:{device_id}:", f"x1orig:{device_id}:"))]:
             del self._event_state[k]
 
@@ -717,21 +797,47 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         for a in self.adapters:
             await a.close()
 
-    async def release_all(self, force: bool = False) -> None:
+    async def release_all(self, force: bool = False, closing: bool = False) -> None:
         """Best effort on shutdown: hand every battery we forced back to its own control. While paused nothing is touched,
-        unless `force` (safe mode, and the notification's hand-back button, mean it even when paused)."""
+        unless `force` (safe mode, and the notification's hand-back button, mean it even when paused). `closing` (unload,
+        reload, Home Assistant stopping): no cycle sends a command after this. Either way it waits for commands already
+        going out, so none of them lands after the hand-back."""
+        if closing:
+            self._closing = True               # at once: no cycle starts sending from here on
+        try:                                   # bounded: Home Assistant waits for this at shutdown
+            await asyncio.wait_for(self._send_lock().acquire(), HANDBACK_TIMEOUT_S if closing else APPLY_TIMEOUT_S + READ_TIMEOUT_S)
+            got = True
+        except TimeoutError:
+            got = False
+            _LOGGER.warning("a command was still going out after %s s; handing the batteries back anyway",
+                            HANDBACK_TIMEOUT_S if closing else APPLY_TIMEOUT_S + READ_TIMEOUT_S)
+        try:
+            await self._release_all(force)
+        finally:
+            if got:
+                self._send_lock().release()
+
+    def _send_lock(self) -> asyncio.Lock:
+        lock = getattr(self, "_send_lock_obj", None)
+        if lock is None:
+            lock = self._send_lock_obj = asyncio.Lock()
+        return lock
+
+    async def _release_all(self, force: bool) -> None:
         if self.paused and not force:
             await self.manager.save_runtime()      # nothing to hand back, but the running totals must still be kept
             return
-        for a in self.adapters:
-            st = self._snap.devices.get(a.config.device_id)
-            if st and st.release_pending:
-                try:
-                    self.traces.cancel(a.config.device_id)
-                    await asyncio.wait_for(a.apply(Desired(Mode.AUTO)), HANDBACK_TIMEOUT_S)   # one hung battery must not hold up the rest
-                    self._set_release(a.config.device_id, st, False)     # handed back: not "held from before" at the next start
-                    self._log(a.config.device_id, "released to the device's own control on shutdown")
-                except Exception as err:  # noqa: BLE001 - flag stays set; the control loop keeps retrying, and so does the next start
-                    self._retry_handback.add(a.config.device_id)
-                    _LOGGER.warning("release failed for %s: %s", a.config.device_id, err)
+        async def one(a, st) -> None:
+            try:
+                self.traces.cancel(a.config.device_id)
+                await asyncio.wait_for(a.apply(Desired(Mode.AUTO)), HANDBACK_TIMEOUT_S)   # one hung battery must not hold up the rest
+                self._set_release(a.config.device_id, st, False)     # handed back: not "held from before" at the next start
+                self._log(a.config.device_id, "released to the device's own control on shutdown")
+            except Exception as err:  # noqa: BLE001 - flag stays set; the control loop keeps retrying, and so does the next start
+                self._retry_handback.add(a.config.device_id)
+                _LOGGER.warning("release failed for %s: %s", a.config.device_id, err)
+
+        # all at once: Home Assistant waits for this at shutdown, so unreachable batteries cost one timeout, not one each
+        held = [(a, st) for a in self.adapters if (st := self._snap.devices.get(a.config.device_id)) and st.release_pending]
+        await asyncio.gather(*(one(a, st) for a, st in held))
         await self.manager.save_runtime()

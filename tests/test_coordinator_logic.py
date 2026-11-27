@@ -146,14 +146,20 @@ def test_phone_notification_buttons_pause_and_hand_back():
 
 def test_plan_is_recorded_for_the_chart():
     c = bare()
+    from hp.core.reconcile import Decision
     st = coordinator.DeviceStatus(desired=Desired(Mode.CHARGE, 1500))
+    st.decision = Decision.OK                                     # it was told (sent, or already doing it)
     c._snap.devices["e"] = st
+    watched = coordinator.DeviceStatus(desired=Desired(Mode.CHARGE, 1500))    # monitor-only / paused: decision None, sent nothing
+    c._snap.devices["m"] = watched
     now = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
-    c._record_plan(now, {"e": Actual(online=True, power_w=1400)})
+    c._record_plan(now, {"e": Actual(online=True, power_w=1400), "m": Actual(online=True, power_w=0)})
     st.desired = Desired(Mode.AUTO)
     c._record_plan(now.replace(minute=30), {"e": Actual(online=True, power_w=-200)})
     rows = {r[0][11:16]: r[1:] for r in c.plan_log.view("e", now.replace(minute=40))["rows"]}
     assert rows["12:00"] == [1500, 1400] and rows["12:30"] == [None, -200]
+    mrows = {r[0][11:16]: r[1:] for r in c.plan_log.view("m", now.replace(minute=40))["rows"]}
+    assert mrows["12:00"] == [None, 0]                            # not scored against a plan it never got
 
 
 def test_tariff_drift_alerts_only_when_the_history_disagrees_for_long_enough():
@@ -458,6 +464,7 @@ def test_x1_limits_are_taken_off_when_the_option_is_switched_off():
 
 def test_deleting_an_x1_takes_its_limits_off_and_forgets_them_even_if_unreachable():
     c = bare()
+    c.hass = object()
     calls = []
 
     class Drv:
@@ -476,6 +483,228 @@ def test_deleting_an_x1_takes_its_limits_off_and_forgets_them_even_if_unreachabl
         calls.clear()
         c.adapters = [types.SimpleNamespace(config=cfg, driver=Drv(fail))]
         c._event_state = {"x1lim:x1:export:3000": True, "x1orig:x1:export:2:6000": True, "x1lim:other:import:5": True}
-        asyncio.run(c.release_x1_limits("x1"))
+        shown = []
+        fake = types.ModuleType("homeassistant.components.persistent_notification")
+        fake.async_create = lambda hass, message, **k: shown.append((message, k.get("notification_id")))
+        comps = types.ModuleType("homeassistant.components")
+        comps.persistent_notification = fake
+        saved = {m: sys.modules.get(m) for m in ("homeassistant", "homeassistant.components", "homeassistant.components.persistent_notification")}
+        sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
+        sys.modules["homeassistant.components"], sys.modules["homeassistant.components.persistent_notification"] = comps, fake
+        try:
+            asyncio.run(c.release_x1_limits("x1"))
+        finally:
+            for m, v in saved.items():
+                if v is None:
+                    sys.modules.pop(m, None)
+                else:
+                    sys.modules[m] = v
         assert calls == [(None, None, {"export": 3000}, {"export": [2, 6000]})]
         assert set(c._event_state) == {"x1lim:other:import:5"}       # the deleted battery's records go; another's stay
+        # unreachable: nothing will retry once it is deleted, so the user is told (not only the log)
+        assert [n for _m, n in shown] == (["homepower_x1_limits_x1"] if fail else []) and all("Anker app" in m for m, _n in shown)
+
+
+def test_a_lasting_failure_in_the_control_loop_is_logged_once_not_every_cycle(caplog):
+    import logging
+    c = bare()
+    c._logged_failures = {}
+    caplog.set_level(logging.DEBUG)
+
+    def fail(msg):
+        try:
+            raise ValueError(msg)
+        except ValueError:
+            c._log_failure("engine", "decision engine failed")
+    for _ in range(5):
+        fail("boom")
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1 and errors[0].exc_info                       # once, with its traceback; the rest at debug
+    fail("a different problem")
+    assert len([r for r in caplog.records if r.levelno >= logging.ERROR]) == 2   # a new failure is logged at once
+
+
+def test_one_battery_that_cannot_be_shown_does_not_blank_the_view_for_the_others():
+    c = bare()
+    c._logged_failures = {}
+    caps = Capabilities(5000, 3000, 3000, 10)
+    good, bad = (types.SimpleNamespace(config=DeviceConfig(d, d.upper(), "anker_e5000_pro", caps, extra={})) for d in ("good", "bad"))
+    c.adapters, c.schedules, c.overrides = [good, bad], [], {}
+    c._snap.devices["good"] = coordinator.DeviceStatus(actual=Actual(online=True, soc=55.0))
+    c._snap.devices["bad"] = coordinator.DeviceStatus(actual=Actual(online=True, soc=40.0))
+    c.settings = types.SimpleNamespace(dry_run=False, offline_after_min=5)
+    c.manager.pv_seen = set()
+    c._has_solar = lambda cfg: False
+    c._condition_ok = lambda e: True
+
+    def pv_view(did):
+        if did == "bad":
+            raise ValueError("odd solar string data")
+        return None
+    c.pv_view = pv_view
+    out = c.devices_view()
+    assert out["good"]["online"] and out["good"]["soc"] == 55.0 and "view_error" not in out["good"]
+    assert out["bad"] == {**out["bad"], "online": False, "view_error": True}
+
+
+def test_one_battery_whose_alerts_fail_does_not_silence_the_others(monkeypatch):
+    from hp.core.alerts import AlertTracker
+    c = bare()
+    c._logged_failures, c.testing, c.overrides = {}, set(), {}
+    caps = Capabilities(5000, 3000, 3000, 10)
+    good, bad = (types.SimpleNamespace(config=DeviceConfig(d, d.upper(), kind, caps, extra={}))
+                 for d, kind in (("good", "anker_e5000_pro"), ("bad", "anker_x1")))
+    for d in ("good", "bad"):
+        c._snap.devices[d] = coordinator.DeviceStatus(actual=Actual(online=False), link="offline")
+    c.alerts = AlertTracker()
+    from hp.core.insights import GridEvents, Health, HealthTrend
+    from hp.core.sanity import ChargeWatch
+    c.charge_watch, c.health, c.grid_events, c.trend, c._event_state = ChargeWatch(), Health({}), GridEvents([]), HealthTrend({}), {}
+    c._cover_text = lambda: ""
+    c.settings = types.SimpleNamespace(dry_run=False)
+    c.manager.pv_seen = set()
+    sent = []
+
+    async def notify(key, msg, on):
+        sent.append(key)
+    c._notify = notify
+    import hp.coord_alerts as ca
+
+    def hint(kind):
+        if kind == "anker_x1":
+            raise ValueError("a bug for this kind of battery")
+        return None
+    monkeypatch.setattr(ca, "offline_hint", hint)
+    asyncio.run(c._check_alerts(10_000.0, [bad, good]))
+    asyncio.run(c._check_alerts(10_070.0, [bad, good]))          # the offline alert waits a minute
+    assert "offline:good" in c.alerts.active() and "offline:bad" not in c.alerts.active()
+    assert set(c._logged_failures) == {"alerts bad"}                           # only the faulty battery failed
+
+
+def test_batteries_are_handed_back_all_at_once_at_shutdown():
+    import time as _t
+    c = bare()
+    c._retry_handback = set()
+    caps = Capabilities(5000, 3000, 3000, 10)
+    done = []
+
+    class Slow:
+        def __init__(self, did):
+            self.config = DeviceConfig(did, did, "anker_e5000_pro", caps, extra={})
+
+        async def apply(self, desired):
+            await asyncio.sleep(0.3)                     # each battery takes a while to answer
+            done.append(self.config.device_id)
+    c.adapters = [Slow("a"), Slow("b")]
+    for d in ("a", "b"):
+        c._snap.devices[d] = coordinator.DeviceStatus(release_pending=True)
+
+    async def save():
+        pass
+    c.manager.save_runtime = save
+    t0 = _t.monotonic()
+    asyncio.run(c.release_all(force=True))
+    assert sorted(done) == ["a", "b"] and _t.monotonic() - t0 < 0.55      # together, not 0.3 s each one after the other
+
+
+def test_hand_back_waits_for_a_command_already_going_out_and_closing_stops_later_ones():
+    c = bare()
+    c._retry_handback = set()
+    caps = Capabilities(5000, 3000, 3000, 10)
+    order = []
+
+    class Bat:
+        config = DeviceConfig("a", "a", "anker_e5000_pro", caps, extra={})
+
+        async def apply(self, desired):
+            order.append(desired.mode.name)
+    c.adapters = [Bat()]
+    c._snap.devices["a"] = coordinator.DeviceStatus(release_pending=True)
+
+    async def save():
+        pass
+    c.manager.save_runtime = save
+
+    async def cycle_sending():                     # a cycle's command phase, mid-way through a slow command
+        async with c._send_lock():
+            await asyncio.sleep(0.2)
+            order.append("FORCE")
+
+    async def go():
+        t = asyncio.create_task(cycle_sending())
+        await asyncio.sleep(0.05)
+        await c.release_all(closing=True)
+        await t
+    asyncio.run(go())
+    assert order == ["FORCE", "AUTO"], order          # the hand-back comes last, so the battery is left in its own control
+    assert c._closing                                 # and no later cycle sends anything
+
+
+def test_hand_back_button_and_safe_mode_pause_before_handing_back():
+    # paused first: a cycle running in between must not force a battery again after it was handed back
+    c = bare()
+    seen = []
+
+    async def release_all(force=False, closing=False):
+        seen.append(("release", c.manager.paused))
+    c.release_all = release_all
+
+    async def set_paused(p):
+        c.manager.paused = p
+        seen.append(("pause", p))
+    c.manager.set_paused = set_paused
+    c.manager.paused = False
+    c._log = lambda *a, **k: None
+    asyncio.run(c._on_action(types.SimpleNamespace(data={"action": coordinator.ACTION_HAND_BACK})))
+    assert seen == [("pause", True), ("release", True)], seen
+
+
+def test_manual_overrides_are_kept_over_a_restart_and_damaged_or_naive_ones_dropped():
+    from datetime import timedelta
+    from hp.core.models import Desired, Mode
+    c = bare()
+    until = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    c.overrides = {"a": (Desired(Mode.CHARGE, 1500, 80), until), "b": (Desired(Mode.HOLD), until + timedelta(hours=1))}
+    saved = c.dump_overrides()
+    import json
+    back = coordinator.HomePowerCoordinator._load_overrides(json.loads(json.dumps(saved)))
+    assert back == c.overrides
+    damaged = {"x": {"mode": "fly"}, "y": "nonsense", "z": {"mode": "hold", "until": "2026-06-01T12:00:00"},   # no time zone
+               "w": {"mode": "charge", "until": "soon"}, "v": {"mode": "charge", "power_w": "lots", "until": until.isoformat()}}
+    assert coordinator.HomePowerCoordinator._load_overrides({**saved, **damaged}) == c.overrides
+    assert coordinator.HomePowerCoordinator._load_overrides(None) == {} and coordinator.HomePowerCoordinator._load_overrides([1]) == {}
+
+
+def test_an_override_naming_a_monitor_only_battery_is_refused_not_silently_ignored():
+    c = bare()
+    caps = Capabilities(5000, 3000, 3000, 10)
+    c.adapters = [types.SimpleNamespace(config=DeviceConfig("a", "Garage", "anker_e5000_pro", caps, extra={})),
+                  types.SimpleNamespace(config=DeviceConfig("b", "Shed", "anker_e5000_pro", caps, extra={"control_enabled": False}))]
+    c.overrides, c._log = {}, (lambda *a, **k: None)
+    with pytest.raises(ValueError, match="Shed is monitor-only"):
+        c.set_override(["a", "b"], Desired(Mode.HOLD), 10)
+    assert c.overrides == {}                                   # nothing half applied
+    c.set_override(None, Desired(Mode.HOLD), 10)               # "all batteries" still works: the monitor-only one is just not sent anything
+    c.set_override(["a"], Desired(Mode.HOLD), 10)
+    assert set(c.overrides) == {"a", "b"}
+    c.overrides = {}
+    c.manager.safe = True
+    with pytest.raises(ValueError, match="Safe mode is on"):
+        c.set_override(["a"], Desired(Mode.CHARGE), 10)
+    assert c.overrides == {}
+    c.manager.safe = False
+
+
+def test_a_forecast_with_a_plane_missing_is_not_taken_as_the_days_total():
+    day, nxt = "2026-11-11", "2026-11-12"
+    values = {"a_today": 4.0, "b_today": 6.0, "a_tom": 5.0, "b_tom": 7.0}
+    me = types.SimpleNamespace(
+        manager=types.SimpleNamespace(forecast_days={}), _forecast_kwh=lambda: None, _kwh=values.get,
+        _forecast_entities=lambda: {"today": ["a_today", "b_today"], "tomorrow": ["a_tom", "b_tom"]})
+    ask = lambda: coordinator.HomePowerCoordinator._forecast_as_given(me, datetime(2026, 11, 11, 10, tzinfo=timezone.utc))
+    values["b_today"] = values["b_tom"] = None
+    assert ask() == {} and me.manager.forecast_days == {}          # half a forecast is not remembered as the whole
+    values.update(b_today=6.0, b_tom=7.0)
+    assert ask() == {day: 10.0, nxt: 12.0}
+    values["b_today"] = values["b_tom"] = None                     # one plane drops out: the last whole figures stand
+    assert ask() == {day: 10.0, nxt: 12.0}

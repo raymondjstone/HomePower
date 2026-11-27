@@ -28,7 +28,7 @@ async def setup(tmp, dev, port, opts=None):
     entry = mk_entry(opts)
     mgr = HomePowerManager(hass); await mgr.async_load()
     coord = HomePowerCoordinator(hass, entry, mgr, *mgr.build()); mgr.coordinator = coord
-    hass.data["homepower"] = {"manager": mgr}
+    _harness.attach(hass, entry, mgr)
     hass.config_entries = SimpleNamespace(async_get_known_entry=lambda i: entry)
     return hass, mgr, coord
 

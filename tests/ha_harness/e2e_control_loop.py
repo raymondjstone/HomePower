@@ -86,6 +86,34 @@ async def main():
     print("test     :", res["ok"], [(s["name"], s["ok"]) for s in res["steps"]])
     assert res["ok"], res
     print("view keys:", sorted(coord.view())[:8], "...")
+    # safe mode pauses before it hands back, so a cycle running in between cannot force a battery again
+    order, real = [], coord.release_all
+    async def watch(force=False, closing=False):
+        order.append((mgr.paused, mgr.safe)); await real(force=force, closing=closing)
+    coord.release_all = watch
+    await mgr.set_safe(True)
+    assert order == [(True, True)] and mgr.paused and mgr.safe, order
+    coord.release_all = real
+    await mgr.set_safe(False)
+    assert not mgr.paused and not mgr.safe
+    print("safe     : paused before handing back")
+    # a manual override is kept over a restart (saved with the runtime state, read back by a new manager)
+    from custom_components.homepower.core.models import Desired
+    coord.set_override(["garage"], Desired(Mode.HOLD), 30)
+    await mgr.save_runtime()
+    m2 = HomePowerManager(hass); await m2.async_load()
+    back = HomePowerCoordinator._load_overrides(m2.overrides_data)
+    assert back == coord.overrides and back["garage"][0].mode is Mode.HOLD, (back, coord.overrides)
+    coord.clear_override()
+    print("override : kept over a restart")
+    # switched to monitor-only after failing: the "not following" / "command failed" state clears (nothing is being sent)
+    st = coord._snap.devices["garage"]; ad = next(x for x in coord.adapters if x.config.device_id == "garage")
+    was = ad.config.extra.get("control_enabled", True)
+    st.unconfirmed, st.last_error = 9, "refused"; ad.config.extra["control_enabled"] = False
+    await coord.async_refresh()
+    assert st.unconfirmed == 0 and st.last_error is None and st.decision is None, (st.unconfirmed, st.last_error, st.decision)
+    ad.config.extra["control_enabled"] = was
+    print("monitor  : old failures cleared once nothing is sent")
     await coord.async_close()
     srv.close(); await srv.wait_closed()
     print("E2E OK")

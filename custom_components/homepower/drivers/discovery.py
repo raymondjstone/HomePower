@@ -48,8 +48,8 @@ async def probe_host(host: str, port: int = 502, unit: int = 1, timeout: float =
         except ModbusError:
             info["serial"] = None
         return info
-    except (ModbusError, IndexError, OSError):
-        return None
+    except Exception:  # noqa: BLE001 - any device may answer on 502 (an inverter, a PLC): whatever it sends, it is just "not an Anker"
+        return None                     # and must never stop the scan of the other addresses
     finally:
         await client.close()
 
@@ -61,9 +61,16 @@ async def scan(hosts: list[str], port: int = 502, unit: int = 1, concurrency: in
         async with sem:
             try:  # cheap TCP check first so dead addresses cost ~0.4 s, not a Modbus timeout
                 _, w = await asyncio.wait_for(asyncio.open_connection(h, port), 0.4)
-                w.close()
             except (OSError, asyncio.TimeoutError):
                 return None
-            return await probe_host(h, port, unit)
+            w.close()
+            try:
+                await w.wait_closed()           # let it finish closing (no "transport not closed" warning)
+            except OSError:
+                pass
+            try:
+                return await probe_host(h, port, unit)
+            except Exception:  # noqa: BLE001 - one address can never stop the scan of the others
+                return None
 
     return [r for r in await asyncio.gather(*(one(h) for h in hosts)) if r]

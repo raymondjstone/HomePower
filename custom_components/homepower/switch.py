@@ -20,7 +20,7 @@ SWITCHES = (
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
-    coord: HomePowerCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coord: HomePowerCoordinator = entry.runtime_data.coordinator
     add([HomePowerSwitch(coord, entry, *s) for s in SWITCHES])
 
 

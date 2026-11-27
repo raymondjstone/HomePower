@@ -5,6 +5,8 @@ from homeassistant import data_entry_flow
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
 
+from .runtime import running_manager
+
 from .const import DOMAIN
 
 
@@ -15,7 +17,7 @@ class BatteryFix(RepairsFlow):
         self._did, self._msg, self._title = device_id, message, title or "battery"
 
     def _mgr(self):
-        return self.hass.data.get(DOMAIN, {}).get("manager")
+        return running_manager(self.hass)
 
     async def async_step_init(self, user_input=None) -> data_entry_flow.FlowResult:
         return self.async_show_menu(step_id="init", menu_options=["test", "monitor"],
@@ -56,7 +58,16 @@ class TariffFix(RepairsFlow):
             if not entries:
                 return self.async_abort(reason="not_ready")
             e = entries[0]
-            self.hass.config_entries.async_update_entry(e, options={**e.options, "offpeak_start": "", "offpeak_end": "", "offpeak_auto": True})
+            start = end = ""
+            if {**e.data, **e.options}.get("offpeak_extra"):
+                # With more cheap periods listed, an empty main period would be filled by the first of those, not from the
+                # history: so the history's hours are typed in instead, and the other periods stay.
+                mgr = running_manager(self.hass)
+                found = mgr.coordinator.history_window() if mgr is not None and mgr.coordinator is not None else None
+                if found is None:
+                    return self.async_abort(reason="not_ready")
+                start, end = (t.strftime("%H:%M") for t in found)
+            self.hass.config_entries.async_update_entry(e, options={**e.options, "offpeak_start": start, "offpeak_end": end, "offpeak_auto": True})
             return self.async_create_entry(data={})
         return self.async_show_form(step_id="init", description_placeholders={"message": self._msg})
 

@@ -1,0 +1,32 @@
+// A refused Settings save names the field by its label, not by its internal key.
+import fs from "fs";
+import { JSDOM } from "jsdom";
+import path from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const PAYLOAD = process.argv[2] || path.join(HERE, "payload.json");
+const PANEL = pathToFileURL(path.join(HERE, "..", "..", "custom_components", "homepower", "frontend", "homepower-panel.js")).href;
+const payload = JSON.parse(fs.readFileSync(PAYLOAD, "utf8"));
+const w = new JSDOM("<body></body>", { url: "http://localhost/" }).window;
+for (const k of ["HTMLElement", "customElements", "document", "MouseEvent", "Event"]) globalThis[k] = w[k];
+Object.defineProperty(globalThis, "localStorage", { value: w.localStorage, configurable: true });
+Object.defineProperty(globalThis, "navigator", { value: {}, configurable: true });
+globalThis.alert = () => {}; globalThis.confirm = () => true;
+process.on("unhandledRejection", (e) => { console.log("UNHANDLED", e && e.stack); process.exitCode = 1; });
+await import(`${PANEL}?v=1`);
+const el = document.createElement("homepower-panel"); document.body.appendChild(el);
+el.hass = { states: {}, connection: { subscribeMessage: () => Promise.resolve(() => {}) },
+  callWS: async (m) => { if (m.type === "homepower/get") return payload.get;
+    if (m.type === "homepower/settings/save") throw new Error("offline_after_min must be 1-1440 minutes"); return {}; } };
+await new Promise((r) => setTimeout(r, 200));
+el.tab = "settings"; el._render(); await el._tabLoad(); await new Promise((r) => setTimeout(r, 50));
+el.shadowRoot.querySelector('[data-act="save-settings"]').dispatchEvent(new w.MouseEvent("click", { bubbles: true, composed: true }));
+await new Promise((r) => setTimeout(r, 100));
+const shown = el.shadowRoot.getElementById("g-msg").textContent;
+const ok = shown.startsWith('"Show a battery offline after (minutes)" must be 1-1440') && !shown.includes("offline_after_min");
+console.log(ok ? "ok   a refused save names the field by its label" : "FAIL message: " + shown);
+el._hass.config = { time_zone: "America/Los_Angeles" };
+const day = el._today();
+const ok2 = /^\d{4}-\d\d-\d\d$/.test(day);
+console.log(ok2 ? "ok   file names use the home's date (" + day + ")" : "FAIL date for file names: " + day);
+process.exit(ok && ok2 ? 0 : 1);

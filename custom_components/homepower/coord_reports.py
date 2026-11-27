@@ -296,6 +296,9 @@ class ReportsMixin:
                 "word_order": getattr(getattr(a, "driver", None), "_order", None),
                 "driver_error": getattr(getattr(a, "driver", None), "last_error", None),
                 "recent_outages": getattr(getattr(a, "driver", None), "outages", None) or None,
+                "live_feed": (lambda h: {"on": bool(getattr(h, "enabled", False)), "connected": bool(h.connected),
+                                         "messages": int(getattr(h, "messages", 0) or 0), "problem": getattr(h, "error", None)}
+                              if h is not None else None)(getattr(getattr(a, "driver", None), "hub", None)),
                 "pv_readings_ignored": getattr(getattr(a, "driver", None), "pv_ignored", None) or None,
                 "command_traces": self.traces.recent(did, 10) or None,
                 "recent_setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or []) or None,
@@ -309,54 +312,60 @@ class ReportsMixin:
         now = now or dt_util.now()
         out = {}
         for a in self.adapters:
-            did = a.config.device_id
-            st = self._snap.devices.get(did) or DeviceStatus()
-            # while reads have only failed for a short time (another Modbus client may hold the battery) the last reading is shown
-            act, want, link = self.shown_actual(did) or st.actual, st.desired, self.link(did)
-            stale = link == "stale" and act is not None and act.online
-            active = [s.id for s in self.schedules if s.applies(did, now)
-                      and (not s.condition_entity or self._condition_ok(s.condition_entity))]
-            ov = self.overrides.get(did)
-            out[did] = {
-                "online": bool(act and act.online),
-                "stale": stale,                 # shown as online with the last reading, but this cycle's read failed
-                "link": link,
-                "stale_reason": getattr(getattr(a, "driver", None), "last_error", None) if stale else None,
-                "soc": act.soc if act else None,
-                "power_w": act.power_w if act else None,
-                "pv_w": act.pv_w if act and act.online else None, "has_solar": self._has_solar(a.config),
-                "mode": act.mode.value if act and act.mode else None,
-                "protected": bool(act and act.protected), "off_grid": bool(act and act.off_grid),
-                "limits": list(act.limits) if act and act.limits else None,
-                "temp_c": act.temp_c if act else None, "firmware": act.firmware if act else None,
-                "alarms": list(act.alarms) if act else [],
-                "desired_mode": want.mode.value if want else None,
-                "desired_power_w": want.power_w if want else None,
-                "reason": st.reason,
-                "decision": st.decision.value if st.decision else None,
-                "managed": want is not None,
-                "control_enabled": bool(a.config.extra.get("control_enabled", True)),
-                "active_schedules": active,
-                "override": ({"mode": ov[0].mode.value, "power_w": ov[0].power_w, "until": ov[1].isoformat()} if ov else None),
-                "guard_held": st.guard_held,
-                "last_error": st.last_error,
-                "awaiting_confirm": st.awaiting_confirm,
-                "charge_verdict": self.traces.verdict(did) if not a.config.caps.power_control else None,
-                "traces": self.traces.recent(did) if not a.config.caps.power_control else [],
-                "report": (ecoflow_report(self.traces.results.get(did, []), self.plan_log.view(did, now)["match_pct"],
-                                          self.rate_learner.rates.get(did), self.traces.verdict(did))
-                           if not a.config.caps.power_control else None),
-                "measured_charge_w": self.rate_learner.rates.get(did) if not a.config.caps.power_control else None,
-                "last_read_ok": datetime.fromtimestamp(st.last_read_ok, dt_util.UTC).isoformat() if st.last_read_ok else None,
-                "offline_hint": offline_hint(a.config.kind) if not (act and act.online) else None,
-                "offline_reason": (getattr(getattr(a, "driver", None), "last_error", None) if not (act and act.online) else None),
-                "why": explain_idle(control_enabled=bool(a.config.extra.get("control_enabled", True)), paused=self.paused, hint=offline_hint(a.config.kind),
-                                    dry_run=self.settings.dry_run, online=bool(act and act.online), off_grid=bool(act and act.off_grid),
-                                    protected=bool(act and act.protected), last_error=st.last_error, guard_held=st.guard_held,
-                                    unconfirmed=st.unconfirmed, awaiting_confirm=st.awaiting_confirm),
-                "setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or [])[-8:],
-                "pv": self.pv_view(did),          # None for a battery that does not report its solar inputs one by one
-            }
+            try:
+                did = a.config.device_id
+                st = self._snap.devices.get(did) or DeviceStatus()
+                # while reads have only failed for a short time (another Modbus client may hold the battery) the last reading is shown
+                act, want, link = self.shown_actual(did) or st.actual, st.desired, self.link(did)
+                stale = link == "stale" and act is not None and act.online
+                active = [s.id for s in self.schedules if s.applies(did, now)
+                          and (not s.condition_entity or self._condition_ok(s.condition_entity))]
+                ov = self.overrides.get(did)
+                out[did] = {
+                    "online": bool(act and act.online),
+                    "stale": stale,                 # shown as online with the last reading, but this cycle's read failed
+                    "link": link,
+                    "stale_reason": getattr(getattr(a, "driver", None), "last_error", None) if stale else None,
+                    "soc": act.soc if act else None,
+                    "power_w": act.power_w if act else None,
+                    "pv_w": act.pv_w if act and act.online else None, "has_solar": self._has_solar(a.config),
+                    "mode": act.mode.value if act and act.mode else None,
+                    "protected": bool(act and act.protected), "off_grid": bool(act and act.off_grid),
+                    "limits": list(act.limits) if act and act.limits else None,
+                    "temp_c": act.temp_c if act else None, "firmware": act.firmware if act else None,
+                    "alarms": list(act.alarms) if act else [],
+                    "desired_mode": want.mode.value if want else None,
+                    "desired_power_w": want.power_w if want else None,
+                    "reason": st.reason,
+                    "decision": st.decision.value if st.decision else None,
+                    "managed": want is not None,
+                    "control_enabled": bool(a.config.extra.get("control_enabled", True)),
+                    "active_schedules": active,
+                    "override": ({"mode": ov[0].mode.value, "power_w": ov[0].power_w, "until": ov[1].isoformat()} if ov else None),
+                    "guard_held": st.guard_held,
+                    "last_error": st.last_error,
+                    "awaiting_confirm": st.awaiting_confirm,
+                    "charge_verdict": self.traces.verdict(did) if not a.config.caps.power_control else None,
+                    "traces": self.traces.recent(did) if not a.config.caps.power_control else [],
+                    "report": (ecoflow_report(self.traces.results.get(did, []), self.plan_log.view(did, now)["match_pct"],
+                                              self.rate_learner.rates.get(did), self.traces.verdict(did))
+                               if not a.config.caps.power_control else None),
+                    "measured_charge_w": self.rate_learner.rates.get(did) if not a.config.caps.power_control else None,
+                    "last_read_ok": datetime.fromtimestamp(st.last_read_ok, dt_util.UTC).isoformat() if st.last_read_ok else None,
+                    "offline_hint": offline_hint(a.config.kind) if not (act and act.online) else None,
+                    "offline_reason": (getattr(getattr(a, "driver", None), "last_error", None) if not (act and act.online) else None),
+                    "why": explain_idle(control_enabled=bool(a.config.extra.get("control_enabled", True)), paused=self.paused, hint=offline_hint(a.config.kind),
+                                        dry_run=self.settings.dry_run, online=bool(act and act.online), off_grid=bool(act and act.off_grid),
+                                        protected=bool(act and act.protected), last_error=st.last_error, guard_held=st.guard_held,
+                                        unconfirmed=st.unconfirmed, awaiting_confirm=st.awaiting_confirm),
+                    "setting_changes": list(getattr(getattr(a, "driver", None), "changes", None) or [])[-8:],
+                    "pv": self.pv_view(did),          # None for a battery that does not report its solar inputs one by one
+                }
+            except Exception:  # noqa: BLE001 - one battery that cannot be shown must not blank the panel for all of them
+                did = a.config.device_id
+                self._log_failure(f"view {did}", "could not build the live view of battery %s", did)
+                out[did] = {"online": False, "stale": False, "link": "offline", "soc": None, "power_w": None,
+                            "view_error": True, "alarms": [], "active_schedules": [], "traces": [], "setting_changes": []}
         return out
 
     def view(self) -> dict:
@@ -376,7 +385,7 @@ class ReportsMixin:
             "alerts": sorted(self.alerts.active()), "notes": self.last_result.notes,
             "price_now": self._price_now(rates, now),
             "meter_entity": self.grid_source, "rates_entity": self._rates_entity(),
-            "combined": self._combined(actuals), "solar_forecast": self.solar_view(now), "setup": self.setup_check(), "solar_room": self.solar_room, "export_better": self._export_better(rates, now),
+            "combined": self._combined(actuals), "solar_forecast": self.solar_view(now), "ecoflow_live": self.manager.live_status(), "setup": self.setup_check(), "solar_room": self.solar_room, "export_better": self._export_better(rates, now),
             "export": self._export_view(rates, now), "grid_event": self.grid_event,
             "divert": {"entity": self.settings.divert_entity, "on": self.diverter.on} if self.settings.divert_entity else None,
             "daily": {"self_consumption": self.daily.self_consumption(day_key), "cheap_share": self.daily.cheap_share(day_key)},

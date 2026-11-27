@@ -30,7 +30,12 @@ def apply_totals(
             max_w = caps.max_charge_w if mode is Mode.CHARGE else caps.max_discharge_w
             want = d.power_w if d.power_w is not None else max_w
             want = min(want, max_w)
-            give = min(want, remaining)
+            if mode is Mode.CHARGE and not caps.power_control:
+                # it cannot be told a power: on, it charges flat out, so it needs room for all of that or stays off
+                want = max_w
+                give = want if want <= remaining else 0
+            else:
+                give = min(want, remaining)
             remaining -= give
             if give == 0:
                 out[k] = Desired(Mode.HOLD, None, d.target_soc, d.reserve_soc)

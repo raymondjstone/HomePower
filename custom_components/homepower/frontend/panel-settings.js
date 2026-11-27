@@ -2,6 +2,14 @@
 export default (U) => {
   const { MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS } = U;
   return {
+  // How the EcoFlow live feed is doing, so a feed that quietly fell back to polling says why.
+  _liveText() {
+    const l = this.live.ecoflow_live;
+    if (!l || !l.on) return "";
+    if (l.connected) return ` Right now: connected, ${l.messages} update${l.messages === 1 ? "" : "s"} received.`;
+    return ` Right now: not connected${l.problem ? ` (${l.problem})` : ""}, so readings come from polling every 30 s.`;
+  },
+
   _settingsView() {
     const s = this.data.settings || {};
     const num = (k, label, hint, step = 1) => ({ k, t: "num", label, hint, step });
@@ -45,6 +53,7 @@ export default (U) => {
         { k: "solar_room", t: "bool", label: "Leave room for the solar forecast: charge batteries with panels overnight only as far as the next day's solar allows" },
         num("base_load_w", "House base load (W)", "Your steady use (fridge, standby...). Outside cheap hours it is assumed to come from the batteries, which frees room for solar before the sun is strong. 0 = none."),
         { k: "solar_room_note", t: "note", label: this._solarRoomText() },
+        num("forecast_use_pct", "Use this much of the solar forecast (%)", "100 takes the forecast as it is; 75 plans with three quarters of it. It applies to room for solar, goals, the dull-day reserve and the Overview. Insights compares the forecast as given with what came, which shows what to put here."),
         { k: "forecast_entity", t: "entity", dom: ["sensor"], label: "Tomorrow's solar forecast (kWh) - optional", hint: "Leave empty to use Forecast.Solar or Solcast automatically. If you pick one, use its 'tomorrow' sensor." },
         num("forecast_share", "Share of forecast solar that reaches the battery (0-1)", "", "0.05")]],
       ["Cold weather", "mdi:snowflake-thermometer", [
@@ -81,12 +90,12 @@ export default (U) => {
         { k: "compare_tariffs_note", t: "note", label: "HomePower records your grid import and export every half-hour. List other tariffs here, one per line, and Insights shows what the same usage would have cost on each. Rates are per kWh in your currency; standing is per day. Example: Octopus Go; peak=0.28; cheap=0.07; window=00:30-05:30; export=0.15; standing=0.45. Add your current tariff as one line to compare against it." },
         { k: "compare_tariffs", t: "area", label: "Tariffs (one per line)" }]],
       ["EcoFlow", "mdi:flash", [{ k: "ecoflow_live", t: "bool", label: "Use EcoFlow's live feed for faster readings (seconds instead of 30 s)" },
-        { k: "ecoflow_live_note", t: "note", label: "Off by default: it opens a second connection to EcoFlow with your keys, which could disturb another EcoFlow integration using the same account (such as EcoFlow Cloud). If readings stop updating after turning it on, turn it off again." }]],
+        { k: "ecoflow_live_note", t: "note", label: "Off by default: it opens a second connection to EcoFlow with your keys, which could disturb another EcoFlow integration using the same account (such as EcoFlow Cloud). If readings stop updating after turning it on, turn it off again." + this._liveText() }]],
       ["Backup & restore", "mdi:backup-restore", [{ k: "backup_restore", t: "backup", label: "" }]],
       ["Test run", "mdi:test-tube", [{ k: "dry_run", t: "bool", label: "Test run (dry run): work everything out and show it, but send no commands to any battery" },
         { k: "dry_run_note", t: "note", label: "Unlike Pause, the plan is still worked out and each command it would send is listed under Events as 'DRY RUN: would send ...'. Use it to try new schedules, goals or a new battery safely. Batteries keep whatever they were last told to do." }]],
       ["If you remove HomePower", "mdi:delete-outline", [{ k: "erase_on_remove", t: "bool", label: "Erase everything when HomePower is deleted from Home Assistant" },
-        { k: "erase_on_remove_note", t: "note", label: "Off: your batteries, EcoFlow keys, schedules, goals, scenes and history stay saved, so adding HomePower again brings everything back. On: all of it is erased when you delete HomePower in Settings > Devices & services. Home Assistant cannot ask at the moment of deleting, so choose here first." }]],
+        { k: "erase_on_remove_note", t: "note", label: "Off: your batteries, EcoFlow keys, schedules, goals, scenes and history stay saved, so adding HomePower again brings everything back. On: all of it, and the daily backup copies in the homepower_backups folder, is erased when you delete HomePower in Settings > Devices & services. Home Assistant cannot ask at the moment of deleting, so choose here first." }]],
     ];
     const field = (f) => {
       const v = s[f.k] ?? "";
@@ -120,7 +129,7 @@ export default (U) => {
     };
     this._settingKeys = SEC.flatMap(([, , fs]) => fs);
     return `<div class="bar-actions"><h2>Settings</h2></div><div style="max-width:720px">${SEC.map(([h, icon, fs]) => `<div class="card" style="margin-bottom:16px"><h2><ha-icon icon="${icon}"></ha-icon>${h}</h2>${fs.map(field).join("")}</div>`).join("")}
-      <div class="err" id="g-msg" ${this._savedNote ? 'style="color:#16a34a"' : ""}>${this._savedNote ? "Saved." : ""}</div><div class="foot"><span></span><div class="r"><button class="btn pri" data-act="save-settings">Save settings</button></div></div></div>`;
+      <div class="err" id="g-msg" ${this._savedNote ? 'style="color:var(--hp-ok)"' : ""}>${this._savedNote ? "Saved." : ""}</div><div class="foot"><span></span><div class="r"><button class="btn pri" data-act="save-settings">Save settings</button></div></div></div>`;
   },
 
   _ruleRow(r) {

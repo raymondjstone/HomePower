@@ -14,7 +14,7 @@ DEFAULTS: dict = {
     "grid_import_entity": "", "grid_export_entity": "", "grid_invert": False, "grid_order": "sensor,battery,glow,cloud", "zero_import_device": "",
     "rates_entity": "", "rates_unit": "auto", "price_peak": None, "price_offpeak": None, "export_price": None,
     "offpeak_start": "", "offpeak_end": "", "offpeak_auto": True, "currency": "£",
-    "forecast_entity": "", "forecast_share": 0.5,
+    "forecast_entity": "", "forecast_share": 0.5, "forecast_use_pct": 100,
     "storm_entity": "", "backup_reserve_pct": 50, "away_entity": "", "notify_service": "",
     "load_rules": [],
     "ecoflow_live": False, "dry_run": False, "erase_on_remove": False, "solar_room": True, "base_load_w": 0, "notify_full": False, "offpeak_extra": "", "save_for_peak": False, "hold_for_dearer": False,
@@ -24,7 +24,7 @@ DEFAULTS: dict = {
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
             "notify_low_pct", "cheap_soon_below_pct", "forecast_reserve_kwh", "forecast_reserve_pct", "divert_export_w", "divert_min_soc", "base_load_w", "export_keep_pct", "event_charge_pct",
-            "offline_after_min")
+            "offline_after_min", "forecast_use_pct")
 FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price", "wear_cost")
 BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "hold_for_dearer", "weather_boost", "weather_online", "notify_full", "notify_cheap_soon", "export_discharge")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
@@ -89,7 +89,11 @@ def clean(raw: dict) -> dict:
         if k not in DEFAULTS:
             continue
         try:
-            if k in INT_KEYS:
+            if k == "forecast_use_pct" and v in (None, ""):
+                out[k] = 100                      # a cleared box means "as it is", not "ignore the solar"
+            elif k == "forecast_use_pct" and float(v) < 0:
+                out[k] = -1                       # refused below (not quietly turned into 0)
+            elif k in INT_KEYS:
                 out[k] = max(0, int(float(v or 0)))
             elif k in FLOAT_KEYS:
                 out[k] = None if v in (None, "") else _finite(v)
@@ -117,17 +121,14 @@ def clean(raw: dict) -> dict:
     if "offpeak_extra" in out:
         parse_windows(out["offpeak_extra"])
     if "offline_after_min" in out and not 1 <= out["offline_after_min"] <= 1440:
-        raise SettingsError("offline after must be 1-1440 minutes")
+        raise SettingsError("offline_after_min must be 1-1440 minutes")
+    if "forecast_use_pct" in out and not 0 <= out["forecast_use_pct"] <= 200:
+        raise SettingsError("forecast_use_pct must be 0-200 %")
     if "base_load_w" in out and not 0 <= out["base_load_w"] <= 50000:
-        raise SettingsError("base load must be 0-50000 W")
-    if "divert_min_soc" in out and out["divert_min_soc"] > 100:
-        raise SettingsError("percentages must be 0-100")
-    for k in ("notify_low_pct", "cheap_soon_below_pct"):
-        if k in out and out[k] > 100:
-            raise SettingsError("percentages must be 0-100")
-    for k in ("event_charge_pct", "export_keep_pct"):
-        if out.get(k, 0) > 100:
-            raise SettingsError("percentages must be 0-100")
+        raise SettingsError("base_load_w must be 0-50000 W")
+    for k in ("divert_min_soc", "notify_low_pct", "cheap_soon_below_pct", "event_charge_pct", "export_keep_pct"):
+        if out.get(k) is not None and out[k] > 100:
+            raise SettingsError(f"{k} must be 0-100 %")
     if out.get("wear_cost") is not None and out["wear_cost"] < 0:
         raise SettingsError("battery wear cost cannot be negative")
     if "forecast_reserve_pct" in out and out["forecast_reserve_pct"] > 100:
@@ -197,6 +198,7 @@ class AppSettings:
     offpeak_auto: bool = True   # learn the cheap window from the rates entity's price history
     currency: str = "£"
     forecast_entity: str = ""
+    forecast_use_pct: int = 100     # how much of the solar forecast to count on: every decision uses forecast x this
     weather_boost: bool = False     # raise the overnight target before a cold day
     weather_entity: str = ""        # a Home Assistant weather entity (tomorrow's forecast)
     temp_sensor_entity: str = ""    # outdoor temperature sensor (learning how cold affects use)
@@ -250,7 +252,7 @@ def build(cfg: dict) -> AppSettings:
         engine=eng, cooldown_s=c["cooldown_s"], grid_entity=c["grid_import_entity"], grid_export_entity=c["grid_export_entity"], grid_invert=bool(c["grid_invert"]), grid_order=parse_grid_order(c["grid_order"] or ",".join(GRID_SOURCES)),
         rates_entity=c["rates_entity"], rates_unit=c["rates_unit"] or "auto", price_peak=c["price_peak"],
         price_offpeak=c["price_offpeak"], export_price=c["export_price"], offpeak_start=_t(c["offpeak_start"]), offpeak_end=_t(c["offpeak_end"]), offpeak_auto=bool(c["offpeak_auto"]),
-        currency=c["currency"] or "£", forecast_entity=c["forecast_entity"], weather_boost=bool(c["weather_boost"]), weather_entity=c["weather_entity"], temp_sensor_entity=c["temp_sensor_entity"], forecast_temp_entity=c["forecast_temp_entity"], weather_online=bool(c["weather_online"]), storm_entity=c["storm_entity"],
+        currency=c["currency"] or "£", forecast_entity=c["forecast_entity"], forecast_use_pct=_int_or(c["forecast_use_pct"], 100), weather_boost=bool(c["weather_boost"]), weather_entity=c["weather_entity"], temp_sensor_entity=c["temp_sensor_entity"], forecast_temp_entity=c["forecast_temp_entity"], weather_online=bool(c["weather_online"]), storm_entity=c["storm_entity"],
         away_entity=c["away_entity"], notify_service=c["notify_service"], load_rules=list(c["load_rules"] or []),
         ecoflow_live=bool(c["ecoflow_live"]), dry_run=bool(c["dry_run"]), divert_cheap=bool(c["divert_cheap"]), x1_grid_limits=bool(c["x1_grid_limits"]), compare_tariffs=c["compare_tariffs"], weekly_digest=bool(c["weekly_digest"]), forecast_reserve_kwh=int(c["forecast_reserve_kwh"] or 0), forecast_reserve_pct=int(c["forecast_reserve_pct"] or 0), solar_room=bool(c["solar_room"]), base_load_w=int(c["base_load_w"] or 0), offpeak_extra=parse_windows(c["offpeak_extra"]),
         daily_summary_time=_t(c["daily_summary_time"]), divert_entity=c["divert_entity"],

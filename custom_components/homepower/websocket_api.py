@@ -10,10 +10,11 @@ from .const import DOMAIN, SIGNAL_UPDATE
 from .core.profiles import catalogue
 from .core.serde import ValidationError
 from .core.settings import DEFAULTS, SettingsError, clean
+from .runtime import running_manager
 
 
 def _mgr(hass: HomeAssistant):
-    mgr = hass.data.get(DOMAIN, {}).get("manager")
+    mgr = running_manager(hass)
     if mgr is None:
         raise ValidationError("HomePower is still starting; try again in a moment")
     return mgr
@@ -79,10 +80,15 @@ async def ws_subscribe(hass, connection, msg):
     @callback
     def push() -> None:
         # Looked up every time: after the integration is reloaded there is a new control loop to follow.
-        mgr = hass.data.get(DOMAIN, {}).get("manager")
+        mgr = running_manager(hass)
         coord = mgr.coordinator if mgr else None
         if coord:
-            connection.send_message(websocket_api.event_message(msg["id"], coord.view()))
+            try:
+                view = coord.view()
+            except Exception:  # noqa: BLE001 - never let a drawing bug escape into Home Assistant's dispatcher every cycle
+                coord._log_failure("live view", "could not build the panel's live view")
+                return
+            connection.send_message(websocket_api.event_message(msg["id"], view))
 
     connection.subscriptions[msg["id"]] = async_dispatcher_connect(hass, SIGNAL_UPDATE, push)
     connection.send_result(msg["id"])
@@ -102,13 +108,13 @@ def _guard(fn):
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "homepower/device/save", vol.Required("device"): dict}
+    {vol.Required("type"): "homepower/device/save", vol.Required("device"): dict, vol.Optional("new", default=False): bool}
 )
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
 async def ws_save_device(hass, msg):
-    return await _mgr(hass).save_device(msg["device"])
+    return await _mgr(hass).save_device(msg["device"], new=msg["new"])
 
 
 @websocket_api.websocket_command(
@@ -201,7 +207,9 @@ async def ws_backup_now(hass, msg):
 
     entry = _entry(hass)
     mgr = _mgr(hass)
-    await hass.async_add_executor_job(_write_backup, mgr._backup_dir(), mgr.export_all(dict(entry.options) if entry else {}))
+    from homeassistant.util import dt as dt_util
+    await hass.async_add_executor_job(_write_backup, mgr._backup_dir(), mgr.export_all(dict(entry.options) if entry else {}),
+                                      dt_util.now().date().isoformat())
     return {"backups": await mgr.list_backups()}
 
 
@@ -225,13 +233,15 @@ async def ws_delete_device(hass, msg):
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "homepower/schedule/save", vol.Required("schedule"): dict}
+    {vol.Required("type"): "homepower/schedule/save", vol.Required("schedule"): dict, vol.Optional("new", default=False): bool}
 )
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
 async def ws_save_schedule(hass, msg):
     mgr = _mgr(hass)
+    if msg["new"] and str(msg["schedule"].get("id") or "").strip() in mgr.schedules:     # added (or renamed to) a name in use
+        raise ValidationError("A schedule with that name already exists.")
     saved = await mgr.save_schedule(msg["schedule"])
     return {**saved, "warnings": mgr.warnings_for("schedule", saved)}
 
@@ -409,12 +419,14 @@ async def ws_confirm(hass, msg):
     return {}
 
 
-@websocket_api.websocket_command({vol.Required("type"): "homepower/goal/save", vol.Required("goal"): dict})
+@websocket_api.websocket_command({vol.Required("type"): "homepower/goal/save", vol.Required("goal"): dict, vol.Optional("new", default=False): bool})
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
 async def ws_save_goal(hass, msg):
     mgr = _mgr(hass)
+    if msg["new"] and str(msg["goal"].get("id") or "").strip() in mgr.goals:
+        raise ValidationError("A goal with that name already exists.")
     saved = await mgr.save_goal(msg["goal"])
     return {**saved, "warnings": mgr.warnings_for("goal", saved)}
 
@@ -488,12 +500,16 @@ async def ws_test(hass, msg):
     return await _coord(hass).test_control(msg["device_id"])
 
 
-@websocket_api.websocket_command({vol.Required("type"): "homepower/scene/save", vol.Required("scene"): dict})
+@websocket_api.websocket_command({vol.Required("type"): "homepower/scene/save", vol.Required("scene"): dict,
+                                  vol.Optional("new", default=False): bool})
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
 async def ws_save_scene(hass, msg):
-    return await _mgr(hass).save_scene(msg["scene"])
+    mgr = _mgr(hass)
+    if msg["new"] and str(msg["scene"].get("name") or "").strip() in mgr.scenes:     # added (or renamed to) a name in use
+        raise ValidationError("A scene with that name already exists.")
+    return await mgr.save_scene(msg["scene"])
 
 
 @websocket_api.websocket_command({vol.Required("type"): "homepower/scene/delete", vol.Required("name"): str})

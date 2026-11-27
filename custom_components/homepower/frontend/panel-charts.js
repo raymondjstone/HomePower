@@ -17,8 +17,10 @@ export default (U) => {
   _niceTicks(lo, hi, n = 4) {
     const span = Math.max(hi - lo, 1e-9), raw = span / n, mag = Math.pow(10, Math.floor(Math.log10(raw)));
     const step = ([1, 2, 2.5, 5, 10].map((m) => m * mag).find((x) => x >= raw)) || 10 * mag;
-    const a = Math.floor(lo / step + 1e-9) * step, b = Math.ceil(hi / step - 1e-9) * step, ticks = [];
-    for (let v = a; v <= b + step / 2; v += step) ticks.push(Math.round(v / step) * step);
+    // rounded to the step's own decimals: 3 x 0.2 is 0.6000000000000001 in floating point, which would be printed as such
+    const dec = Math.max(0, Math.ceil(-Math.log10(step)) + 1), fix = (v) => +v.toFixed(dec);
+    const a = fix(Math.floor(lo / step + 1e-9) * step), b = fix(Math.ceil(hi / step - 1e-9) * step), ticks = [];
+    for (let v = a; v <= b + step / 2; v += step) ticks.push(fix(Math.round(v / step) * step));
     return { lo: a, hi: b, ticks };
   },
 
@@ -66,6 +68,35 @@ export default (U) => {
       <div class="plot-x">${xlab}</div></div></div>`;
   },
 
+  // ---- legends: click an item to hide that series, again to show it (remembered in this browser) ----------------
+  _hiddenSet() {
+    if (!this._hiddenV) {
+      let saved = [];
+      try { saved = JSON.parse(localStorage.getItem("homepower.hidden") || "[]"); } catch (e) { /* storage unavailable or damaged */ }
+      this._hiddenV = new Set(Array.isArray(saved) ? saved : []);
+    }
+    return this._hiddenV;
+  },
+
+  _isHidden(chart, key) { return this._hiddenSet().has(JSON.stringify([chart, key])); },
+
+  _toggleSeries(chart, key) {
+    const set = this._hiddenSet(), k = JSON.stringify([chart, key]);
+    if (!set.delete(k)) set.add(k);
+    try { localStorage.setItem("homepower.hidden", JSON.stringify([...set])); } catch (e) { /* optional */ }
+    this._render();
+    const again = [...this.shadowRoot.querySelectorAll('[data-act="legend"]')].find((b) => b.dataset.chart === chart && b.dataset.key === key);
+    if (again) again.focus();       // the redraw replaced the button: a keyboard user stays on it
+  },
+
+  // items: [{key, name, color, mark?}] (mark: the swatch's own HTML, when a plain square will not do)
+  _legend(chart, items) {
+    return items.map((s) => {
+      const off = this._isHidden(chart, s.key);
+      return `<button type="button" class="lg${off ? " off" : ""}" data-act="legend" data-chart="${esc(chart)}" data-key="${esc(s.key)}" aria-pressed="${!off}" title="${off ? "Show" : "Hide"}">${s.mark || `<i class="sw" style="background:${s.color}"></i>`}${esc(s.name)}</button>`;
+    }).join("");
+  },
+
   _flowMin() {
     let v = this._flowMinV;
     if (!v) { try { v = parseInt(localStorage.getItem("homepower.flowMin"), 10); } catch (e) { /* storage unavailable */ } }
@@ -105,16 +136,16 @@ export default (U) => {
       const first = live.length ? live[0].t : now;
       const eid = (ids[d.device_id] || {}).power;
       const old = mins > 30 && eid ? (back[eid] || []).filter((r) => r.mean != null).map((r) => ({ t: typeof r.start === "number" ? r.start : Date.parse(r.start), v: r.mean })).filter((x) => x.t >= tmin && x.t < first) : [];
-      return { d, i, pts: this._downsample([...old, ...live]), color: this._color(i), width: 2.4 };
+      return { key: d.device_id, name: d.name, pts: this._downsample([...old, ...live]), color: this._color(i), width: 2.4 };
     }).filter((s) => s.pts.length > 1);
     if (!series.length) return `<div class="sub" style="color:var(--secondary-text-color)">Collecting live data… the chart fills in as readings arrive.</div>`;
-    const all = series.flatMap((s) => s.pts);
-    const m = Math.max(500, ...all.map((x) => Math.abs(x.v)));
+    const all = series.flatMap((s) => s.pts), shown = series.filter((s) => !this._isHidden("flow", s.key));
+    const m = Math.max(500, ...shown.flatMap((s) => s.pts).map((x) => Math.abs(x.v)));      // the scale fits what is shown
     const nt = this._niceTicks(-m, m, 4);
     const t0 = Math.min(tmin, ...all.map((x) => x.t));
     const covered = Math.round((now - Math.min(...all.map((x) => x.t))) / 60e3);
-    return `${this._plot(series, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin: t0, tmax: now, fmtY: (v) => (v === 0 ? "0" : fmtW(v)), ariaLabel: "Battery power over time" })}
-      <div class="legend">${series.map((s) => `<span><i class="sw" style="background:${s.color}"></i>${esc(s.d.name)}</span>`).join("")}
+    return `${this._plot(shown, { lo: nt.lo, hi: nt.hi, ticks: nt.ticks, tmin: t0, tmax: now, fmtY: (v) => (v === 0 ? "0" : fmtW(v)), ariaLabel: "Battery power over time" })}
+      <div class="legend">${this._legend("flow", series)}
       <span>Above 0 = charging, below = discharging${covered < mins - 2 ? ` · showing the last ${covered} min so far (the page records while open${mins > 30 ? "; older data comes from Home Assistant history" : ""})` : ""}</span></div>`;
   },
 
@@ -160,7 +191,7 @@ export default (U) => {
     const rows = ds.map((d) => {
       const zi = this.data.settings.zero_import_device === d.device_id;
       const mine = this.data.schedules.filter((s) => s.enabled && (!s.device_ids.length || s.device_ids.includes(d.device_id))).sort((x, y) => x.priority - y.priority);
-      const segs = mine.flatMap((s) => this._segmentsToday(s).map(([a, b]) => `<div class="seg" title="${esc(s.id)}: ${s.start}–${s.end}" style="left:${(a / 24) * 100}%;width:${((b - a) / 24) * 100}%;background:${MODES[s.mode].color}">${b - a > 2 ? esc(s.id) : ""}</div>`));
+      const segs = mine.flatMap((s) => this._segmentsToday(s).map(([a, b]) => `<div class="seg" title="${esc(s.id)}: ${s.start}–${s.end}" style="left:${(a / 24) * 100}%;width:${((b - a) / 24) * 100}%;background:${MODES[s.mode].color};color:${U.onFill(MODES[s.mode].color)}">${b - a > 2 ? esc(s.id) : ""}</div>`));
       return `<div class="row"><div class="nm" title="${esc(d.name)}">${esc(d.name)}</div><div class="bar ${zi ? "zi" : ""}">${segs.join("")}<div class="now" style="left:${(nowH / 24) * 100}%"></div></div></div>`;
     }).join("");
     const ticks = `<div class="axis"><div></div><div><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div></div>`;

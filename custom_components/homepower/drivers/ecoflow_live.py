@@ -69,8 +69,9 @@ class EcoFlowLive:
         self.enabled = False            # opt-in: a second connection on the same account could disturb other EcoFlow integrations
 
     def register(self, sn: str, callback: Callable[[dict], None]) -> None:
-        new = sn not in self._devs
-        self._devs[sn] = callback
+        with self._lock:                # (the MQTT thread copies this dict when it (re)connects)
+            new = sn not in self._devs
+            self._devs[sn] = callback
         self.ensure()
         if new and self._client is not None and self.connected:      # a battery added while the connection is up: subscribe now, not at the next reconnect
             try:
@@ -81,10 +82,12 @@ class EcoFlowLive:
                 _LOGGER.debug("could not subscribe %s now", sn, exc_info=True)
 
     def unregister(self, sn: str, callback: Callable[[dict], None] | None = None) -> None:
-        if callback is not None and self._devs.get(sn) != callback:
-            return                      # a different driver object now owns this battery (e.g. a connection test closed)
-        self._devs.pop(sn, None)
-        if not self._devs:
+        with self._lock:
+            if callback is not None and self._devs.get(sn) != callback:
+                return                  # a different driver object now owns this battery (e.g. a connection test closed)
+            self._devs.pop(sn, None)
+            last = not self._devs
+        if last:
             self.stop()
 
     def ensure(self) -> None:
@@ -118,14 +121,21 @@ class EcoFlowLive:
         def on_connect(c, _u, _f, rc, _p=None):
             self.connected = not getattr(rc, "is_failure", bool(rc))
             if self.connected:
-                for sn in list(self._devs):
+                with self._lock:        # runs on the MQTT thread: copy while the event loop cannot be changing it
+                    sns = list(self._devs)
+                for sn in sns:
                     c.subscribe([(f"/open/{account}/{sn}/quota", 1), (f"/open/{account}/{sn}/status", 1)])
 
         def on_disconnect(*_a):
             self.connected = False
 
         def on_message(_c, _u, msg):
-            self.loop.call_soon_threadsafe(self._dispatch, msg.topic, msg.payload)
+            if gen != self._gen:            # stopped (unload, reload): paho's thread may still deliver a few before it ends
+                return
+            try:
+                self.loop.call_soon_threadsafe(self._dispatch, msg.topic, msg.payload)
+            except RuntimeError:            # the event loop has closed (Home Assistant stopping): nothing to deliver to
+                pass
 
         client.on_connect, client.on_disconnect, client.on_message = on_connect, on_disconnect, on_message
         client.reconnect_delay_set(min_delay=5, max_delay=120)

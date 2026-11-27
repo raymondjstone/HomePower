@@ -25,7 +25,7 @@ async def main():
                         title="HomePower", unique_id="homepower", version=1)
     mgr = HomePowerManager(hass); await mgr.async_load()
     coord = HomePowerCoordinator(hass, entry, mgr, *mgr.build()); mgr.coordinator = coord
-    hass.data["homepower"] = {"manager": mgr}
+    _harness.attach(hass, entry, mgr)
     hass.config_entries = SimpleNamespace(async_get_known_entry=lambda i: entry)
     conn = {"host": "127.0.0.1", "port": port}
     await mgr.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "connection": conn})

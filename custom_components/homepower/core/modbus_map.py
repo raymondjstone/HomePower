@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 
 TYPES = {"u16": 1, "i16": 1, "u32": 2, "i32": 2}
-READ_KEYS = ("soc", "power", "grid", "pv", "load")
 
 
 class MapError(ValueError):
@@ -81,6 +80,8 @@ def parse_map(raw: dict | str | None) -> dict:
         out["mode"] = reg
     else:
         out["mode"] = None
+    if out["setpoint"]:                  # charge and discharge are told apart by the sign, whatever type was typed (or left out)
+        out["setpoint"]["type"] = "i" + out["setpoint"]["type"][1:]
     if bool(out["setpoint"]) != bool(out["mode"]):
         raise MapError("control needs both 'setpoint' and 'mode' (or neither, for read-only)")
     return out

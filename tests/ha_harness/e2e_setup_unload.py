@@ -34,11 +34,20 @@ async def main():
     await m0.save_device({"device_id": "a", "name": "A", "kind": "anker_e5000_pro", "grid_meter": "yes", "connection": {"host": "127.0.0.1", "port": port}, "control_enabled": True})
 
     entry._async_set_state(hass, ConfigEntryState.SETUP_IN_PROGRESS, None)
+    # Home Assistant calls async_setup first: the actions exist from then on, and say HomePower is not loaded until it is
+    assert await HP.async_setup(hass, {})
+    assert "pause" in hass.services.async_services().get(DOMAIN, {})
+    from homeassistant.exceptions import ServiceValidationError
+    try:
+        await hass.services.async_call(DOMAIN, "pause", {}, blocking=True)
+        raise AssertionError("an action before HomePower is loaded must not quietly do nothing")
+    except ServiceValidationError as err:
+        print("not yet  :", err)
     ok = await HP.async_setup_entry(hass, entry)          # no hass.http, no frontend, no panel_custom
     print("setup    :", ok, "| platforms", forwarded, "| services", sorted(hass.services.async_services().get(DOMAIN, {})))
     assert ok is True and forwarded == [["sensor", "switch"]]
     assert {"override", "pause", "backup", "away", "test_control"} <= set(hass.services.async_services()[DOMAIN])
-    mgr, coord = hass.data[DOMAIN]["manager"], hass.data[DOMAIN]["e1"]
+    mgr, coord = entry.runtime_data.manager, entry.runtime_data.coordinator      # kept on the entry, not in hass.data
     assert coord.view()["devices"]["a"]["soc"] == 62
 
     # the registered services work
@@ -47,7 +56,20 @@ async def main():
     from hp.drivers.modbus import to_i32
     print("service  : setpoint", to_i32(dev.hold[10071], dev.hold[10072], "big"))
     assert to_i32(dev.hold[10071], dev.hold[10072], "big") == -1200
-    await hass.services.async_call(DOMAIN, "clear_override", {}, blocking=True)
+    try:                                                  # a mistyped id is refused, and the override stays (it is not quietly kept forced)
+        await hass.services.async_call(DOMAIN, "clear_override", {"device_ids": ["A"]}, blocking=True)
+        raise AssertionError("clearing an unknown battery must say so")
+    except ServiceValidationError as err:
+        assert "no battery called A" in str(err) and "a" in coord.overrides
+    await hass.services.async_call(DOMAIN, "override", {"mode": "hold", "minutes": 5, "device_ids": "a"}, blocking=True)   # a single id, as YAML often has it
+    assert coord.overrides["a"][0].mode.value == "hold"
+    await hass.services.async_call(DOMAIN, "clear_override", {"device_ids": "a"}, blocking=True)
+    assert "a" not in coord.overrides
+    try:
+        await hass.services.async_call(DOMAIN, "test_control", {"device_id": "nope"}, blocking=True)
+        raise AssertionError("testing an unknown battery must say so")
+    except ServiceValidationError as err:
+        assert "no battery called nope" in str(err)
     await hass.services.async_call(DOMAIN, "pause", {}, blocking=True); assert mgr.paused
     await hass.services.async_call(DOMAIN, "resume", {}, blocking=True); assert not mgr.paused
     res = await hass.services.async_call(DOMAIN, "test_control", {"device_id": "a"}, blocking=True, return_response=True)
@@ -94,17 +116,24 @@ async def main():
     assert not mgr.paused, "a stale coordinator answered a notification button after unload"
     print("unload   : mode reg", dev.hold[10064])
     assert dev.hold[10064] == 0
-    print("unload   :", ok, unloaded, "| manager gone:", "manager" not in hass.data[DOMAIN])
-    assert ok and unloaded == [["sensor", "switch"]] and "manager" not in hass.data[DOMAIN]
+    from custom_components.homepower.runtime import running_manager
+    entry._async_set_state(hass, ConfigEntryState.NOT_LOADED, None)      # what Home Assistant does once the unload returns
+    print("unload   :", ok, unloaded, "| still found:", running_manager(hass) is not None)
+    assert ok and unloaded == [["sensor", "switch"]] and running_manager(hass) is None, "an unloaded HomePower must not be found"
     # removing HomePower keeps the saved data unless the user chose to erase it
     from homeassistant.helpers.storage import Store
     from custom_components.homepower.const import STORAGE_KEY, STORAGE_VERSION
+    bdir = hass.config.path("homepower_backups"); os.makedirs(bdir, exist_ok=True)
+    for n in ("homepower-2026-01-01.json", "homepower-2026-01-02.json", "my-notes.txt"):
+        open(os.path.join(bdir, n), "w").write("{}")
     await HP.async_remove_entry(hass, entry)
+    assert {"homepower-2026-01-01.json", "homepower-2026-01-02.json", "my-notes.txt"} <= set(os.listdir(bdir)), "backup copies were deleted without being asked"
     kept = await Store(hass, STORAGE_VERSION, STORAGE_KEY).async_load()
     assert kept and kept["devices"], "data was erased without being asked"
     object.__setattr__(entry, "options", {"erase_on_remove": True})
     await HP.async_remove_entry(hass, entry)
     assert await Store(hass, STORAGE_VERSION, STORAGE_KEY).async_load() is None, "data was not erased"
+    assert os.listdir(bdir) == ["my-notes.txt"], ("backup copies not erased, or another file was", os.listdir(bdir))
     print("remove   : kept by default, erased when chosen")
     srv.close(); await srv.wait_closed()
     print("E2E6 OK")

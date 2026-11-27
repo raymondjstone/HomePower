@@ -49,28 +49,37 @@ def peak_shave(grid_w: float, limit_w: float, candidates: list[tuple[str, float,
 
 
 def export_guard(
-    grid_w: float, limit_w: float, discharging: dict[str, float], chargers: list[tuple[str, float, float, float]]
+    grid_w: float, limit_w: float, discharging: dict[str, float], chargers: list[tuple[str, float, float, float]],
+    commanded: dict[str, float] | None = None, held: dict[str, float] | None = None,
 ) -> tuple[dict[str, int], dict[str, int]]:
     """Keep export under the limit: first trim scheduled discharge, then absorb the rest by charging.
 
-    discharging: id -> commanded discharge W (can be reduced). chargers: (id, current_charge_w,
-    max_charge_w, weight) for batteries free to be commanded. Returns (new discharge W for trimmed
-    batteries, charge W for chargers).
+    discharging: id -> discharge W now. commanded: id -> discharge W it is about to be told (None = the same).
+    chargers: (id, current_charge_w, max_charge_w, weight) for batteries free to be commanded. held: id -> W of those
+    already charging because we told them to. Returns (new discharge W for trimmed batteries, charge W for chargers).
+
+    The grid reading includes what the guard did last time, so both are worked out from it with that added back:
+    otherwise a reading at the limit would look like "all clear", undo the guard, and switch it on again next time.
     """
     excess = (-grid_w) - limit_w * PEAK_MARGIN
-    if excess <= 0:
-        return {}, {}
+    want = dict(discharging if commanded is None else commanded)
+    cut = sum(want.values()) - max(0.0, sum(discharging.values()) - excess)     # asked for beyond what the limit has room for
     trims: dict[str, int] = {}
-    for did, w in sorted(discharging.items(), key=lambda kv: -kv[1]):
-        if excess <= 0:
+    for did, w in sorted(want.items(), key=lambda kv: -kv[1]):
+        if cut < 1:
             break
-        cut = min(w, excess)
-        trims[did] = int(round(w - cut))
-        excess -= cut
+        off = min(w, cut)
+        trims[did] = int(round(w - off))
+        cut -= off
+    left = excess - sum(discharging.values())            # what stopping every discharge would not take care of
+    if left > 0:
+        pool, extra = chargers, left + sum(c[1] for c in chargers)
+    else:                                                # under the limit: only what we are already charging may carry on
+        pool = [c for c in chargers if c[0] in (held or {})]
+        extra = sum((held or {}).get(c[0], 0.0) for c in pool) + min(0.0, excess)
     charges: dict[str, int] = {}
-    if excess > 0 and chargers:
-        cur = sum(c[1] for c in chargers)
-        res = split_power(cur + excess, [(i, w, m) for i, _, m, w in chargers])
+    if extra > 0 and pool:
+        res = split_power(extra, [(i, w, m) for i, _, m, w in pool])
         charges = {k: v for k, v in res.items() if v > 0}
     return trims, charges
 

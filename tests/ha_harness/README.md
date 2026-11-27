@@ -32,6 +32,9 @@ open to the simulated battery (without it most scripts hang at the end). The scr
     python tests/ha_harness/e2e_soak.py        # a simulated day of cycles: speed and growth (SOAK_CYCLES=... to change)
     python tests/ha_harness/e2e_export_events_repairs.py   # paid export, wear cost, a saving session, Repairs, the hardware report, X1 solar strings
     python tests/ha_harness/e2e_x1_limits_release.py   # removing HomePower puts back the X1 limits it changed (also with the X1 unreachable)
+    python tests/ha_harness/e2e_insights.py      # scenes, backup/restore, heads-ups, learned usage, the combined battery and its sensors
+    python tests/ha_harness/e2e_solar_room.py    # room for solar: forecast, sunrise/sunset, ceilings, capped grid charging (clock fixed)
+    python tests/ha_harness/e2e_solar_forecast.py   # Home Assistant's real Forecast.Solar platform: hourly forecast, history, the views
 
 What they cover: every module imports and every Home Assistant function used has the signature HomePower calls;
 the Configure flow for every battery model; the whole control loop (monitor-only, control, hand-back, override,
