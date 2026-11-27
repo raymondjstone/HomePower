@@ -420,7 +420,8 @@ def compute(w: World) -> Result:
                 res.reasons[did] = "peak shaving"
         if S.export_limit_w:
             discharging = {did: max(0.0, -(by_id[did].actual.power_w or 0.0)) for did, x in res.wants.items()
-                           if x.mode is Mode.DISCHARGE and res.reasons[did] != "manual override" and by_id[did].actual.online}
+                           if x.mode is Mode.DISCHARGE and res.reasons[did] != "manual override" and by_id[did].actual.online
+                           and by_id[did].actual.power_w is not None}      # unknown is not 0: trimming from 0 would flap
             commanded = {did: float(res.wants[did].power_w if res.wants[did].power_w is not None else by_id[did].config.caps.max_discharge_w)
                          for did in discharging}
             chargers, held = [], {}
@@ -446,8 +447,15 @@ def compute(w: World) -> Result:
         return any(o.config.extra.get("role") != "reserve" and o.actual.online and o.actual.soc is not None
                    and o.actual.soc > _floor(o.config.caps, w) + SOC_MARGIN + margin for o in w.devices)
 
-    # Never get in the way of solar charging: not this battery's own panels, nor surplus from anywhere else in the house.
-    solar_about = any((o.actual.pv_w or 0) > 50 for o in w.devices if o.actual.online) or (w.grid_w is not None and w.grid_w < -50)
+    # Battery power that passes the house meter. Charging from a battery's own panels never does: counting it would make the house
+    # look like it imports less than it does, and the import-limit headroom would let the others charge past the limit.
+    online_net = sum((p - min(max(0.0, x.actual.pv_w or 0.0), p)) if (p := x.actual.power_w or 0.0) > 0 else p
+                     for x in w.devices if x.actual.online)
+    # Never get in the way of solar charging: not this battery's own panels, nor surplus from anywhere else in the house. Surplus a
+    # battery is soaking up never shows at the meter, and a battery's discharge going out is not solar: so the batteries are taken out of
+    # the reading (else: hold, release, hold...).
+    solar_about = (any((o.actual.pv_w or 0) > 50 for o in w.devices if o.actual.online)
+                   or (w.grid_w is not None and w.grid_w <= 100 and w.grid_w - online_net < -50))   # clearly importing: not surplus
     for d in w.devices:
         did, caps = d.config.device_id, d.config.caps
         if (did in res.wants or not d.controllable or not d.actual.online or Mode.HOLD not in caps.supported_modes or solar_about
@@ -478,10 +486,6 @@ def compute(w: World) -> Result:
             res.wants[did], res.reasons[did] = Desired(Mode.AUTO), "handing back to the battery"
 
     # ---- 6. overall caps across everything combined
-    # Battery power that passes the house meter. Charging from a battery's own panels never does: counting it would make the house
-    # look like it imports less than it does, and the import-limit headroom would let the others charge past the limit.
-    online_net = sum((p - min(max(0.0, x.actual.pv_w or 0.0), p)) if (p := x.actual.power_w or 0.0) > 0 else p
-                     for x in w.devices if x.actual.online)
     res.wants.update(apply_totals(
         {k: (v, by_id[k].config.caps, by_id[k].config.priority) for k, v in res.wants.items()},
         charge_ceiling(S.charge_cap_w, S.import_limit_w, w.grid_w, online_net),

@@ -585,3 +585,27 @@ def test_export_limit_trim_stays_while_it_is_needed():
     assert r.wants["a"].power_w == 1350 and "trimmed" in r.reasons["a"]
     r = compute(world([dev(soc=80, power=-1350)], settings=st, schedules=s, grid_w=-1000))   # more room: back up to the schedule
     assert r.wants["a"].power_w == 2500
+
+
+def test_export_limit_leaves_a_discharge_alone_when_the_battery_reports_no_power():
+    from dataclasses import replace
+    st = Settings(import_limit_w=None, export_limit_w=3000)
+    d = dev(soc=80)
+    d.actual = replace(d.actual, power_w=None)
+    r = compute(world([d], settings=st, schedules=[sched(mode=Mode.DISCHARGE, power=2500)], grid_w=-2500))
+    assert r.wants["a"].power_w == 2500 and "trimmed" not in r.reasons["a"]      # not read as "doing nothing"
+
+
+def test_surplus_a_battery_is_soaking_up_still_counts_as_solar_so_it_is_not_held():
+    st = Settings(save_for_peak=True)
+    # on its own control it takes the 1500 W the house has spare, so the meter reads 0
+    r = compute(world([dev(power=1500)], settings=st, grid_w=0.0, cheap_now=True))
+    assert "a" not in r.wants
+    # charging from the grid on its own cheap-rate setting is not surplus: it is still held
+    r = compute(world([dev(power=1500)], settings=st, grid_w=1900.0, cheap_now=True))
+    assert r.wants["a"].mode is Mode.HOLD
+    r = compute(world([dev(power=1500)], settings=st, grid_w=300.0, cheap_now=True))      # still importing, so not surplus
+    assert r.wants["a"].mode is Mode.HOLD
+    # another battery's discharge going out is not solar either: this one is held rather than left to soak it up
+    r = compute(world([dev(power=0), dev("b", power=-2500)], settings=st, grid_w=-2100.0, cheap_now=True))
+    assert r.wants["a"].mode is Mode.HOLD
