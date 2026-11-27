@@ -620,3 +620,9 @@ def test_preview_starts_and_ends_on_the_clock_whatever_minute_it_is_asked_for():
     assert (clash["start"].minute, clash["end"].minute) == (30, 30)
     live = preview([sched(start=time(8), end=time(9))], ["a"], asked, hours=24)["a"][0]
     assert live.start == asked and (live.end.hour, live.end.minute) == (9, 0)       # already running: from now
+
+
+def test_preview_does_not_give_each_battery_the_whole_of_a_shared_total():
+    seg = preview([sched(power=3000, total_power_w=4000)], ["a", "b"], NOW, hours=1)["b"][0]
+    assert seg.power_w is None and seg.shared_w == 4000
+    assert preview([sched(power=3000)], ["a"], NOW, hours=1)["a"][0].power_w == 3000
