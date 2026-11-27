@@ -21,7 +21,7 @@ from .core.goals import Goal
 from .core.models import Actual, Desired, Mode
 from .core.meter import MeterReader
 from .core.pv_health import PvHealth
-from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, PlanLog, UsageHistory, combine
+from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, PlanLog, UsageHistory, combine, drop_impossible
 from .core.rates import RateTable
 from .core.report import charge_efficiency, startup_summary
 from .core.traces import CommandTrace
@@ -73,6 +73,11 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         self.profile = LoadProfile(manager.profile_data)   # the household's usual load by time of day
         self.usage = UsageHistory(manager.usage_data)          # grid import/export per half-hour, for the tariff comparison
         self.daily = DailyStats(manager.daily_data)         # self-consumption / cheap-rate share per day
+        if wrong := drop_impossible(self.usage, self.daily):
+            # The lifetime counter is not lowered (Home Assistant would read that as a reset and count it all again): what
+            # was wrong is remembered, and left out of what the panel shows.
+            self.meter.totals["pv_wrong"] = self.meter.totals.get("pv_wrong", 0.0) + wrong
+            _LOGGER.warning("removed %.1f kWh of impossible solar readings from HomePower's own records", wrong)
         self._unsub_action = hass.bus.async_listen("mobile_app_notification_action", self._on_action)
         self.startup_note: str | None = None
         self.temp_log = TempLog((manager.weather_data or {}).get("temps"))       # outdoor temperature per day

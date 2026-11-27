@@ -147,6 +147,25 @@ class DailyStats:
         return {k: {kk: round(vv, 4) for kk, vv in v.items()} for k, v in self.days.items()}
 
 
+IMPOSSIBLE_HALF_HOUR_KWH = 50.0      # 100 kW for half an hour: more than a home's supply can carry
+
+
+def drop_impossible(usage: "UsageHistory", daily: DailyStats) -> float:
+    """Take out solar and house-use half-hours no home could produce (v0.3.12-beta.122 read an X1's solar total the wrong
+    way round just after a restart). Returns the solar removed, kWh."""
+    removed = 0.0
+    for day, d in usage.days.items():
+        for key in ("pv", "load"):
+            for i, v in enumerate(d.get(key) or []):
+                if v > IMPOSSIBLE_HALF_HOUR_KWH:
+                    d[key][i] = 0.0
+                    if key == "pv":
+                        removed += v
+                        if day in daily.days:
+                            daily.days[day]["pv"] = max(0.0, daily.days[day]["pv"] - v)
+    return removed
+
+
 class UsageHistory:
     """Grid import / export per half-hour of each day (kWh), kept for the tariff comparison."""
 

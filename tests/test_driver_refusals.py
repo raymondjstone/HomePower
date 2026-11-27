@@ -2,6 +2,7 @@
 stop a command because something optional was refused."""
 import asyncio
 import sys
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ from hp.drivers.modbus import ModbusError, ModbusTcpClient
 from hp.drivers.modbus_generic import GenericModbusDriver
 from hp.drivers.portscan import check_host
 
+from core.insights import DailyStats, UsageHistory, drop_impossible
 from core.meter import MeterReader
 from core.models import Capabilities, Desired, DeviceConfig, Mode
 
@@ -236,6 +238,15 @@ def test_x1_solar_is_the_total_of_its_pv_inputs_and_an_old_reading_is_not_counte
     x1, plug = anker(c, extra={"house_meter": True}), anker(c)
     x1._order = plug._order = "big"
     inp = [0, 0, 0, 290] + [0] * 60
+    x1._order = None
+    run(x1._refresh_pv())
+    assert x1._pv_total_now() is None                                 # word order not known yet: not read at all
+    x1._order = "big"
+    c.regs.update({10183: 388, 10184: 0})                             # the wrong way round for this order: 25 million W
+    run(x1._refresh_pv())
+    assert x1._pv_total_now() is None
+    c.regs.update({10183: 0, 10184: 388})
+    x1._pv_at = 0
     run(x1._refresh_pv())
     assert x1._solar_w(inp) == 388 and plug._solar_w(inp) == 290
     c.silent = {10167}
@@ -244,3 +255,15 @@ def test_x1_solar_is_the_total_of_its_pv_inputs_and_an_old_reading_is_not_counte
     assert x1._solar_w(inp) == 388                                    # one missed read: the last total still stands
     x1._pv_total_ok -= 120
     assert x1._solar_w(inp) == 290 and x1._pv_total_now() is None      # long gone: not counted any more
+
+
+def test_impossible_half_hours_are_taken_out_of_the_records():
+    usage, daily = UsageHistory(), DailyStats()
+    noon = datetime(2026, 11, 27, 12, 10)
+    usage.add(noon, 0.1, 0.0, 188.0, 188.2)
+    usage.add(noon.replace(hour=9), 0.0, 0.0, 0.4, 0.2)
+    daily.add("2026-11-27", pv_kwh=188.4)
+    assert drop_impossible(usage, daily) == pytest.approx(188.2)
+    day = usage.days["2026-11-27"]
+    assert day["pv"][24] == 0 and day["load"][24] == 0 and day["pv"][18] == pytest.approx(0.2)
+    assert daily.days["2026-11-27"]["pv"] == pytest.approx(0.2) and drop_impossible(usage, daily) == 0

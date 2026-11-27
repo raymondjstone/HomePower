@@ -35,6 +35,7 @@ WATCHDOG_SECONDS = 600
 PAIRS = (10002, 10008, 10010, 10012, 10036, 10038)  # 32-bit power registers used to detect word order
 
 
+PV_TOTAL_MAX_W = 200_000
 PV_TOTAL_FRESH_S = 60       # X1 total PV power is read every 15 s: older than this it is no longer "now"
 
 
@@ -207,8 +208,15 @@ class AnkerModbusDriver:
         def s16(w: int) -> int:
             return w - 0x10000 if w & 0x8000 else w
         self._pv = tuple((max(0, s16(regs[2 * i])) / 10, max(0, s16(regs[2 * i + 1])) / 100) for i in range(8))
-        self._pv_total = float(max(0, to_i32(regs[16], regs[17], self._order or "big")))
-        self._pv_total_ok = time.monotonic()
+        # The total is 32-bit: not before the word order is known (learned from the first full read). Read the wrong way
+        # round, 388 W is 25 million W. (The strings above are single registers.)
+        if self._order is None:
+            self._pv_at = 0.0               # try again next cycle, not in 15 s
+            return
+        total = float(max(0, to_i32(regs[16], regs[17], self._order)))
+        if total > PV_TOTAL_MAX_W:
+            return                          # no home inverter makes this: not a reading
+        self._pv_total, self._pv_total_ok = total, time.monotonic()
 
     def _note_down(self, err: ModbusError) -> None:
         self.last_error = describe_failure(err)
@@ -226,9 +234,11 @@ class AnkerModbusDriver:
 
     async def read(self) -> Actual:
         try:
+            blocks = await self._blocks()
+            self._learn_order(*blocks)          # first: the PV total below cannot be read without the word order
             await self._refresh_extras()
             await self._refresh_pv()
-            actual = self._decode(*await self._blocks())
+            actual = self._decode(*blocks)
         except ModbusError as err:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
             self._note_down(err)
