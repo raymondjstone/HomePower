@@ -174,7 +174,7 @@ class ReportsMixin:
         segs = build_preview(self.schedules, ids, now, hours, allocs=self.last_result.allocs, **kw)
         return {
             "segments": {d: [{"start": s.start.isoformat(), "end": s.end.isoformat(), "mode": s.mode,
-                              "power_w": s.power_w, "source": s.source} for s in lst] for d, lst in segs.items()},
+                              "power_w": s.power_w, "source": s.source, "shared_w": s.shared_w} for s in lst] for d, lst in segs.items()},
             "conflicts": [{**c, "start": c["start"].isoformat(), "end": c["end"].isoformat()}
                           for c in find_conflicts(self.schedules, ids, now, hours * 2, **kw)],
             "plan": [{"device_id": p.device_id, "start": p.start.isoformat(), "end": p.end.isoformat(),

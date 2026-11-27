@@ -69,3 +69,17 @@ def test_goal_deadline_across_a_clock_change_is_the_right_morning():
     now = datetime(2026, 10, 24, 20, 0, tzinfo=LON)                          # the evening before the 25-hour night
     d = next_deadline(g, now)
     assert d is not None and d.date().isoformat() == "2026-10-25" and d.hour == 7
+
+
+def test_preview_walks_real_time_over_both_clock_changes():
+    from datetime import datetime as DT, time as T, timedelta as D, timezone as Z
+    from zoneinfo import ZoneInfo
+    from core.models import Desired, Mode
+    from core.preview import preview
+    from core.schedule import ScheduleEntry
+
+    tz = ZoneInfo("Europe/London")
+    night = [ScheduleEntry("n", frozenset(), T(0, 30), T(2, 30), Desired(Mode.CHARGE, 1000))]
+    for asked, minutes in ((DT(2026, 10, 24, 12, 0, tzinfo=tz), 180), (DT(2026, 3, 28, 12, 0, tzinfo=tz), 60)):
+        segs = preview(night, ["a"], asked, hours=24)["a"]      # 00:30-02:30 on the clock: 3 real hours in autumn, 1 in spring
+        assert sum((s.end.astimezone(Z.utc) - s.start.astimezone(Z.utc) for s in segs), D()) == D(minutes=minutes), segs

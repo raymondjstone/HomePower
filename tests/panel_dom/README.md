@@ -18,10 +18,15 @@ backend produces, renders every tab and presses every button. Not part of the no
     node tests/panel_dom/reattach.mjs       # the panel survives Home Assistant detaching and re-attaching it
     node tests/panel_dom/override_monitor.mjs   # monitor-only battery: cannot be picked for an override, and its plan row is marked
     node tests/panel_dom/settings_error.mjs     # a refused Settings save names the field by its label, not its key
+    node tests/panel_dom/report_issue.mjs   # Report an issue: versions and battery types filled in, nothing personal
     node tests/panel_dom/audit_ui.mjs       # an odd currency symbol is not injected, a refused delete stays on screen, a failed load recovers
 
     npm install playwright && npx playwright install chromium
     node tests/panel_dom/panel_browser.mjs  # the same in real headless Chromium: module loading with the ?v= tag, console errors,
                                             # every tab, real clicks, and a screenshot of each tab in tests/panel_dom/shots/
 
-`payload.json`, `shots/` and `node_modules` are generated: do not commit them. The screenshots have no Home Assistant theme, so the header text is white on white and entity pickers (`ha-entity-picker`) are empty: that is the test page, not the panel.
+    python tests/ha_harness/dump_demo_payload.py tests/panel_dom/demo.json
+    npm install --no-save @mdi/js
+    node tests/panel_dom/readme_shots.mjs   # the screenshots in the README (docs/images/), from a made-up home
+
+`payload.json`, `demo.json`, `shots/` and `node_modules` are generated: do not commit them. The screenshots have no Home Assistant theme, so the header text is white on white and entity pickers (`ha-entity-picker`) are empty: that is the test page, not the panel.

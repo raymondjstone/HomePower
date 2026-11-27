@@ -87,7 +87,7 @@ export default (U) => {
           const a = Math.max(0, (Date.parse(sg.start) - t0) / span), b = Math.min(1, (Date.parse(sg.end) - t0) / span);
           if (b <= a) return "";
           const m = MODES[sg.mode] || MODES.hold;
-          return `<div class="seg2" title="${esc(sg.source)}: ${esc(m.label)}${sg.power_w ? " " + fmtW(sg.power_w) : ""}" style="left:${a * 100}%;width:${(b - a) * 100}%;background:${m.color};color:${U.onFill(m.color)}">${b - a > 0.12 ? esc(sg.source) : ""}</div>`;
+          return `<div class="seg2" title="${esc(sg.source)}: ${esc(m.label)}${sg.power_w ? " " + fmtW(sg.power_w) : sg.shared_w ? ", " + fmtW(sg.shared_w) + " shared between its batteries" : ""}" style="left:${a * 100}%;width:${(b - a) * 100}%;background:${m.color};color:${U.onFill(m.color)}">${b - a > 0.12 ? esc(sg.source) : ""}</div>`;
         }).join("");
         const watch = d.control_enabled === false;    // what the plan would do, but nothing is sent to it: shown faded
         return `<div class="row"${watch ? ' title="Monitor only: control is off for this battery, so none of this is sent to it"' : ""}><div class="nm">${esc(d.name)}${watch ? " (monitor only)" : ""}</div><div class="bar"${watch ? ' style="opacity:.4"' : ""}>${segs}<div class="now" style="left:0"></div></div></div>`;
