@@ -21,7 +21,7 @@ from .core.goals import Goal
 from .core.models import Actual, Desired, Mode
 from .core.meter import MeterReader
 from .core.pv_health import PvHealth
-from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, PlanLog, UsageHistory, combine
+from .core.insights import BatteryFigures, DailyStats, Diverter, GridEvents, Health, HealthTrend, LoadProfile, PlanLog, UsageHistory, combine, drop_impossible
 from .core.rates import RateTable
 from .core.report import charge_efficiency, startup_summary
 from .core.traces import CommandTrace
@@ -73,6 +73,11 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         self.profile = LoadProfile(manager.profile_data)   # the household's usual load by time of day
         self.usage = UsageHistory(manager.usage_data)          # grid import/export per half-hour, for the tariff comparison
         self.daily = DailyStats(manager.daily_data)         # self-consumption / cheap-rate share per day
+        if wrong := drop_impossible(self.usage, self.daily):
+            # The lifetime counter is not lowered (Home Assistant would read that as a reset and count it all again): what
+            # was wrong is remembered, and left out of what the panel shows.
+            self.meter.totals["pv_wrong"] = self.meter.totals.get("pv_wrong", 0.0) + wrong
+            _LOGGER.warning("removed %.1f kWh of impossible solar readings from HomePower's own records", wrong)
         self._unsub_action = hass.bus.async_listen("mobile_app_notification_action", self._on_action)
         self.startup_note: str | None = None
         self.temp_log = TempLog((manager.weather_data or {}).get("temps"))       # outdoor temperature per day
@@ -269,6 +274,8 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         return combine(items, max(loads) if loads else None)
 
     # ------------------------------------------------------------------ the loop
+    _asked_for_keys = False
+
     async def _read(self, a: DeviceAdapter) -> Actual:
         st = self._snap.devices.get(a.config.device_id)
         if st is not None and a.config.device_id in self.testing and st.actual is not None:
@@ -278,6 +285,18 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         except Exception:  # noqa: BLE001 - one device must not stop the others
             _LOGGER.debug("read failed for %s", a.config.device_id, exc_info=True)
             return Actual(online=False)
+
+    def _log_link(self, a: DeviceAdapter, was: str, now: str) -> None:
+        if getattr(getattr(a, "driver", None), "logs_link", False) or (was == "offline") == (now == "offline"):
+            return
+        _LOGGER.info("%s: %s", a.config.device_id, "cannot be read: shown offline" if now == "offline" else "can be read again")
+
+    def _check_keys(self, adapters: list) -> None:
+        """EcoFlow refused the account keys: ask for new ones through Home Assistant's re-authentication (once while it lasts)."""
+        failed = any(getattr(getattr(a, "driver", None), "auth_failed", False) for a in adapters)
+        if failed and not self._asked_for_keys and (ask := getattr(self.config_entry, "async_start_reauth", None)):
+            ask(self.hass)
+        self._asked_for_keys = failed
 
     def _note_link(self, st: DeviceStatus, act: Actual, mono: float) -> None:
         """Online, stale or offline. A failed read is often only another Modbus client holding the battery for a moment, so it
@@ -347,8 +366,13 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         # A battery removed while we were reading is dropped; one added meanwhile waits for the next cycle.
         adapters = [a for a in adapters if a.config.device_id in self._snap.devices]
         actuals = {k: v for k, v in actuals.items() if k in self._snap.devices}
-        for did, act in actuals.items():
-            self._note_link(self._snap.devices[did], act, mono)
+        for a in adapters:
+            did = a.config.device_id
+            if did in actuals:
+                was = self._snap.devices[did].link
+                self._note_link(self._snap.devices[did], actuals[did], mono)
+                self._log_link(a, was, self._snap.devices[did].link)
+        self._check_keys(adapters)
 
         self._observe_temp(now)
         # tied to the config entry, so an unload or reload cancels a fetch still running (saves stay on hass: they must finish)

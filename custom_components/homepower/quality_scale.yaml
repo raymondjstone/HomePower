@@ -1,0 +1,81 @@
+# Home Assistant's quality scale rules (https://contributors.home-assistant.io/core/quality-scale/rules/).
+# HomePower is a custom integration, so it has no official tier: this is our own record of where each rule stands.
+rules:
+  # Bronze
+  action-setup: done
+  appropriate-polling: done
+  brands:
+    status: done
+    comment: "Local brand folder."
+  common-modules: done
+  config-flow: done
+  config-flow-test-coverage: done
+  dependency-transparency: done
+  docs-actions: done
+  docs-conditions:
+    status: exempt
+    comment: "The integration provides no conditions."
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: "The integration provides no triggers."
+  entity-event-setup:
+    status: exempt
+    comment: "Entities subscribe to nothing beyond the coordinator, which CoordinatorEntity handles."
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure:
+    status: exempt
+    comment: "The config flow takes no connection details; batteries are added and probed in the panel."
+  test-before-setup:
+    status: exempt
+    comment: "An unreachable battery must not stop setup: it is shown offline and retried."
+  unique-config-entry: done
+  # Silver
+  action-exceptions: done
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters:
+    status: exempt
+    comment: "The setup flow has no fields."
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable: done
+  parallel-updates: done
+  reauthentication-flow: done
+  test-coverage: done
+  # Gold
+  devices: done
+  diagnostics: done
+  discovery:
+    status: todo
+    comment: "Batteries are found from the panel, not through Home Assistant discovery."
+  discovery-update-info: todo
+  docs-data-update: todo
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices: done
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: todo
+  dynamic-devices: done
+  entity-category: done
+  entity-device-class: done
+  entity-disabled-by-default: done
+  entity-translations: todo
+  exception-translations: todo
+  icon-translations: done
+  reconfiguration-flow:
+    status: exempt
+    comment: "The config entry holds no data to reconfigure."
+  repair-issues: done
+  stale-devices: done
+  # Platinum
+  async-dependency:
+    status: todo
+    comment: "paho-mqtt runs its own thread."
+  inject-websession: done
+  strict-typing: todo

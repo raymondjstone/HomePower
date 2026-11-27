@@ -35,7 +35,14 @@ WATCHDOG_SECONDS = 600
 PAIRS = (10002, 10008, 10010, 10012, 10036, 10038)  # 32-bit power registers used to detect word order
 
 
+PV_TOTAL_MAX_W = 200_000
+PV_TOTAL_FRESH_S = 60       # X1 total PV power is read every 15 s: older than this it is no longer "now"
+
+
 class AnkerModbusDriver:
+    _pv_total_ok: float | None = None
+    logs_link = True          # says itself when the battery stops answering and when it answers again
+
     def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None, orig: dict | None = None, on_orig=None) -> None:
         self.config = config
         c = config.extra["connection"]
@@ -129,11 +136,11 @@ class AnkerModbusDriver:
         off_grid = (plant == 2) if plant in (1, 2) else None
         return Actual(
             online=True, off_grid=off_grid, protected=bool(off_grid), alarms=alarms, firmware=self._firmware, temp_c=self._temp, limits=self._limits, pack_v=self._pack_v,
-            pv_strings=self._pv, pv_total_w=self._pv_total,
+            pv_strings=self._pv, pv_total_w=self._pv_total_now(),
             soc=float(inp[14]),
             power_w=float(-self._i32(inp, 10008)),  # register: negative = charging; we use + charging
             mode=mode, set_power_w=set_w,
-            grid_w=float(self._i32(inp, 10012)), pv_w=float(self._i32(inp, 10002)), load_w=float(self._i32(inp, 10010)),
+            grid_w=float(self._i32(inp, 10012)), pv_w=self._solar_w(inp), load_w=float(self._i32(inp, 10010)),
         )
 
     async def _refresh_extras(self) -> None:
@@ -174,6 +181,18 @@ class AnkerModbusDriver:
             except ModbusError:
                 pass
 
+    def _pv_total_now(self) -> float | None:
+        """The X1's total PV power while it is recent. A kept value must not go on being counted as solar for hours."""
+        at = self._pv_total_ok
+        return self._pv_total if at is not None and time.monotonic() - at <= PV_TOTAL_FRESH_S else None
+
+    def _solar_w(self, inp: list[int]) -> float:
+        """The solar power now. On an X1 that is the inverter's total of its PV inputs (10183): its "PV power" (10002) reads
+        well under what the strings give (about 100 W low on a real unit, so nothing at all in weak light). 10002 is used on
+        other models, and on an X1 only while 10183 cannot be read."""
+        total = self._pv_total_now()
+        return total if total is not None else float(self._i32(inp, 10002))
+
     async def _refresh_pv(self) -> None:
         """X1: each PV string's voltage (0.1 V) and current (0.01 A), 10167-10182, and the total PV power (10183, 32-bit),
         at most every 15 s. A failure keeps the last values; they are extras, not needed for control."""
@@ -189,7 +208,15 @@ class AnkerModbusDriver:
         def s16(w: int) -> int:
             return w - 0x10000 if w & 0x8000 else w
         self._pv = tuple((max(0, s16(regs[2 * i])) / 10, max(0, s16(regs[2 * i + 1])) / 100) for i in range(8))
-        self._pv_total = float(max(0, to_i32(regs[16], regs[17], self._order or "big")))
+        # The total is 32-bit: not before the word order is known (learned from the first full read). Read the wrong way
+        # round, 388 W is 25 million W. (The strings above are single registers.)
+        if self._order is None:
+            self._pv_at = 0.0               # try again next cycle, not in 15 s
+            return
+        total = float(max(0, to_i32(regs[16], regs[17], self._order)))
+        if total > PV_TOTAL_MAX_W:
+            return                          # no home inverter makes this: not a reading
+        self._pv_total, self._pv_total_ok = total, time.monotonic()
 
     def _note_down(self, err: ModbusError) -> None:
         self.last_error = describe_failure(err)
@@ -207,9 +234,11 @@ class AnkerModbusDriver:
 
     async def read(self) -> Actual:
         try:
+            blocks = await self._blocks()
+            self._learn_order(*blocks)          # first: the PV total below cannot be read without the word order
             await self._refresh_extras()
             await self._refresh_pv()
-            actual = self._decode(*await self._blocks())
+            actual = self._decode(*blocks)
         except ModbusError as err:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
             self._note_down(err)

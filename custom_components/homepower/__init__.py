@@ -17,6 +17,7 @@ from datetime import timedelta
 from . import services
 from .const import DOMAIN, SIGNAL_UPDATE, STORAGE_KEY, STORAGE_VERSION
 from .coordinator import HomePowerCoordinator
+from .entity import battery_ids, prepare_devices
 from .manager import HomePowerManager
 from .runtime import HomePowerConfigEntry, HomePowerData
 
@@ -91,6 +92,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) ->
         async_dispatcher_send(hass, SIGNAL_UPDATE)
 
     entry.async_on_unload(coordinator.async_add_listener(_cycle_done))
+    prepare_devices(hass, entry, manager.devices)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # A daily safety copy of batteries, schedules, goals, scenes and settings (no secrets), newest 7 kept.
@@ -202,6 +204,12 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
         _LOGGER.warning("HomePower sidebar panel could not be registered", exc_info=True)
         _notify(hass, "panel", f"HomePower's sidebar panel could not be registered: {err!r}. Use Settings > Devices & "
                 "Services > HomePower > Configure to add batteries and schedules.")
+
+
+async def async_remove_config_entry_device(hass: HomeAssistant, entry: HomePowerConfigEntry, device) -> bool:
+    """May the user delete this device in Home Assistant? Only one left over from a battery HomePower no longer has."""
+    rd = getattr(entry, "runtime_data", None)
+    return isinstance(rd, HomePowerData) and not device.identifiers & battery_ids(entry.entry_id, rd.manager.devices)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) -> bool:

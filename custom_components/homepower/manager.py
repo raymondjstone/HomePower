@@ -469,8 +469,11 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         await self._apply()
 
     def _remove_entities(self, device_id: str) -> None:
-        """Drop the sensors of a deleted battery so they don't linger as 'unavailable'."""
+        """Drop the sensors and the device of a deleted battery so they don't linger as 'unavailable'."""
+        from homeassistant.helpers import device_registry as dr
         from homeassistant.helpers import entity_registry as er
+
+        from .entity import battery_identifier, find_device
 
         c = self.coordinator
         if c is None:
@@ -482,6 +485,9 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             for ent in list(er.async_entries_for_config_entry(reg, eid)):
                 if ent.unique_id in mine:
                     reg.async_remove(ent.entity_id)
+            devices = dr.async_get(self.hass)
+            if device := find_device(devices, battery_identifier(eid, device_id), eid):
+                devices.async_remove_device(device.id)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("could not remove entities for %s", device_id, exc_info=True)
 

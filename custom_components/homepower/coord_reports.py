@@ -401,5 +401,6 @@ class ReportsMixin:
                                  "offpeak": self._tariff.offpeak, "peak": self._tariff.peak, "days": round(self._tariff.days, 1)}
                                 if self._tariff else None), "currency": self.settings.currency,
             "savings": {"today": round(self.ledger.saved(day), 2) + 0.0, "month": round(self.ledger.saved(month), 2) + 0.0},
-            "energy": {k: round(v, 3) for k, v in self.meter.totals.items()},
+            "energy": {k: round(max(0.0, v - self.meter.totals.get("pv_wrong", 0.0)) if k == "pv_in" else v, 3)
+                       for k, v in self.meter.totals.items()},
         }

@@ -5,3 +5,10 @@ requires-python = ">=3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["custom_components/homepower"]
+parallel = true
+
+[tool.coverage.report]
+show_missing = false

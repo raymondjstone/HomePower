@@ -28,6 +28,7 @@ from .stamp import stamp
 _LOGGER = logging.getLogger(__name__)
 HOSTS = {"eu": "api-e.ecoflow.com", "america": "api-a.ecoflow.com", "global": "api.ecoflow.com"}
 SIGN_ERRORS = ("8521", "7000")
+AUTH_ERRORS = ("8513", "8521")    # access key not valid / signature wrong (also after the POST form): the keys need entering again
 QUOTAS = ("backupReverseSoc", "f32ShowSoc", "soc", "cmsBattSoc", "powGetBpCms", "powGetSysGrid", "gridConnectionPower",
           "powGetPvSum", "powGetSysLoad", "cmsBattFullEnergy", "productName")
 RAISED_RESERVE = 85   # a reserve at or above this, with no saved original, is taken to be one HomePower raised (lower ones are the user's own)
@@ -202,6 +203,8 @@ def _first(q: dict, *keys: str, positive: bool = False) -> float | None:
 
 
 class EcoFlowStreamDriver:
+    logs_link = True         # logs its own read failures and recovery
+    auth_failed = False      # EcoFlow refused the account keys at the last read
     _blocked_until = 0.0     # class defaults so a driver built without __init__ (tests) still works
     _orig_val = None
     _on_orig = None
@@ -407,7 +410,7 @@ class EcoFlowStreamDriver:
             q = normalise(await self.api.quota(self.sn))
             self._note_changes(self._state, q)
             self._state, self._polled, self._pushed = dict(q), time.monotonic(), 0.0
-            self.last_quota, self.last_error = q, None
+            self.last_quota, self.last_error, self.auth_failed = q, None, False
             if self._failing:
                 _LOGGER.info("%s: EcoFlow readings are back", self.config.device_id)
                 self._failing = None
@@ -420,6 +423,7 @@ class EcoFlowStreamDriver:
             return actual
         except EcoFlowError as err:
             self.last_error = friendly_error(err)
+            self.auth_failed = getattr(err, "code", "") in AUTH_ERRORS
             if backs_off(err):
                 self._blocked_until = time.monotonic() + BACKOFF_S
             if self._failing != self.last_error:      # when it starts failing, or the reason changes: not on every poll

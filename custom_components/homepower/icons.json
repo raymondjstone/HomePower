@@ -1,0 +1,70 @@
+{
+  "entity": {
+    "sensor": {
+      "battery_savings": {
+        "default": "mdi:piggy-bank-outline"
+      },
+      "cycles": {
+        "default": "mdi:battery-sync"
+      },
+      "daily_share": {
+        "default": "mdi:percent"
+      },
+      "efficiency": {
+        "default": "mdi:percent"
+      },
+      "export_earnings": {
+        "default": "mdi:cash-plus"
+      },
+      "price_now": {
+        "default": "mdi:cash-clock"
+      },
+      "savings": {
+        "default": "mdi:piggy-bank"
+      },
+      "solar_power": {
+        "default": "mdi:solar-power"
+      },
+      "target": {
+        "default": "mdi:home-battery"
+      }
+    },
+    "switch": {
+      "away": {
+        "default": "mdi:airplane"
+      },
+      "backup": {
+        "default": "mdi:shield-home"
+      },
+      "pause": {
+        "default": "mdi:pause-circle"
+      }
+    }
+  },
+  "services": {
+    "pause": {
+      "service": "mdi:pause-circle"
+    },
+    "resume": {
+      "service": "mdi:play-circle"
+    },
+    "override": {
+      "service": "mdi:hand-back-right"
+    },
+    "clear_override": {
+      "service": "mdi:hand-back-right-off"
+    },
+    "backup": {
+      "service": "mdi:shield-home"
+    },
+    "away": {
+      "service": "mdi:airplane"
+    },
+    "test_control": {
+      "service": "mdi:flask-outline"
+    },
+    "apply_scene": {
+      "service": "mdi:palette-swatch-variant"
+    }
+  }
+}
