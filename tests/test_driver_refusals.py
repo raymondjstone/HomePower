@@ -1,6 +1,7 @@
 """Batteries that answer only some of what they are asked: the drivers must read what there is, never guess, and never
 stop a command because something optional was refused."""
 import asyncio
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -143,7 +144,9 @@ def test_generic_map_with_signs_the_other_way_round():
     assert not run(drv.read()).online
 
 
-def test_ecoflow_cloud_helpers_and_the_http_call():
+def test_ecoflow_cloud_helpers_and_the_http_call(monkeypatch):
+    # the plain unit-test run has no aiohttp installed: only its ClientTimeout is used here
+    monkeypatch.setitem(sys.modules, "aiohttp", SimpleNamespace(ClientTimeout=lambda total=None: total))
     assert "rate limit" in friendly_error(EcoFlowError("too many requests, rate limit"))
     assert normalise({"quotaMap": {"20_1.soc": "5", "x": {"y": "text"}}}) == {"soc": 5.0, "y": "text"}
     sent = []
