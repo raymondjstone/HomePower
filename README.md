@@ -4,6 +4,10 @@ A Home Assistant custom integration that is a **central battery manager** for ho
 batteries **directly** (it does not need, use or depend on any other Anker or EcoFlow integration), shows them in a
 sidebar panel, and schedules and optimises how they charge and discharge.
 
+## ▶ [Watch the HomePower video](https://www.youtube.com/watch?v=qVNSPHF0my8)
+
+[![Watch the HomePower promo video on YouTube](https://img.youtube.com/vi/qVNSPHF0my8/maxresdefault.jpg)](https://www.youtube.com/watch?v=qVNSPHF0my8)
+
 **Contents:** [Install](#install) · [Screenshots](#screenshots) · [Supported batteries](#supported-batteries) · [Getting started](#getting-started) ·
 [How HomePower decides](#how-homepower-decides) · [Schedules](#schedules) · [Goals](#goals) ·
 [Tariff and prices](#tariff-and-prices) · [Grid reading](#grid-reading) · [Solar](#solar) ·
