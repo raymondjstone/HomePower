@@ -18,23 +18,17 @@ sidebar panel, and schedules and optimises how they charge and discharge.
 
 **Home Assistant Marketplace (recommended):** HomePower is listed in the Marketplace, so there is no repository to add.
 
-1. Download HomePower. This button opens its page in your own Home Assistant's Marketplace:
-
-   [![Open your Home Assistant instance and show HomePower in the Marketplace.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=raymondjstone&repository=HomePower&category=integration)
-
-   Or go to *Settings > Marketplace* and search for **HomePower Battery Manager**.
-2. Restart Home Assistant.
-3. Add the integration. This button opens your own Home Assistant and starts the setup:
+1. This button opens your own Home Assistant and starts setting up HomePower:
 
    [![Open your Home Assistant instance and start setting up HomePower.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=homepower)
 
-   Or go to *Settings > Devices & services > Add integration > HomePower*.
-
-Add batteries from the **HomePower** sidebar panel or the integration's **Configure** menu.
+2. If Home Assistant does not have HomePower yet, go to *Settings > Marketplace*, search for **HomePower Battery
+   Manager** and select **Install**, which takes you into its setup.
+3. Add batteries from the **HomePower** sidebar panel or the integration's **Configure** menu.
 
 The Marketplace is what used to be called HACS: from Home Assistant 2026.11 it is built in, and an existing HACS
 installation is moved into it automatically. On an older Home Assistant, open **HACS** instead, search for the same name,
-download it, restart and add the integration as above.
+download it, restart, then use the button above or *Settings > Devices & services > Add integration > HomePower*.
 
 **Manual:** copy `custom_components/homepower` into your Home Assistant `custom_components` folder and restart.
 
