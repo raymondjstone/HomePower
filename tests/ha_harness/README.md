@@ -40,6 +40,7 @@ open to the simulated battery (without it most scripts hang at the end). The scr
     python tests/ha_harness/e2e_inputs_and_messages.py   # missing or odd prices, forecast, meter; digests and alerts
     python tests/ha_harness/e2e_loop_safety.py   # failing parts of the control loop, Test control, hand-back
     python tests/ha_harness/e2e_setup_failures.py   # setup, unload and the panel API failing
+    python tests/ha_harness/e2e_devices.py   # one device per battery on the real registries: upgrade, rename, delete
     python tests/ha_harness/e2e_solar_forecast.py   # Home Assistant's real Forecast.Solar platform: hourly forecast, history, the views
 
 What they cover: every module imports and every Home Assistant function used has the signature HomePower calls;

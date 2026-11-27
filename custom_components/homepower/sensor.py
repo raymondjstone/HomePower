@@ -1,17 +1,21 @@
 """HomePower sensors: whole-system totals plus per-battery target/decision."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import MATCH_ALL, PERCENTAGE, EntityCategory, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coord_base import MONEY_EXPORT, MONEY_SAVED
 from .coordinator import HomePowerCoordinator
-from .entity import HomePowerEntity
+from .entity import HomePowerEntity, battery_device_name, battery_identifier, find_device
 
 PARALLEL_UPDATES = 0    # read-only: the coordinator does the fetching
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
@@ -24,39 +28,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
          DailyShare(coord, entry, "cheap_share", "Cheap-rate share of grid import today")])
     known: set[str] = set()
     names: dict[str, str] = {}              # each battery's name when its sensors were made, to follow a rename
-    made: dict[str, list] = {}
 
-    def _rename(did: str, old: str, new: str) -> None:
-        """Renamed in the panel: its sensors' names follow straight away (their entity ids stay, so automations keep working)."""
-        for e in made.get(did, []):
-            if isinstance(e._attr_name, str) and e._attr_name.startswith(old):
-                e._attr_name = new + e._attr_name[len(old):]
-                if e.hass is not None:
-                    e.async_write_ha_state()
+    def _rename(did: str, new: str) -> None:
+        """Renamed in the panel: the battery's device is renamed, and its sensors' names follow (their entity ids stay, so
+        automations keep working). A name the user gave the device in Home Assistant is left as it is."""
+        try:
+            registry = dr.async_get(hass)
+            if device := find_device(registry, battery_identifier(entry.entry_id, did), entry.entry_id):
+                registry.async_update_device(device.id, name=battery_device_name(new))
+        except Exception:  # noqa: BLE001 - only a name: it must never stop the sensors updating
+            _LOGGER.debug("could not rename the device of %s", did, exc_info=True)
 
     def _sync() -> None:
         known.intersection_update({a.config.device_id for a in coord.adapters})   # a re-added battery gets fresh sensors
         for a in coord.adapters:
             did, n = a.config.device_id, a.config.name
             if did in known and names.get(did) not in (None, n):
-                _rename(did, names[did], n)
+                _rename(did, n)
             names[did] = n
         new = [a.config for a in coord.adapters if a.config.device_id not in known]
         known.update(c.device_id for c in new)
         ents = []
         for c in new:
-            first = len(ents)
             ents += [BatterySoc(coord, entry, c.device_id, c.name), BatteryDevicePower(coord, entry, c.device_id, c.name),
                      BatterySolarPower(coord, entry, c.device_id, c.name),
                      BatteryTarget(coord, entry, c.device_id, c.name),
-                     EnergyTotal(coord, entry, f"bat:{c.device_id}_in", f"{c.name} energy charged"),
-                     EnergyTotal(coord, entry, f"bat:{c.device_id}_out", f"{c.name} energy discharged"),
+                     EnergyTotal(coord, entry, f"bat:{c.device_id}_in", "energy charged", c.device_id),
+                     EnergyTotal(coord, entry, f"bat:{c.device_id}_out", "energy discharged", c.device_id),
                      Efficiency(coord, entry, c.device_id, c.name), Cycles(coord, entry, c.device_id, c.name, c.caps.capacity_wh)]
             if c.extra.get("house_meter"):     # Anker X1: the inverter's own PV inputs
                 ents.append(PvTotal(coord, entry, c.device_id, c.name))
                 for i in range(8):
                     ents += [PvString(coord, entry, c.device_id, c.name, i, kind) for kind in ("voltage", "current", "power")]
-            made[c.device_id], names[c.device_id] = ents[first:], c.name
+            names[c.device_id] = c.name
         add(ents)
 
     _sync()
@@ -124,7 +128,8 @@ class BatteryTarget(_Base):
     def __init__(self, coord, entry, device_id: str, name: str) -> None:
         super().__init__(coord, entry)
         self._did = device_id
-        self._attr_name = f"{name} target"
+        self._on_battery(device_id)
+        self._attr_name = "target"
         self._attr_unique_id = f"{entry.entry_id}_{device_id}_target"
 
     @property
@@ -168,7 +173,8 @@ class _BatteryBase(_Base):
     def __init__(self, coord, entry, device_id: str, name: str, suffix: str, label: str) -> None:
         super().__init__(coord, entry)
         self._did = device_id
-        self._attr_name = f"{name} {label}"
+        self._on_battery(device_id)
+        self._attr_name = label
         self._attr_unique_id = f"{entry.entry_id}_{device_id}_{suffix}"
 
     def _actual(self):
@@ -217,8 +223,9 @@ class BatteryDevicePower(_LiveReading):
 
 class BatterySolarPower(_LiveReading):
     """The solar power the battery itself reports: the "Solar" figure on the side panel's battery cards
-    (Anker: register 10002, PV power; EcoFlow: its PV sum). On an X1 "PV input power" below is the
-    inverter's separate total (10183), so the two can be compared."""
+    (Solarbank: its PV power; EcoFlow: its PV sum; Anker X1: the total of its PV inputs, because its "PV power" register
+    reads low, so it matches "PV input power" below).
+    """
 
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -283,8 +290,10 @@ class EnergyTotal(_Base):
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coord, entry, key: str, name: str) -> None:
+    def __init__(self, coord, entry, key: str, name: str, device_id: str | None = None) -> None:
         super().__init__(coord, entry)
+        if device_id is not None:
+            self._on_battery(device_id)
         self._key = key
         self._attr_name = name
         self._attr_unique_id = f"{entry.entry_id}_energy_{key.replace(':', '_')}"

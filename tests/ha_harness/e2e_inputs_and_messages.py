@@ -95,7 +95,7 @@ async def figures(h):
     coord._solar_view = real
     coord.apply_settings({"forecast_reserve_kwh": 5, "forecast_reserve_pct": 40})
     coord.manager.forecast_days.update({today: 1.0, tomorrow: 1.0})
-    assert coord._forecast_floor(now) == 40 and coord.forecast_floor["active"]
+    assert coord._forecast_floor(now.replace(hour=9)) == 40 and coord.forecast_floor["active"]      # before midday: today counts
     assert coord._coming_solar_day(now.replace(hour=1)) == today and coord._coming_solar_day(now.replace(hour=20)) == tomorrow
 
     # temperature: weather entity, then sensor, then (only if on) the online service

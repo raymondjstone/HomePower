@@ -544,7 +544,11 @@ battery. It has not been tested against a live EcoFlow account.
 
 ## Entities, services and card
 
-**Sensors** (on one *HomePower* device):
+**Devices:** one *HomePower* device for the whole-system sensors and switches, and one per battery (*HomePower
+<name>*, connected via it). Deleting a battery removes its device. Put a battery's device in an area if you want its
+sensors there.
+
+**Sensors:**
 
 - Whole system: battery power, stored energy, grid power, electricity price now, savings today, savings this month, home
   battery (all batteries as one, with totals in its attributes), solar self-consumption today, cheap-rate share of grid
@@ -554,7 +558,7 @@ battery. It has not been tested against a live EcoFlow account.
   kWh sent to the grid at the export price then; pick it as the export's *entity tracking the total compensation* in the
   Energy dashboard) and **Battery savings** (the running total of the estimate below).
 - Per battery: charge, power, solar power (the battery's own reading, the same figure as the side panel's *Solar* chip;
-  Anker register 10002), target (what HomePower wants it to do, with the reason in its attributes), energy charged,
+  a Solarbank's PV power; on an X1 the total of its PV inputs, the same as *PV input power*), target (what HomePower wants it to do, with the reason in its attributes), energy charged,
   energy discharged, round-trip efficiency, cycles. In the Energy dashboard, add each battery under *Battery systems* with
   its *energy charged* as "energy going in" and *energy discharged* as "energy coming out". While a battery's readings
   are only stale (see *Readings stale*), its sensors keep their last good value and its target sensor's `stale` attribute

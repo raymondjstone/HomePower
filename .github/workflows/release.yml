@@ -83,12 +83,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # anything users must know about this version: release-notes/<version>.md goes above the generated list
+          notes=()
+          if [ -f "release-notes/${{ steps.v.outputs.base }}.md" ]; then
+            notes=(--notes-file "release-notes/${{ steps.v.outputs.base }}.md")
+          fi
           if [ "${{ steps.v.outputs.pre }}" = "true" ]; then
             gh release create "${{ steps.v.outputs.tag }}" homepower.zip --target "$GITHUB_SHA" --prerelease --latest=false \
-              --title "HomePower ${{ steps.v.outputs.tag }} (pre-release)" --generate-notes
+              --title "HomePower ${{ steps.v.outputs.tag }} (pre-release)" --generate-notes "${notes[@]}"
           else
             gh release create "${{ steps.v.outputs.tag }}" homepower.zip --target "$GITHUB_SHA" --latest \
-              --title "HomePower ${{ steps.v.outputs.tag }}" --generate-notes
+              --title "HomePower ${{ steps.v.outputs.tag }}" --generate-notes "${notes[@]}"
           fi
 
       - name: Tidy old pre-releases

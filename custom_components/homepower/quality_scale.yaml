@@ -48,9 +48,7 @@ rules:
   reauthentication-flow: done
   test-coverage: done
   # Gold
-  devices:
-    status: todo
-    comment: "One device for everything; batteries are not separate devices."
+  devices: done
   diagnostics: done
   discovery:
     status: todo
@@ -63,7 +61,7 @@ rules:
   docs-supported-functions: done
   docs-troubleshooting: done
   docs-use-cases: todo
-  dynamic-devices: todo
+  dynamic-devices: done
   entity-category: done
   entity-device-class: done
   entity-disabled-by-default: done
@@ -74,7 +72,7 @@ rules:
     status: exempt
     comment: "The config entry holds no data to reconfigure."
   repair-issues: done
-  stale-devices: todo
+  stale-devices: done
   # Platinum
   async-dependency:
     status: todo

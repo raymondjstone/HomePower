@@ -141,18 +141,9 @@ async def main():
     was = ad.config.extra.get("control_enabled", True); ad.config.extra["control_enabled"] = False
     assert S.BatteryTarget(coord, entry, "a", "A").native_value == "monitor_only"
     ad.config.extra["control_enabled"] = was
-    # renaming a battery in the panel: its sensors' names follow without a restart
+    # (renaming, and each battery's own device, are checked in e2e_devices.py)
     from custom_components.homepower.runtime import HomePowerData
     entry.runtime_data = HomePowerData(mgr, coord)
-    got = []
-    await S.async_setup_entry(hass, entry, lambda ents: got.extend(ents))
-    mine = lambda: sorted(e._attr_name for e in got if getattr(e, "_did", None) == "a" or str(e._attr_unique_id).startswith("e1_a_") or "bat_a" in str(e._attr_unique_id))
-    before = mine(); assert before and all(n.startswith("A ") for n in before), before
-    await mgr.save_device({**mgr.devices["a"], "name": "Garage"})
-    coord.async_update_listeners()
-    after = mine(); assert len(after) == len(before) and all(n.startswith("Garage ") for n in after), after
-    await mgr.save_device({**mgr.devices["a"], "name": "A"}); coord.async_update_listeners()
-    print("rename   :", len(after), "sensors follow the new name")
     sw = {s[0]: W.HomePowerSwitch(coord, entry, *s).is_on for s in W.SWITCHES}
     await W.HomePowerSwitch(coord, entry, *W.SWITCHES[1]).async_turn_on()
     print("switches :", sw, "-> backup now", mgr.backup)

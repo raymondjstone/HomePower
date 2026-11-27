@@ -228,3 +228,19 @@ def test_a_counter_read_after_a_very_long_gap_gives_no_power():
     assert meter.read("imp", "10", "kWh", 0) is None
     assert meter.read("imp", "11", "kWh", 100000) is None              # hours later: no meaningful average
     assert meter.read("imp", "11", "kWh", 100010) is None
+
+
+def test_x1_solar_is_the_total_of_its_pv_inputs_and_an_old_reading_is_not_counted(monkeypatch):
+    # as seen on a real X1: "PV power" (10002) 290 W while its strings gave 388 W (10183)
+    c = Units({10003: 290, 10184: 388})
+    x1, plug = anker(c, extra={"house_meter": True}), anker(c)
+    x1._order = plug._order = "big"
+    inp = [0, 0, 0, 290] + [0] * 60
+    run(x1._refresh_pv())
+    assert x1._solar_w(inp) == 388 and plug._solar_w(inp) == 290
+    c.silent = {10167}
+    x1._pv_at = 0
+    run(x1._refresh_pv())
+    assert x1._solar_w(inp) == 388                                    # one missed read: the last total still stands
+    x1._pv_total_ok -= 120
+    assert x1._solar_w(inp) == 290 and x1._pv_total_now() is None      # long gone: not counted any more
