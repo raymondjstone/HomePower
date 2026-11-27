@@ -111,7 +111,19 @@ async def keys():
     r = await flow().async_step_reauth_confirm({"access_key": " mine ", "secret_key": " new "})
     assert r["type"] == "abort" and r["reason"] == "reauth_successful", r
     assert saved[0]["connection"] == {"region": "eu", "sn": "SN1", "access_key": "mine", "secret_key": "new"}, saved
-    del mgr.devices["eco"]
+    # two batteries in different regions: the keys are tried where each battery is
+    mgr.devices["far"] = {"device_id": "far", "driver": "ecoflow_stream", "connection": {"region": "america", "sn": "SN2"}}
+
+    async def by_region(region, access_key, secret_key):
+        if region == "eu":
+            raise ValidationError("not an account here")
+        return [{"sn": "SN2"}]
+
+    mgr.discover_ecoflow = by_region
+    saved.clear()
+    r = await flow().async_step_reauth_confirm({"access_key": "k", "secret_key": "s"})
+    assert r["reason"] == "reauth_successful" and [d["device_id"] for d in saved] == ["far"], (r, saved)
+    del mgr.devices["eco"], mgr.devices["far"]
     coord.config_entry = h.entry
     mgr.save_device, mgr.coordinator = real_save, None
     h.entry.runtime_data = None

@@ -4,6 +4,8 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 the coordinator itself and use its state."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import time as _time
 
 from homeassistant.util import dt as dt_util
@@ -13,6 +15,15 @@ from .coord_base import _LOGGER, GLOW_DOMAIN, _real
 
 
 class InputsMixin:
+    if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
+        _glow_at: Any
+        _glow_cache: Any
+        _meter: Any
+        adapters: Any
+        hass: Any
+        manager: Any
+        settings: Any
+
     def _glow(self) -> dict[str, str]:
         """Entities of the Hildebrand Glow (DCC) integration, if it is set up: its live electricity power sensor
         and its electricity unit-rate sensor. Used when the user has not picked a sensor themselves."""

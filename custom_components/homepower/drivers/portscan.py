@@ -7,6 +7,8 @@ address that is not on a private network, so neither can be used to probe the in
 """
 from __future__ import annotations
 
+from typing import Any
+
 import asyncio
 import ipaddress
 import socket
@@ -34,7 +36,7 @@ _LOCAL = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.
                                             "::1/128", "fc00::/7", "fe80::/10")]
 
 
-def _is_local(ip: ipaddress._BaseAddress) -> bool:
+def _is_local(ip: Any) -> bool:
     return any(ip.version == n.version and ip in n for n in _LOCAL)
 
 

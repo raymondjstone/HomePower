@@ -19,6 +19,7 @@ backend produces, renders every tab and presses every button. Not part of the no
     node tests/panel_dom/override_monitor.mjs   # monitor-only battery: cannot be picked for an override, and its plan row is marked
     node tests/panel_dom/settings_error.mjs     # a refused Settings save names the field by its label, not its key
     node tests/panel_dom/report_issue.mjs   # Report an issue: versions and battery types filled in, nothing personal
+    node tests/panel_dom/history_units.mjs  # chart history is asked for in watts, whatever unit the sensor shows
     node tests/panel_dom/audit_ui.mjs       # an odd currency symbol is not injected, a refused delete stays on screen, a failed load recovers
 
     npm install playwright && npx playwright install chromium

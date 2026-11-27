@@ -1,6 +1,8 @@
 """Persistent batteries, schedules and goals; runtime flags; and the bridge to the coordinator."""
 from __future__ import annotations
 
+from typing import Any
+
 import asyncio
 import logging
 
@@ -75,7 +77,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         self.pv_seen: set[str] = set()           # batteries that have reported solar power (so they have panels)
         self.forecast_days: dict[str, float] = {}   # solar forecast kWh by date, kept so 'tomorrow' is still known after midnight
         self.divert_on: str = ""                 # the solar-surplus load we switched on (to switch it off after a restart)
-        self._adapters: dict[str, tuple[dict, object]] = {}  # reuse live connections between rebuilds
+        self._adapters: dict[str, tuple[dict, Any]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
         self.weather_data: dict = {}                 # outdoor temperature by day and what it did to the house's use
         self.trace_data: dict = {}                   # what happened after each command to EcoFlow batteries

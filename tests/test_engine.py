@@ -626,3 +626,10 @@ def test_preview_does_not_give_each_battery_the_whole_of_a_shared_total():
     seg = preview([sched(power=3000, total_power_w=4000)], ["a", "b"], NOW, hours=1)["b"][0]
     assert seg.power_w is None and seg.shared_w == 4000
     assert preview([sched(power=3000)], ["a"], NOW, hours=1)["a"][0].power_w == 3000
+
+
+def test_export_limit_keeps_a_held_battery_charging_from_its_whole_charge_not_just_what_passes_the_meter():
+    # charging 900 W, all from its own panels (nothing through the house meter), 400 W going out, 500 W allowed:
+    # the command sets the whole charge, so it must be about what it charges now, or its panels spill to the grid
+    _, charges = export_guard(-400, 500, {}, [("a", 900.0, 3000.0, 1.0)], held={"a"})
+    assert charges == {"a": 825}

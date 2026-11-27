@@ -4,6 +4,8 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 run on the coordinator itself and use its state."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import sys
 import time as _time
 from datetime import datetime, timedelta
@@ -19,6 +21,25 @@ from .coord_base import _LOGGER, FORECAST_PLATFORMS, _real
 
 
 class ForecastMixin:
+    if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
+        _fc_at: Any
+        _fc_cache: Any
+        _solar_busy: Any
+        _solar_at: Any
+        _solar_pruned: Any
+        _weather_busy: Any
+        _weather_at: Any
+        _has_solar: Any
+        adapters: Any
+        cold_model: Any
+        daily: Any
+        hass: Any
+        manager: Any
+        settings: Any
+        solar_log: Any
+        temp_log: Any
+        usage: Any
+
     def _forecast_entities(self) -> dict[str, list[str]]:
         """Forecast.Solar / Solcast sensors for today's and tomorrow's generation: all planes / sites of ONE of them, to be
         added up. With both installed, Forecast.Solar is used: adding the two would count the same panels twice."""

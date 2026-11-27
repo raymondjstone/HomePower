@@ -39,16 +39,22 @@ class HomePowerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors, detail = {}, ""
         if user_input is not None:
             keys = {k: str(user_input[k]).strip() for k in ("access_key", "secret_key")}
-            region = (cloud[0].get("connection") or {}).get("region", "eu") if cloud else "eu"
+            # each region the batteries are in: the account whose keys these are may not be the first battery's
+            mine, answered = [], False
+            for region in dict.fromkeys((d.get("connection") or {}).get("region", "eu") for d in cloud) or ["eu"]:
+                try:
+                    found = {d["sn"] for d in await mgr.discover_ecoflow(region, keys["access_key"], keys["secret_key"])}
+                except ValidationError as err:
+                    detail = str(err)
+                    continue
+                answered = True
+                mine += [d for d in cloud if (c := d.get("connection") or {}).get("sn") in found and c.get("region", "eu") == region]
             try:
-                found = {d["sn"] for d in await mgr.discover_ecoflow(region, keys["access_key"], keys["secret_key"])}
-                mine = [d for d in cloud if (d.get("connection") or {}).get("sn") in found]
-                if not mine:
-                    errors = {"base": "no_match"}
-                else:
-                    for dev in mine:
-                        await mgr.save_device({**dev, "connection": {**dev["connection"], **keys}})
+                for dev in mine:
+                    await mgr.save_device({**dev, "connection": {**dev["connection"], **keys}})
+                if mine:
                     return self.async_abort(reason="reauth_successful")
+                errors = {"base": "no_match" if answered else "cannot_connect"}
             except ValidationError as err:
                 errors, detail = {"base": "cannot_connect"}, str(err)
         return self.async_show_form(

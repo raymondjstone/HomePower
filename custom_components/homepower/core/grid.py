@@ -1,12 +1,14 @@
 """Grid-facing policies: balancing, peak shaving, export limiting, load rules, backup reserve."""
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from .models import Capabilities, Desired, Mode
 
 PEAK_MARGIN = 0.95  # aim a little under the limit
 
 
-def split_power(total_w: float, items: list[tuple[str, float, float]]) -> dict[str, int]:
+def split_power(total_w: float, items: Sequence[tuple[str, float, float]]) -> dict[str, int]:
     """Share `total_w` across batteries in proportion to weight, never above each one's max (water-filling).
 
     items: (id, weight, max_w). Anything that can't be placed is simply not allocated.
@@ -31,7 +33,7 @@ def split_power(total_w: float, items: list[tuple[str, float, float]]) -> dict[s
     return {i: int(round(v)) for i, v in alloc.items()}
 
 
-def peak_shave(grid_w: float, limit_w: float, candidates: list[tuple[str, float, float, float]]) -> dict[str, int]:
+def peak_shave(grid_w: float, limit_w: float, candidates: Sequence[tuple[str, float, float, float]]) -> dict[str, int]:
     """Discharge to keep whole-house import under the limit.
 
     candidates: (id, current_discharge_w, max_discharge_w, weight) for batteries free to be commanded.
@@ -49,14 +51,14 @@ def peak_shave(grid_w: float, limit_w: float, candidates: list[tuple[str, float,
 
 
 def export_guard(
-    grid_w: float, limit_w: float, discharging: dict[str, float], chargers: list[tuple[str, float, float, float]],
-    commanded: dict[str, float] | None = None, held: dict[str, float] | None = None,
+    grid_w: float, limit_w: float, discharging: dict[str, float], chargers: Sequence[tuple[str, float, float, float]],
+    commanded: dict[str, float] | None = None, held: set[str] | None = None,
 ) -> tuple[dict[str, int], dict[str, int]]:
     """Keep export under the limit: first trim scheduled discharge, then absorb the rest by charging.
 
     discharging: id -> discharge W now. commanded: id -> discharge W it is about to be told (None = the same).
-    chargers: (id, current_charge_w, max_charge_w, weight) for batteries free to be commanded. held: id -> W of those
-    already charging because we told them to. Returns (new discharge W for trimmed batteries, charge W for chargers).
+    chargers: (id, current_charge_w, max_charge_w, weight) for batteries free to be commanded. held: those already
+    charging because we told them to. Returns (new discharge W for trimmed batteries, charge W for chargers).
 
     The grid reading includes what the guard did last time, so both are worked out from it with that added back:
     otherwise a reading at the limit would look like "all clear", undo the guard, and switch it on again next time.
@@ -75,8 +77,9 @@ def export_guard(
     if left > 0:
         pool, extra = chargers, left + sum(c[1] for c in chargers)
     else:                                                # under the limit: only what we are already charging may carry on
-        pool = [c for c in chargers if c[0] in (held or {})]
-        extra = sum((held or {}).get(c[0], 0.0) for c in pool) + min(0.0, excess)
+        pool = [c for c in chargers if c[0] in (held or set())]
+        # from its whole charge now, own panels included: that is what the command sets
+        extra = sum(c[1] for c in pool) + min(0.0, excess)
     charges: dict[str, int] = {}
     if extra > 0 and pool:
         res = split_power(extra, [(i, w, m) for i, _, m, w in pool])

@@ -3,6 +3,8 @@ the household's usual load by time of day, daily self-consumption / cheap-rate s
 the combined "home battery" figures, and saved scenes."""
 from __future__ import annotations
 
+from typing import Any
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from statistics import median
@@ -230,7 +232,8 @@ class Health:
             w: {k: p for k, v in x.items() if (p := pair(v))} for w, x in weeks.items() if isinstance(x, dict)}
         base = d.get("base") if isinstance(d.get("base"), dict) else {}
         self.base: dict[str, dict[str, float]] = {k: p for k, v in base.items() if (p := pair(v))}
-        self.base_week: str = d.get("base_week") if isinstance(d.get("base_week"), str) else ""
+        week: Any = d.get("base_week")
+        self.base_week: str = week if isinstance(week, str) else ""
 
     def update(self, week: str, lifetime: dict[str, tuple[float, float]]) -> None:
         """`lifetime` = {device_id: (charged_kwh_total, discharged_kwh_total)} as of now."""
@@ -397,7 +400,7 @@ class BatteryFigures:
 def combine(items: list[BatteryFigures], load_w: float | None = None) -> dict:
     """Totals across every online battery: charge level (capacity weighted), stored and usable energy, flow, and how long
     the battery would last at the current draw / take to fill."""
-    on = [BatteryFigures(b.capacity_wh, max(0.0, min(100.0, b.soc)), b.online, b.power_w, b.min_soc, b.load_w, b.max_charge_w)
+    on: list[Any] = [BatteryFigures(b.capacity_wh, max(0.0, min(100.0, b.soc)), b.online, b.power_w, b.min_soc, b.load_w, b.max_charge_w)
           for b in items if b.online and b.soc is not None and b.capacity_wh > 0]    # a bad reading cannot push totals out of range
     if not on:
         return {"online": 0, "total": len(items), "soc": None, "stored_kwh": None, "usable_kwh": None, "capacity_kwh": None,
@@ -440,7 +443,7 @@ def clean_scene(raw: dict) -> dict:
         raise SceneError("give the scene a name")
     if len(name) > 40:
         raise SceneError("keep the scene's name to 40 characters")    # cut short, it could replace another scene
-    out = {"name": name}
+    out: dict[str, Any] = {"name": name}
     for k in SCENE_FLAGS:
         try:
             out[k] = _bool(raw.get(k, False))

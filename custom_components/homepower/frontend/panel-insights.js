@@ -12,7 +12,7 @@ export default (U) => {
     if (!list.length) { this._hist2 = {}; return; }
     const end = new Date(), start = new Date(end - hours * 3600e3);
     this._hist2 = await this._hass.callWS({ type: "recorder/statistics_during_period", start_time: start.toISOString(), end_time: end.toISOString(),
-      statistic_ids: list, period: hours > 48 ? "hour" : "5minute", types: ["mean"] });
+      statistic_ids: list, period: hours > 48 ? "hour" : "5minute", types: ["mean"], units: { power: "W" } });   // in W whatever unit the sensor is set to show
   },
 
   _lineChart(series, unit, id) {

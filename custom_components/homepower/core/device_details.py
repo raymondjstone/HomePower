@@ -7,6 +7,8 @@ number is shown as the register holds it, so nothing is presented with a guessed
 """
 from __future__ import annotations
 
+from typing import Any
+
 import re
 
 from .anker_x1_map import SOLARBANK_REGISTERS, X1_REGISTERS, alarm_texts
@@ -101,12 +103,13 @@ def anker_rows(entries, values: dict[str, int], order: str | None, x1: bool) -> 
 
     fw = None
     if x1 and all(word(10112 + i) is not None for i in range(6)):
-        fw = _text([word(10112 + i) for i in range(6)], True)
+        version: list[Any] = [word(10112 + i) for i in range(6)]
+        fw = _text(version, True)
     gain = _x1_energy_gain(fw) if x1 else 10
     energy = _X1_ENERGY if x1 else _SB_ENERGY
     rows = []
     for addr, n, name, access, kind in entries:
-        words = [word(addr + i) for i in range(n)]
+        words: list[Any] = [word(addr + i) for i in range(n)]   # none missing: checked below
         if any(w is None for w in words):
             continue
         label, enum = _enum(name)

@@ -4,6 +4,8 @@ Part of HomePowerManager (manager.py), kept in its own file so each file has one
 the manager itself and use its state."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import logging
 
 from .core.serde import ValidationError
@@ -12,6 +14,15 @@ _LOGGER = logging.getLogger(__name__.rsplit(".", 1)[0] + ".manager")   # the man
 
 
 class DetailsMixin:
+    if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
+        _adapters: Any
+        _save: Any
+        coordinator: Any
+        devices: Any
+        paused: Any
+        register_notes: Any
+        safe: Any
+
     async def scan_registers(self, device_id: str) -> dict:
         """Raw register dump of a connected battery (read-only), for the panel's register compare tool."""
         cached = self._adapters.get(device_id)
