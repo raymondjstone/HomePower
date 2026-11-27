@@ -1,0 +1,127 @@
+1
+00:00:00,450 --> 00:00:14,858
+This is HomePower, a battery manager for Home Assistant. It talks to your home batteries directly, over your own network or the manufacturer's own interface, then schedules and optimises when they charge and discharge. Everything you'll see lives in one sidebar panel. Let's take a tour.
+
+2
+00:00:16,017 --> 00:00:27,383
+The Overview tab opens with the home battery: every battery added together as one. Here, two batteries hold twelve point two kilowatt hours, are discharging at one and a half kilowatts, and will last nearly seven hours at that rate.
+
+3
+00:00:28,517 --> 00:00:41,404
+Below that, if the grid went down now, HomePower estimates how long the batteries could run the house, from your learned usual use. Then the tiles: battery flow, stored energy, grid power, batteries online, today's savings, and the electricity price right now.
+
+4
+00:00:42,550 --> 00:00:52,662
+Each battery gets its own card, with its charge ring, its power and limits, and a Why chip that says exactly why it's doing what it's doing. A live trace runs underneath, and the Override button is one tap away.
+
+5
+00:00:53,817 --> 00:01:03,499
+Scenes are saved combinations of backup, away, pause and limits. Normal, Holiday, Storm coming and Hands off come built in, and you can add your own. Below them is a live power chart for each battery.
+
+6
+00:01:04,650 --> 00:01:10,687
+Its time scale runs from fifteen minutes up to twenty-four hours, and clicking an item in the legend hides or shows that line.
+
+7
+00:01:11,850 --> 00:01:19,455
+At the bottom, today's plan shows what each battery will do across the day, and the activity log records every schedule that starts or finishes, and every hand-back.
+
+8
+00:01:20,617 --> 00:01:32,250
+A manual override forces a mode on some or all batteries for a set time: Auto, Charge, Discharge or Hold, with an optional power and a level to stop at. It beats everything else, ends by itself, and survives a restart of Home Assistant.
+
+9
+00:01:33,383 --> 00:01:41,104
+Editing a scene lets you choose backup, away or pause, and change the house import limit, the export limit, and the total charge and discharge caps while it's active.
+
+10
+00:01:42,250 --> 00:01:52,618
+The cog on any battery opens its details sheet: its readings now, HomePower's settings for it, the settings you can change on the battery itself, its Home Assistant device, and its connection, all in one place.
+
+11
+00:01:53,783 --> 00:02:05,103
+The Plan tab starts with goals. A goal is something like ninety percent by seven in the morning. HomePower works out how much energy is missing, and charges in the cheapest half-hours before the deadline, re-planning every cycle.
+
+12
+00:02:06,250 --> 00:02:17,593
+The price chart covers the next twenty-four hours, with the planned charging in green. It also marks planned export, energy kept back for dearer hours, and grid saving sessions. Underneath is a timeline of what each battery will do next.
+
+13
+00:02:18,750 --> 00:02:28,932
+A goal can charge from the grid, from solar only, or from solar first and then the cheapest grid slots. It can learn your usual use and charge only what the day needs, and it can charge less when the solar forecast is good.
+
+14
+00:02:30,083 --> 00:02:40,706
+Schedules tell one, several or all batteries to charge, discharge, hold, or run on Auto during a time window. Today's timeline shows them at a glance. Here, there's an evening peak discharge, and a cheap night charge.
+
+15
+00:02:41,850 --> 00:02:57,791
+Each schedule has a power, a level to stop at, start and end times that can cross midnight, and days of the week. It can follow a tariff entity instead of the clock, apply only when you're home or away, run for a season, charge from the grid, from solar only, or both, and share one total power across several batteries.
+
+16
+00:02:58,950 --> 00:03:06,520
+A hold window is a one-off. Pick a date and a time, and the batteries neither charge nor discharge. Handy for a planned outage, or an expensive evening event.
+
+17
+00:03:07,683 --> 00:03:16,333
+On the Batteries tab, you add, edit, reorder and control each battery. A new battery starts monitor-only: HomePower reads it, but sends nothing until you allow control.
+
+18
+00:03:17,483 --> 00:03:34,922
+Supported batteries include the Anker SOLIX Solarbank range and the X1 over local Modbus, the EcoFlow STREAM range through EcoFlow's developer interface or local Modbus, Victron GX for monitoring, any Modbus battery described by a small register map, and anything else through Home Assistant entities. Anker batteries are found with a network scan.
+
+19
+00:03:36,083 --> 00:03:44,756
+Each battery has a role, everyday or reserve, a priority that decides which discharges first, whether it has solar panels, and whether its meter measures the whole house.
+
+20
+00:03:45,917 --> 00:04:06,350
+Every ten seconds, HomePower reads every battery and decides what each should do. The first rule that applies wins: a manual override, then the backup reserve, a grid event, a schedule, a goal plan, the zero-import battery, and finally paid export. After that come peak shaving, export limiting and hold-back, and anything left is handed back to the battery's own control. Every decision has a visible reason.
+
+21
+00:04:07,517 --> 00:04:19,591
+Insights tracks savings today and this month, grid import and export, solar, and what exporting pays right now. The tariff comparison replays your recorded usage against other tariffs, and battery health tracks the weekly round-trip efficiency.
+
+22
+00:04:20,750 --> 00:04:30,212
+Plan versus actual draws what each battery was told against what it really did over the last twenty-four hours, with a match percentage, so a battery that isn't following commands stands out straight away.
+
+23
+00:04:31,350 --> 00:04:44,794
+What if I changed the battery settings replays your house load and solar through a simple battery model, comparing two reserve and top-up settings. Then come lifetime totals for each battery, and long-term history charts of power and charge level, from six hours to thirty days.
+
+24
+00:04:45,950 --> 00:04:58,257
+Settings holds everything else. Grid meter picks where the import and export reading comes from, in order of preference. Limits cover the house import limit, peak shaving, the G ninety-eight or G ninety-nine export limit, and overall charge and discharge caps.
+
+25
+00:04:59,417 --> 00:05:13,186
+The zero-import battery holds grid import at zero watts. Tariff and prices takes a rates sensor, such as Octopus Agile, or a simple two-rate tariff, with quick-fill buttons for Octopus Go, Intelligent Octopus Go, Economy Seven, and Cosy Octopus.
+
+26
+00:05:14,350 --> 00:05:25,809
+Paid export sells stored energy in the best-paid half-hours, but only when that beats buying it back later, allowing for losses and battery wear. Grid events follow saving sessions, discharging through the event, and can charge up beforehand.
+
+27
+00:05:26,950 --> 00:05:37,039
+The solar forecast, from Forecast dot Solar or Solcast, leaves room for tomorrow's sun, so it's never wasted on a full battery. Cold weather raises the overnight target when a cold day is coming.
+
+28
+00:05:38,183 --> 00:05:52,649
+Backup and away modes can switch on by themselves, from a weather warning or your presence. Protect loads stops the batteries charging or discharging while an E V charger or heat pump is running. Alerts and heads-ups go to Home Assistant's repairs and notifications, and to any notify service.
+
+29
+00:05:53,783 --> 00:06:05,417
+There's also a solar surplus switch for an immersion heater, the Anker X1's own limits, tariff comparisons, EcoFlow keys, backup and restore with daily automatic copies, and a test run mode that plans as normal, but sends nothing.
+
+30
+00:06:06,550 --> 00:06:21,980
+Diagnostics shows each battery's connection, readings and last command, with Test control, which sends a tiny, safe command and checks the battery follows it. There are Modbus register tools, a local port scanner, a Why it did that log for every decision, debug downloads, and a one-click Report an issue.
+
+31
+00:06:23,117 --> 00:06:37,501
+For your dashboards, the HomePower card shows the home battery at a glance: total charge, stored energy, flow, how long it will last, and each battery underneath. HomePower also adds sensors for the Energy dashboard, switches for pause, backup and away, and services for your automations.
+
+32
+00:06:38,650 --> 00:06:44,629
+That's HomePower. Install it from the Home Assistant Marketplace, add a battery, and let it do the planning. Thanks for watching.
