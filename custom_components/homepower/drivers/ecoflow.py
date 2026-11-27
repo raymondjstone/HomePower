@@ -129,15 +129,15 @@ class EcoFlowApi:
         except Exception as err:  # noqa: BLE001 - network / JSON problems all mean "can't reach"
             raise EcoFlowError(f"cannot reach EcoFlow: {err!r}") from err
         if status == 429:
-            err = EcoFlowError("EcoFlow error 429: too many requests (rate limit)")
-            err.code = "429"
-            raise err
+            limited = EcoFlowError("EcoFlow error 429: too many requests (rate limit)")
+            limited.code = "429"
+            raise limited
         if not isinstance(data, dict):
             raise EcoFlowError("EcoFlow sent an unexpected reply")
         if str(data.get("code")) != "0":
-            err = EcoFlowError(f"EcoFlow error {data.get('code')}: {data.get('message')}")
-            err.code = str(data.get("code"))
-            raise err
+            refused = EcoFlowError(f"EcoFlow error {data.get('code')}: {data.get('message')}")
+            refused.code = str(data.get("code"))
+            raise refused
         return data.get("data")
 
     async def devices(self) -> list[dict]:

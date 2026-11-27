@@ -1,7 +1,8 @@
 """Fixes offered from Settings > Repairs for HomePower's alerts that have an obvious remedy."""
 from __future__ import annotations
 
-from homeassistant import data_entry_flow
+from typing import Any
+
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
 
@@ -19,11 +20,11 @@ class BatteryFix(RepairsFlow):
     def _mgr(self):
         return running_manager(self.hass)
 
-    async def async_step_init(self, user_input=None) -> data_entry_flow.FlowResult:
+    async def async_step_init(self, user_input=None) -> Any:
         return self.async_show_menu(step_id="init", menu_options=["test", "monitor"],
                                     description_placeholders={"message": self._msg, "title": self._title})
 
-    async def async_step_test(self, user_input=None) -> data_entry_flow.FlowResult:
+    async def async_step_test(self, user_input=None) -> Any:
         mgr = self._mgr()
         if mgr is None or mgr.coordinator is None:
             return self.async_abort(reason="not_ready")
@@ -35,7 +36,7 @@ class BatteryFix(RepairsFlow):
             return self.async_create_entry(data={})
         return self.async_abort(reason="test_failed", description_placeholders={"steps": steps or "no steps ran"})
 
-    async def async_step_monitor(self, user_input=None) -> data_entry_flow.FlowResult:
+    async def async_step_monitor(self, user_input=None) -> Any:
         mgr = self._mgr()
         dev = mgr.devices.get(self._did) if mgr else None
         if dev is None:
@@ -52,7 +53,7 @@ class TariffFix(RepairsFlow):
     def __init__(self, message: str) -> None:
         self._msg = message
 
-    async def async_step_init(self, user_input=None) -> data_entry_flow.FlowResult:
+    async def async_step_init(self, user_input=None) -> Any:
         if user_input is not None:
             entries = self.hass.config_entries.async_entries(DOMAIN)
             if not entries:

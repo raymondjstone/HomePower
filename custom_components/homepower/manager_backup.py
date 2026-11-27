@@ -4,6 +4,8 @@ Part of HomePowerManager (manager.py), kept in its own file so each file has one
 the manager itself and use its state."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import logging
 
 from .core.insights import SceneError, clean_scene
@@ -21,6 +23,17 @@ _LOGGER = logging.getLogger(__name__.rsplit(".", 1)[0] + ".manager")   # the man
 
 
 class BackupMixin:
+    if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
+        devices: Any
+        schedules: Any
+        goals: Any
+        scenes: Any
+        _apply: Any
+        _check_new_device: Any
+        _hand_back: Any
+        _with_saved_secret: Any
+        hass: Any
+
     def _backup_dir(self) -> str:
         return self.hass.config.path("homepower_backups")
 

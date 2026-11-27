@@ -4,6 +4,8 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 run on the coordinator itself and use its state."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from datetime import datetime, time, timedelta
 
 from homeassistant.util import dt as dt_util
@@ -19,6 +21,34 @@ from .coord_base import (_LOGGER, OFFLINE_ALERT_AFTER_S, PROTECT_ALERT_AFTER_S, 
 
 
 class AlertsMixin:
+    if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
+        _combined: Any
+        _cover_text: Any
+        _event_state: Any
+        _grid_charging: Any
+        _log: Any
+        _log_failure: Any
+        _snap: Any
+        adapters: Any
+        alerts: Any
+        charge_watch: Any
+        daily: Any
+        grid_events: Any
+        hass: Any
+        health: Any
+        last_grid: Any
+        ledger: Any
+        manager: Any
+        paused: Any
+        pv_health: Any
+        release_all: Any
+        settings: Any
+        shown_actuals: Any
+        tariff_comparison: Any
+        testing: Any
+        trend: Any
+        usage: Any
+
     def _weekly_digest(self, now: datetime) -> str:
         """One message a week: savings, grid use, outages and how the batteries are doing."""
         cur = self.settings.currency

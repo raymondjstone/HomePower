@@ -4,6 +4,8 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 the coordinator itself and use its state."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from datetime import datetime
 
 from .core.models import Actual, Mode
@@ -13,6 +15,36 @@ from .coord_base import _LOGGER, MONEY_SAVED, MONEY_EXPORT
 
 
 class AccountingMixin:
+    if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
+        _divert_entity: Any
+        diverter: Any
+        _cheapest_price: Any
+        _combined: Any
+        _export_price_now: Any
+        _grid_charging: Any
+        _house_load: Any
+        _is_cheap: Any
+        _log: Any
+        _price_now: Any
+        _snap: Any
+        _unit: Any
+        adapters: Any
+        daily: Any
+        hass: Any
+        health: Any
+        ledger: Any
+        manager: Any
+        meter: Any
+        paused: Any
+        plan_log: Any
+        profile: Any
+        pv_health: Any
+        rate_learner: Any
+        settings: Any
+        shown_actuals: Any
+        traces: Any
+        usage: Any
+
     async def _divert(self, now_s: float, actuals: dict[str, Actual], grid: float | None) -> None:
         """Solar surplus: run a chosen load while the batteries are full and power is being exported."""
         s = self.settings

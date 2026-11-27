@@ -9,6 +9,8 @@ Two checks, both comparing a string with the other strings on the same inverter,
 """
 from __future__ import annotations
 
+from typing import Any
+
 from statistics import median
 
 KEEP_DAYS = 21          # daily energy per string kept for the usual share
@@ -141,7 +143,7 @@ class PvHealth:
             if not used[i]:
                 out.append({"string": i + 1, "state": "unused"})
                 continue
-            item = {"string": i + 1, "today_wh": round(now_row[i]), "today_share": None if now_shares is None else round(now_shares[i] * 100, 1),
+            item: dict[str, Any] = {"string": i + 1, "today_wh": round(now_row[i]), "today_share": None if now_shares is None else round(now_shares[i] * 100, 1),
                     "usual_share": None if usual[i] is None else round(usual[i] * 100, 1), "state": "ok", "note": ""}
             quiet = self._quiet.get((did, i))
             if quiet is not None and quiet[0] >= DEAD_AFTER_S:

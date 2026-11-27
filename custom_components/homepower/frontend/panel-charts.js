@@ -121,7 +121,7 @@ export default (U) => {
     try {
       const end = new Date(), start = new Date(end - mins * 60e3);
       const res = await this._hass.callWS({ type: "recorder/statistics_during_period", start_time: start.toISOString(), end_time: end.toISOString(),
-        statistic_ids: list, period: "5minute", types: ["mean"] });
+        statistic_ids: list, period: "5minute", types: ["mean"], units: { power: "W" } });   // not the sensor's display unit
       this._flowBack.data = res || {};
       if (this.tab === "overview" && !this._modal) this._render();
     } catch (e) { /* recorder statistics are optional: the live samples still draw */ }

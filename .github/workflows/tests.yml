@@ -96,6 +96,6 @@ jobs:
                    tests/panel_dom/battery_form.mjs tests/panel_dom/save_warn.mjs tests/panel_dom/reattach.mjs \
                    tests/panel_dom/audit_ui.mjs tests/panel_dom/link_states.mjs tests/panel_dom/solar_forecast.mjs \
                    tests/panel_dom/field_labels.mjs tests/panel_dom/override_monitor.mjs tests/panel_dom/settings_error.mjs \
-                   tests/panel_dom/report_issue.mjs; do
+                   tests/panel_dom/report_issue.mjs tests/panel_dom/history_units.mjs; do
             echo "::group::$t"; node "$t"; echo "::endgroup::"
           done

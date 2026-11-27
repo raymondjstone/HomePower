@@ -16,6 +16,8 @@ locked while HomePower controls that battery: it would only be put back on the n
 """
 from __future__ import annotations
 
+from typing import Any
+
 # ---------------------------------------------------------------------------------------------------------------- Anker
 X1_WORK_MODES = {0: "Self-consumption", 1: "Time-of-use", 2: "Backup only", 4: "User-defined", 5: "Socket aggregation",
                  16: "Dynamic tariff (set in the app)", 20: "App-managed"}
@@ -148,6 +150,9 @@ def anker_write_plan(x1: bool, key: str, value, regs: dict[int, int], order: str
         v = n & 0xFFFFFFFF
         return [(base, [v >> 16, v & 0xFFFF] if order == "big" else [v & 0xFFFF, v >> 16])]
     # Solarbank limits: the same cross-checks the official integration makes while the backup reserve is on
+    ch: Any
+    dis: Any
+    res: Any
     ch, dis, res = (n if key == "charge_limit" else regs.get(60000)), (n if key == "discharge_limit" else regs.get(60001)), (n if key == "backup_reserve" else regs.get(60002))
     if regs.get(60003) == 1 and None not in (ch, dis, res):
         if key == "charge_limit" and not (ch > dis and ch > res):

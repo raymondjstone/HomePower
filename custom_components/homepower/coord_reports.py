@@ -4,6 +4,8 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 run on the coordinator itself and use its state."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import re
 import time as _time
 from datetime import datetime, timedelta
@@ -17,6 +19,60 @@ from .coord_base import _LOGGER, GRID_SLOW_AFTER_S, DeviceStatus, _PRIVATE_KEY
 
 
 class ReportsMixin:
+    if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
+        _combined: Any
+        _condition_ok: Any
+        _cycling: Any
+        _event_windows: Any
+        _export_better: Any
+        _export_view: Any
+        _forecast_by_day: Any
+        _has_solar: Any
+        _log_failure: Any
+        _price_now: Any
+        _price_slots: Any
+        _rates: Any
+        _rates_entity: Any
+        _snap: Any
+        _tariff: Any
+        adapters: Any
+        alerts: Any
+        away: Any
+        backup_active: Any
+        daily: Any
+        day_plan: Any
+        diverter: Any
+        forecast_floor: Any
+        grid_age_s: Any
+        grid_event: Any
+        grid_events: Any
+        grid_source: Any
+        hass: Any
+        health: Any
+        last_grid: Any
+        last_result: Any
+        ledger: Any
+        link: Any
+        manager: Any
+        meter: Any
+        overrides: Any
+        paused: Any
+        plan_log: Any
+        profile: Any
+        pv_health: Any
+        rate_learner: Any
+        schedules: Any
+        settings: Any
+        shown_actual: Any
+        shown_actuals: Any
+        solar_room: Any
+        solar_view: Any
+        startup_note: Any
+        traces: Any
+        trend: Any
+        usage: Any
+        weather: Any
+
     def readiness(self) -> dict | None:
         """How long the batteries could run the house if the grid went down now: the usable energy (above each battery's
         minimum) against the usual household load for the coming hours, or the current load if that is not learned yet.
@@ -29,6 +85,7 @@ class ReportsMixin:
                 n += 1
         if not n:
             return None
+        hours: float | None
         left, t, hours, basis = wh, now, 0.0, "usual use at this time of day"
         while hours < 72:
             e = self.profile.expected_wh(t, 0.5)

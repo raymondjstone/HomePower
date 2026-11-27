@@ -179,7 +179,8 @@ def infer_offpeak(samples: list[tuple[datetime, float]], until: datetime, tz=Non
     The history is read half-hour by half-hour in local time, the median price per time of day is taken, and the
     longest run (it may wrap midnight) of below-midpoint half-hours is the cheap window. Returns None for a
     flat tariff, too little history, or prices that do not repeat as one block (e.g. a fully dynamic tariff)."""
-    pts = sorted(((_dt(t, tz), p) for t, p in samples if _dt(t, tz) is not None and p is not None), key=lambda x: x[0])
+    parsed: list[Any] = [(_dt(t, tz), p) for t, p in samples]
+    pts: list[Any] = sorted(((t, p) for t, p in parsed if t is not None and p is not None), key=lambda x: x[0])
     if len(pts) < 2:
         return None
     span = until - pts[0][0]

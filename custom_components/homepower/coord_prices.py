@@ -4,6 +4,8 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 run on the coordinator itself and use its state."""
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 import time as _time
 from datetime import datetime, timedelta
 
@@ -16,6 +18,21 @@ from .coord_base import _LOGGER, TARIFF_REFRESH_S, TARIFF_HISTORY_DAYS, _real
 
 
 class PricesMixin:
+    if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
+        _tariff_checked: Any
+        _exp_table: Any
+        _glow: Any
+        _log: Any
+        _notify: Any
+        adapters: Any
+        alerts: Any
+        day_plan: Any
+        hass: Any
+        health: Any
+        profile: Any
+        settings: Any
+        usage: Any
+
     def _rates_entity(self) -> str:
         return self.settings.rates_entity or self._glow().get("rate", "")
 

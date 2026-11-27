@@ -1,6 +1,8 @@
 """Minimal asyncio Modbus TCP client (function codes 03, 04, 06, 16). No third-party packages."""
 from __future__ import annotations
 
+from typing import Any
+
 import asyncio
 import errno
 import struct
@@ -101,8 +103,8 @@ class ModbusTcpClient:
         self.patience = patience if patience is not None else 2 * timeout
         self._slow = False                  # the last reply took longer than the short wait
         self.reply_s: float | None = None   # how long the last reply took
-        self._r: asyncio.StreamReader | None = None
-        self._w: asyncio.StreamWriter | None = None
+        self._r: Any = None
+        self._w: Any = None
         self._tid = 0
         self._lock = asyncio.Lock()
 
