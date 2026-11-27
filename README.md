@@ -16,17 +16,17 @@ sidebar panel, and schedules and optimises how they charge and discharge.
 
 ## Install
 
-**Marketplace (Home Assistant 2026.11 and newer, recommended):** *Settings > Marketplace*, search for **HomePower Battery
-Manager**, install it and restart Home Assistant. Then *Settings > Devices & Services > Add integration > HomePower*.
+**Home Assistant Marketplace (recommended):** HomePower is listed in the Marketplace, so there is no repository to add.
+
+1. Go to *Settings > Marketplace*, search for **HomePower Battery Manager** and download it.
+2. Restart Home Assistant.
+3. Go to *Settings > Devices & services > Add integration > HomePower*.
+
 Add batteries from the **HomePower** sidebar panel or the integration's **Configure** menu.
 
-**HACS (before 2026.11):** open HACS, search for **HomePower Battery Manager**, download it, restart, then add the
-integration as above. (From 2026.11 HACS is part of Home Assistant as the Marketplace, and an installed copy is moved
-there automatically.)
-
-If the search finds nothing, the catalog does not list HomePower yet: add it once by link instead. Marketplace: *Add from
-link* with `https://github.com/raymondjstone/HomePower`. HACS: three-dot menu > *Custom repositories* > add that address as
-an *Integration*. Then search and install as above.
+The Marketplace is what used to be called HACS: from Home Assistant 2026.11 it is built in, and an existing HACS
+installation is moved into it automatically. On an older Home Assistant, open **HACS** instead, search for the same name,
+download it, restart and add the integration as above.
 
 **Manual:** copy `custom_components/homepower` into your Home Assistant `custom_components` folder and restart.
 
@@ -680,7 +680,7 @@ MIT, see [LICENSE](LICENSE).
 ## Releases
 
 - Work goes to the **`develop`** branch. Every push there runs the tests and publishes a **pre-release** named
-  `v<version>-beta.<n>` (in HACS: *Redownload > Show beta versions*). Only the newest five pre-releases are kept.
+  `v<version>-beta.<n>` (to install one from the Marketplace, formerly HACS: *Redownload > Show beta versions*). Only the newest five pre-releases are kept.
 - Merging `develop` into **`master`** (a pull request) publishes the real release `v<version>` and removes that version's
   pre-releases.
 - `<version>` is `"version"` in `custom_components/homepower/manifest.json`. After each release the workflow moves `develop`
