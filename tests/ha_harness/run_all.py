@@ -12,6 +12,7 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 LIMIT_S = int(os.environ.get("HARNESS_TIMEOUT_S", "600"))
+COVER = ["-m", "coverage", "run", "-p"] if os.environ.get("HARNESS_COVERAGE") else []   # see the coverage job in tests.yml
 
 
 def main() -> int:
@@ -24,7 +25,7 @@ def main() -> int:
     for s in scripts:
         t0 = time.monotonic()
         try:
-            r = subprocess.run([sys.executable, str(s)], cwd=HERE.parent.parent, env=env, capture_output=True, text=True, timeout=LIMIT_S)
+            r = subprocess.run([sys.executable, *COVER, str(s)], cwd=HERE.parent.parent, env=env, capture_output=True, text=True, timeout=LIMIT_S)
             ok, out = r.returncode == 0, (r.stdout + r.stderr).strip()
         except subprocess.TimeoutExpired as err:
             ok, out = False, f"TIMED OUT after {LIMIT_S} s\n" + ((err.stdout or b"").decode(errors="replace") if isinstance(err.stdout, bytes) else (err.stdout or ""))

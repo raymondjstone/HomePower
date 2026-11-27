@@ -269,6 +269,8 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         return combine(items, max(loads) if loads else None)
 
     # ------------------------------------------------------------------ the loop
+    _asked_for_keys = False
+
     async def _read(self, a: DeviceAdapter) -> Actual:
         st = self._snap.devices.get(a.config.device_id)
         if st is not None and a.config.device_id in self.testing and st.actual is not None:
@@ -278,6 +280,18 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         except Exception:  # noqa: BLE001 - one device must not stop the others
             _LOGGER.debug("read failed for %s", a.config.device_id, exc_info=True)
             return Actual(online=False)
+
+    def _log_link(self, a: DeviceAdapter, was: str, now: str) -> None:
+        if getattr(getattr(a, "driver", None), "logs_link", False) or (was == "offline") == (now == "offline"):
+            return
+        _LOGGER.info("%s: %s", a.config.device_id, "cannot be read: shown offline" if now == "offline" else "can be read again")
+
+    def _check_keys(self, adapters: list) -> None:
+        """EcoFlow refused the account keys: ask for new ones through Home Assistant's re-authentication (once while it lasts)."""
+        failed = any(getattr(getattr(a, "driver", None), "auth_failed", False) for a in adapters)
+        if failed and not self._asked_for_keys and (ask := getattr(self.config_entry, "async_start_reauth", None)):
+            ask(self.hass)
+        self._asked_for_keys = failed
 
     def _note_link(self, st: DeviceStatus, act: Actual, mono: float) -> None:
         """Online, stale or offline. A failed read is often only another Modbus client holding the battery for a moment, so it
@@ -347,8 +361,13 @@ class HomePowerCoordinator(InputsMixin, AccountingMixin, PricesMixin, AlertsMixi
         # A battery removed while we were reading is dropped; one added meanwhile waits for the next cycle.
         adapters = [a for a in adapters if a.config.device_id in self._snap.devices]
         actuals = {k: v for k, v in actuals.items() if k in self._snap.devices}
-        for did, act in actuals.items():
-            self._note_link(self._snap.devices[did], act, mono)
+        for a in adapters:
+            did = a.config.device_id
+            if did in actuals:
+                was = self._snap.devices[did].link
+                self._note_link(self._snap.devices[did], actuals[did], mono)
+                self._log_link(a, was, self._snap.devices[did].link)
+        self._check_keys(adapters)
 
         self._observe_temp(now)
         # tied to the config entry, so an unload or reload cancels a fetch still running (saves stay on hass: they must finish)

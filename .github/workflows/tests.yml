@@ -52,6 +52,26 @@ jobs:
       - run: python -c "import homeassistant.const as c; print('Home Assistant', c.__version__)"
       - run: python tests/ha_harness/run_all.py
 
+  # How much of the integration the unit tests and the real-Home-Assistant checks run between them. Reported, not enforced.
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - run: python -m pip install homeassistant pytest paho-mqtt pillow pyyaml coverage
+      - run: |
+          req=$(python -c "import importlib.util, json, os; d = os.path.dirname(importlib.util.find_spec('homeassistant').origin); print(' '.join(json.load(open(os.path.join(d, 'components', 'forecast_solar', 'manifest.json')))['requirements']))")
+          python -m pip install $req
+      - run: python -m coverage run -m pytest -q
+      - run: HARNESS_COVERAGE=1 python tests/ha_harness/run_all.py
+      - run: |
+          python -m coverage combine
+          python -m coverage report | tee coverage.txt
+          { echo '### Test coverage'; echo '```'; cat coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
   # The sidebar panel and the card in a real DOM (jsdom), fed what the current backend really sends (tests/panel_dom/README.md).
   # The browser test (Playwright) is left out: it needs a browser download and is run by hand.
   panel:

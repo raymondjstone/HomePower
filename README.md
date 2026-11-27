@@ -11,6 +11,7 @@ sidebar panel, and schedules and optimises how they charge and discharge.
 [Modes, scenes and overrides](#modes-scenes-and-overrides) ·
 [Several batteries](#several-batteries) · [Messages and alerts](#messages-and-alerts) · [The panel](#the-panel) ·
 [Settings reference](#settings-reference) · [Entities, services and card](#entities-services-and-card) ·
+[Troubleshooting](#troubleshooting) ·
 [EcoFlow protocol notes](#ecoflow-protocol-notes) · [Generic Modbus map](#generic-modbus-register-map) · [Savings](#how-savings-are-estimated) ·
 [Removing HomePower](#removing-homepower) · [Known limits](#known-limits)
 
@@ -501,6 +502,46 @@ could disturb another EcoFlow integration such as EcoFlow Cloud. If it cannot co
 Settings > EcoFlow says why (and, while it works, how many live updates have arrived); Diagnostics shows the same per
 battery. It has not been tested against a live EcoFlow account.
 
+### Configure options
+
+*Settings > Devices & services > HomePower > Configure*. Setting up the integration itself asks nothing.
+
+| Option | Meaning |
+|---|---|
+| **Add a battery** | Name and model, then how to reach it: an address and port (Anker, EcoFlow local; *reverse sign* for a battery whose charge and discharge are the wrong way round), EcoFlow region and developer keys then the battery, a unit ID and register map (generic Modbus), or the Home Assistant entities to use. Then capacity, highest charge and discharge power, lowest charge, and whether HomePower may control it |
+| **Allow / stop control** | Whether HomePower sends commands to a battery |
+| **Add / change / remove a schedule** | Name, batteries, mode, start and end time or all day, power, stop level, days, a condition entity, where charging comes from (grid, solar, both), and enabled |
+| **Add / remove a goal** | Name, batteries, the charge level and time to reach it, days, and whether to use less grid energy when solar is forecast |
+
+**Settings (limits, tariff, forecast, backup)**
+
+| Field | Meaning |
+|---|---|
+| House import limit (W) | HomePower keeps charging within it |
+| Peak shaving | Discharge to stay under the import limit |
+| Export limit (W) | Charge, or trim discharging, to stay under it |
+| Grid import / export sensor | Your meter, if the batteries' own reading is not to be used |
+| Rates entity | A sensor or event with your prices |
+| Find cheap hours automatically | Work them out from the price history |
+| Standard and cheap price, cheap start and end | Your own two-rate tariff, without a rates entity |
+| Solar forecast sensor; share of it to use (%) | What goals may count on (100 = as forecast) |
+| Backup reserve (%) | The charge kept for power cuts in backup mode |
+| Storm entity | While it is on, backup mode is on |
+| Away entity | While it shows you are away, away mode is on |
+| Notify service | Where alerts are sent, for example `notify.mobile_app_your_phone` |
+
+**Prices, export and grid events**
+
+| Field | Meaning |
+|---|---|
+| Export price or export rates entity | What exporting pays |
+| Discharge to export | Export stored energy when it pays more than buying it back |
+| Keep at least (%) | Charge never exported |
+| Hold for dearer hours | Keep stored energy for dearer half-hours later |
+| Wear cost per kWh | Counted against trading |
+| Grid event entities | Saving sessions or similar |
+| Charge before an event (%) | The level to reach before one starts |
+
 ## Entities, services and card
 
 **Sensors** (on one *HomePower* device):
@@ -517,7 +558,8 @@ battery. It has not been tested against a live EcoFlow account.
   energy discharged, round-trip efficiency, cycles. In the Energy dashboard, add each battery under *Battery systems* with
   its *energy charged* as "energy going in" and *energy discharged* as "energy coming out". While a battery's readings
   are only stale (see *Readings stale*), its sensors keep their last good value and its target sensor's `stale` attribute
-  is true; once it is shown Offline they become unknown.
+  is true; once it is shown Offline its charge, power, solar and PV sensors
+  become unavailable (its energy totals and cycles stay).
 - Anker X1: total PV input power, and each PV string's voltage, current and power (strings 5-8 are off until you enable them).
 
 **Switches:** Pause control, Backup mode, Away mode.
@@ -541,6 +583,69 @@ takes one ID or a list. A mistyped ID is refused with a message rather than igno
 `entity:`, `title:` and `show_batteries:` are optional.
 
 **Diagnostics download** on the integration page, with keys, addresses and serial numbers removed.
+
+### Automation examples
+
+Change the entity names to yours (*Developer tools > States*, search for `homepower`).
+
+Charge to full before a storm warning, using backup mode:
+
+```yaml
+alias: Backup mode while a weather warning is on
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.weather_warning
+actions:
+  - action: homepower.backup
+    data:
+      enabled: "{{ trigger.to_state.state == 'on' }}"
+```
+
+Stop the batteries feeding a car charger (hold them for an hour when it starts):
+
+```yaml
+alias: Hold the batteries while the car charges
+triggers:
+  - trigger: numeric_state
+    entity_id: sensor.car_charger_power
+    above: 1000
+actions:
+  - action: homepower.override
+    data:
+      mode: hold
+      minutes: 60
+```
+
+Tell your phone when the batteries run low:
+
+```yaml
+alias: Home battery low
+triggers:
+  - trigger: numeric_state
+    entity_id: sensor.homepower_home_battery
+    below: 20
+actions:
+  - action: notify.mobile_app_your_phone
+    data:
+      message: "The home battery is at {{ trigger.to_state.state }}%"
+```
+
+(A [load rule](#limits-and-protection) in Settings does the car-charger job without an automation.)
+
+## Troubleshooting
+
+| Problem | What to try |
+|---|---|
+| Home Assistant asks to **re-authenticate** HomePower | EcoFlow refused the saved developer keys: enter the current ones |
+| A battery shows **Offline** or **Readings stale** | Check its address has not changed (give it a fixed one in your router). Another app or integration may be holding its Modbus connection: stale readings usually clear by themselves. For a Solarbank 4 or Max AC that keeps dropping, see the note under [Modes, scenes and overrides](#modes-scenes-and-overrides) |
+| HomePower reads a battery but **never controls it** | Allow control on the battery, check Pause control and Safe mode are off, and run **Test control** (Diagnostics). The battery card's *Why idle* says what is in the way |
+| A battery **does not do what it was told** | Run Test control, check *Plan versus actual* (Insights), and look for a schedule or time-of-use setting in the vendor app that overrides it |
+| **No grid reading** | Pick the meter in Settings; see [Grid reading](#grid-reading). Solar-only charging, peak shaving and the export limit need it |
+| **Goals never charge** | HomePower needs prices: a rates sensor or your own rates and cheap hours. See [Tariff and prices](#tariff-and-prices) |
+| The panel is **blank or old** after an update | Restart Home Assistant, then refresh the browser |
+
+Still stuck? **Diagnostics > Report an issue** opens a GitHub issue with your versions and battery types filled in, and
+**Download debug file** gives a file to attach to it.
 
 ## EcoFlow protocol notes
 

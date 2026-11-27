@@ -3,22 +3,15 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import MATCH_ALL, PERCENTAGE, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
+from homeassistant.const import MATCH_ALL, PERCENTAGE, EntityCategory, UnitOfElectricCurrent, UnitOfElectricPotential, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
 from .coord_base import MONEY_EXPORT, MONEY_SAVED
 from .coordinator import HomePowerCoordinator
+from .entity import HomePowerEntity
 
-
-def _info(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)}, name="HomePower", manufacturer="HomePower", entry_type=DeviceEntryType.SERVICE,
-        configuration_url="homeassistant://homepower",  # "Visit" button on the device page
-    )
+PARALLEL_UPDATES = 0    # read-only: the coordinator does the fetching
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
@@ -26,7 +19,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     add([BatteryFlow(coord, entry), StoredEnergy(coord, entry), GridPower(coord, entry),
          EnergyTotal(coord, entry, "grid_in", "Grid energy imported"), EnergyTotal(coord, entry, "grid_out", "Grid energy exported"),
          EnergyTotal(coord, entry, "pv_in", "Solar energy"), Savings(coord, entry, "today"), Savings(coord, entry, "month"), PriceNow(coord, entry),
-         MoneyTotal(coord, entry, MONEY_EXPORT, "Export earnings", "mdi:cash-plus"), MoneyTotal(coord, entry, MONEY_SAVED, "Battery savings", "mdi:piggy-bank-outline"),
+         MoneyTotal(coord, entry, MONEY_EXPORT, "Export earnings", "export_earnings"), MoneyTotal(coord, entry, MONEY_SAVED, "Battery savings", "battery_savings"),
          HomeBattery(coord, entry), DailyShare(coord, entry, "self_consumption", "Solar self-consumption today"),
          DailyShare(coord, entry, "cheap_share", "Cheap-rate share of grid import today")])
     known: set[str] = set()
@@ -70,16 +63,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
     entry.async_on_unload(coord.async_add_listener(_sync))
 
 
-class _Base(CoordinatorEntity[HomePowerCoordinator], SensorEntity):
-    _attr_has_entity_name = True
-
-    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coord)
-        self._entry = entry
-        self._attr_device_info = _info(entry)
+class _Base(HomePowerEntity, SensorEntity):
+    pass
 
 
-class BatteryFlow(_Base):
+class _AnyBattery(_Base):
+    """A total over the batteries' readings: unavailable when not one battery can be read."""
+
+    @property
+    def available(self) -> bool:
+        shown = self.coordinator.shown_actuals().values()
+        return super().available and (not self.coordinator.adapters or any(a.online for a in shown))
+
+
+class BatteryFlow(_AnyBattery):
     """Net power across all batteries: + charging, - discharging."""
 
     _attr_name = "Battery power"
@@ -97,7 +94,7 @@ class BatteryFlow(_Base):
         return round(sum(vals)) if vals else None
 
 
-class StoredEnergy(_Base):
+class StoredEnergy(_AnyBattery):
     _attr_name = "Stored energy"
     _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -121,7 +118,7 @@ class StoredEnergy(_Base):
 class BatteryTarget(_Base):
     """What HomePower currently wants this battery to do (state) and why (attributes)."""
 
-    _attr_icon = "mdi:home-battery"
+    _attr_translation_key = "target"
     _unrecorded_attributes = frozenset({MATCH_ALL})   # they change every cycle and have sensors of their own: keep the database small
 
     def __init__(self, coord, entry, device_id: str, name: str) -> None:
@@ -178,7 +175,17 @@ class _BatteryBase(_Base):
         return self.coordinator.shown_actual(self._did)     # the last reading while the readings are only stale
 
 
-class BatterySoc(_BatteryBase):
+class _LiveReading(_BatteryBase):
+    """A reading taken from the battery itself: unavailable once the battery is shown offline. (HomePower's own records for it,
+    such as energy totals and cycles, stay available.)"""
+
+    @property
+    def available(self) -> bool:
+        a = self._actual()
+        return super().available and a is not None and a.online
+
+
+class BatterySoc(_LiveReading):
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -192,7 +199,7 @@ class BatterySoc(_BatteryBase):
         return None if a is None or a.soc is None else round(a.soc, 1)
 
 
-class BatteryDevicePower(_BatteryBase):
+class BatteryDevicePower(_LiveReading):
     """+ charging, - discharging."""
 
     _attr_device_class = SensorDeviceClass.POWER
@@ -208,7 +215,7 @@ class BatteryDevicePower(_BatteryBase):
         return None if a is None or a.power_w is None else round(a.power_w)
 
 
-class BatterySolarPower(_BatteryBase):
+class BatterySolarPower(_LiveReading):
     """The solar power the battery itself reports: the "Solar" figure on the side panel's battery cards
     (Anker: register 10002, PV power; EcoFlow: its PV sum). On an X1 "PV input power" below is the
     inverter's separate total (10183), so the two can be compared."""
@@ -216,7 +223,7 @@ class BatterySolarPower(_BatteryBase):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_icon = "mdi:solar-power"
+    _attr_translation_key = "solar_power"
 
     def __init__(self, coord, entry, device_id: str, name: str) -> None:
         super().__init__(coord, entry, device_id, name, "solar", "solar power")
@@ -227,7 +234,7 @@ class BatterySolarPower(_BatteryBase):
         return None if a is None or a.pv_w is None else round(a.pv_w)
 
 
-class PvTotal(_BatteryBase):
+class PvTotal(_LiveReading):
     """X1: total solar power at the inverter's PV inputs (register 10183)."""
 
     _attr_device_class = SensorDeviceClass.POWER
@@ -243,7 +250,7 @@ class PvTotal(_BatteryBase):
         return None if a is None or a.pv_total_w is None else round(a.pv_total_w)
 
 
-class PvString(_BatteryBase):
+class PvString(_LiveReading):
     """X1: one PV string's voltage, current or power (V x A). Strings 5-8 are off until you enable them."""
 
     _KINDS = {"voltage": (SensorDeviceClass.VOLTAGE, UnitOfElectricPotential.VOLT, 1),
@@ -256,6 +263,8 @@ class PvString(_BatteryBase):
         self._i, self._kind = index, kind
         self._attr_device_class, self._attr_native_unit_of_measurement, self._digits = self._KINDS[kind]
         self._attr_entity_registry_enabled_default = index < 4
+        if kind != "power":
+            self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
     def native_value(self):
@@ -288,7 +297,7 @@ class EnergyTotal(_Base):
 class Savings(_Base):
     """Estimated money saved (avoided import minus the cost of grid charging). See the README for how."""
 
-    _attr_icon = "mdi:piggy-bank"
+    _attr_translation_key = "savings"
     _attr_state_class = None
 
     def __init__(self, coord, entry, period: str) -> None:
@@ -319,10 +328,10 @@ class MoneyTotal(_Base):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coord, entry, key: str, name: str, icon: str) -> None:
+    def __init__(self, coord, entry, key: str, name: str, translation_key: str) -> None:
         super().__init__(coord, entry)
         self._key = key
-        self._attr_name, self._attr_icon = name, icon
+        self._attr_name, self._attr_translation_key = name, translation_key
         self._attr_unique_id = f"{entry.entry_id}_{key.replace(':', '_')}_total"
 
     @property
@@ -336,7 +345,7 @@ class MoneyTotal(_Base):
 
 class PriceNow(_Base):
     _attr_name = "Electricity price now"
-    _attr_icon = "mdi:cash-clock"
+    _attr_translation_key = "price_now"
 
     def __init__(self, coord, entry) -> None:
         super().__init__(coord, entry)
@@ -359,7 +368,8 @@ class Efficiency(_BatteryBase):
 
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_icon = "mdi:percent"
+    _attr_translation_key = "efficiency"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coord, entry, device_id: str, name: str) -> None:
         super().__init__(coord, entry, device_id, name, "efficiency", "round-trip efficiency")
@@ -375,7 +385,8 @@ class Cycles(_BatteryBase):
     # TOTAL, not TOTAL_INCREASING: the count follows edits to the capacity, so it can step down, and Home Assistant would read
     # a step down as a meter reset and add the whole count to its statistics again.
     _attr_state_class = SensorStateClass.TOTAL
-    _attr_icon = "mdi:battery-sync"
+    _attr_translation_key = "cycles"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_native_unit_of_measurement = "cycles"
 
     def __init__(self, coord, entry, device_id: str, name: str, capacity_wh: int) -> None:
@@ -424,7 +435,7 @@ class DailyShare(_Base):
 
     _attr_device_class = None
     _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_icon = "mdi:percent"
+    _attr_translation_key = "daily_share"
 
     def __init__(self, coord, entry, key: str, name: str) -> None:
         super().__init__(coord, entry)

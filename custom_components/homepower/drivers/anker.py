@@ -36,6 +36,8 @@ PAIRS = (10002, 10008, 10010, 10012, 10036, 10038)  # 32-bit power registers use
 
 
 class AnkerModbusDriver:
+    logs_link = True          # says itself when the battery stops answering and when it answers again
+
     def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None, orig: dict | None = None, on_orig=None) -> None:
         self.config = config
         c = config.extra["connection"]

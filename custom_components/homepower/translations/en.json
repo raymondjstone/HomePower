@@ -4,11 +4,25 @@
       "user": {
         "title": "HomePower Battery Manager",
         "description": "After adding, open HomePower in the sidebar, or use Configure on this integration, to add batteries and schedules. HomePower connects to your batteries directly; no other integration is needed."
+      },
+      "reauth_confirm": {
+        "title": "EcoFlow keys",
+        "description": "EcoFlow no longer accepts the saved developer keys. Enter the current ones; they are used for every EcoFlow battery on that account. {error}",
+        "data": {
+          "access_key": "Access key",
+          "secret_key": "Secret key"
+        }
       }
     },
     "abort": {
       "single_instance_allowed": "Only one HomePower instance is supported.",
-      "already_configured": "HomePower is already set up."
+      "already_configured": "HomePower is already set up.",
+      "not_loaded": "HomePower is not running yet. Try again in a moment.",
+      "reauth_successful": "The new keys are saved."
+    },
+    "error": {
+      "cannot_connect": "EcoFlow did not accept these keys.",
+      "no_match": "These keys work, but their account has none of your batteries."
     }
   },
   "options": {
