@@ -13,8 +13,8 @@ const fmtKwh = (wh) => `${(wh / 1000).toFixed(1)} kWh`;
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 
 const CSS = `
-:host{--hp-ok:#15803d;--hp-warn:#b45309;--hp-err:#b91c1c;--hp-auto:#1d4ed8;--hp-charge:#15803d;--hp-discharge:#b45309;--hp-hold:#4b5563}
-:host([dark]){--hp-ok:#4ade80;--hp-warn:#fbbf24;--hp-err:#f87171;--hp-auto:#60a5fa;--hp-charge:#4ade80;--hp-discharge:#fbbf24;--hp-hold:#9ca3af}
+:host{--hp-ok:#15803d;--hp-warn:#b45309;--hp-err:#b91c1c;--hp-auto:#1d4ed8;--hp-charge:#15803d;--hp-discharge:#b45309;--hp-hold:#4b5563;--hp-solar:#ca8a04}
+:host([dark]){--hp-ok:#4ade80;--hp-warn:#fbbf24;--hp-err:#f87171;--hp-auto:#60a5fa;--hp-charge:#4ade80;--hp-discharge:#fbbf24;--hp-hold:#9ca3af;--hp-solar:#fde047}
 :host{display:block;background:var(--primary-background-color);color:var(--primary-text-color);min-height:100vh;font-family:var(--paper-font-body1_-_font-family,Roboto,sans-serif)}
 *{box-sizing:border-box}
 header{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--app-header-background-color,var(--primary-color));color:var(--app-header-text-color,#fff);position:sticky;top:0;z-index:5}
@@ -64,6 +64,35 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .hb .nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));row-gap:12px}
 .hb .fig{display:flex;flex-direction:column;align-items:center;text-align:center;gap:2px;padding:0 8px;border-left:1px solid var(--divider-color)}
 .hb .fig ha-icon{--mdc-icon-size:28px}
+[data-act=hist]{cursor:pointer;border-radius:12px;transition:background .15s}
+[data-act=hist]:hover{background:var(--secondary-background-color)}
+[data-act=hist]:focus-visible{outline:2px solid var(--primary-color);outline-offset:2px}
+.modal.hist{max-width:860px}
+.flow{position:relative;width:100%;max-width:980px;margin:0 auto;container-type:inline-size}
+.flow>svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.ftrack{fill:none;stroke:var(--divider-color);stroke-width:3}
+.fglow{fill:none;stroke:transparent;stroke-linecap:round;opacity:0}
+.fglow.on{animation:fpulse 1.8s ease-in-out infinite}
+@keyframes fpulse{0%,100%{opacity:.06}50%{opacity:.22}}
+.fdots{fill:none;stroke:transparent;stroke-linecap:round}
+.fnode{position:absolute;transform:translate(-50%,-50%);aspect-ratio:1;container-type:inline-size}
+.fcirc{width:100%;height:100%;box-sizing:border-box;border-radius:50%;border:3px solid var(--bc,var(--divider-color));background:var(--card-background-color);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;box-shadow:0 2px 10px rgba(0,0,0,.18);overflow:hidden;padding:4%}
+.fcirc ha-icon{--mdc-icon-size:28cqi;color:var(--bc,var(--secondary-text-color))}
+.fcirc .fv{font-size:17cqi;font-weight:600;line-height:1.15;white-space:nowrap}
+.fcirc .fp{font-size:9.5cqi;color:var(--secondary-text-color);line-height:1.2;white-space:nowrap}
+.fcirc .fs{font-size:10.5cqi;color:var(--secondary-text-color);line-height:1.2;max-width:92%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fsoc{width:58%;height:5%;min-height:3px;border-radius:3px;background:var(--divider-color);margin-top:4%;overflow:hidden}.fsoc i{display:block;height:100%;width:0;transition:width .6s}
+#fn-house .fcirc{--bc:var(--primary-color);border-width:4px}
+#fn-grid .fcirc{--bc:var(--hp-auto)}#fn-solar .fcirc{--bc:var(--hp-solar)}
+
+.fnode.off{opacity:.45}
+.fnode[data-act=hist]:hover{background:none}.fnode[data-act=hist]:hover .fcirc{box-shadow:0 0 0 3px var(--primary-color)}
+.flbl{position:absolute;transform:translate(-50%,-50%);font-size:clamp(11px,1.7cqi,14px);font-weight:600;padding:1px 8px;border-radius:10px;background:var(--card-background-color);border:2px solid transparent;white-space:nowrap;opacity:0;transition:opacity .3s}
+.flbl.on{opacity:1;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+.fsum{margin-top:10px}.fsi{white-space:nowrap;margin-right:6px}
+.fbar{display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--divider-color);margin-bottom:8px}.fbar i{display:block;height:100%;transition:width .6s}
+@media (prefers-reduced-motion:reduce){.fglow.on{animation:none;opacity:.15}}
 .banner{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--card-background-color);border:1px solid var(--warning-color,#b45309);border-left-width:5px;border-radius:12px;padding:12px 16px;margin-bottom:16px}
 .banner .t{flex:1;min-width:200px}
 .scenes{display:flex;gap:8px;flex-wrap:wrap;align-items:center}

@@ -30,7 +30,7 @@ def test_every_called_method_is_defined():
 def test_every_looked_up_element_exists_in_a_template():
     used = set(re.findall(r'getElementById\("([\w-]+)"\)', JS))
     templated = set(re.findall(r'id="([\w-]+)"', JS))
-    dynamic = ("e-", "mm-", "c-", "st-", "test-", "dl-")
+    dynamic = ("e-", "mm-", "c-", "st-", "test-", "dl-", "fn-")
     assert sorted(i for i in used if i not in templated and not i.startswith(dynamic) and i not in ("app", "modal")) == []
 
 

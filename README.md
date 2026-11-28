@@ -534,7 +534,8 @@ notifications. Both optionally go to a `notify.*` service as well.
 
 | Tab | What is there |
 |---|---|
-| Overview | Live state of every battery with its *Why*, the home battery card, grid power, today's solar forecast, scenes, quick overrides, tariff notice, setup check, and a live power chart with a time scale you can change (15 minutes to 24 hours) |
+| Overview | Live state of every battery with its *Why*, the home battery card, grid power, today's solar forecast, scenes, quick overrides, tariff notice, setup check, and a live power chart with a time scale you can change (15 minutes to 24 hours). Click the Home battery figures or any tile from Battery flow to Price now for a popup chart of it over the last 6 hours to 7 days |
+| Flow | A live diagram of the house, the grid, solar and each battery, joined by lines whose dots move the way the power is flowing (faster for more), with the live figure on each line and a summary of where the house's power is coming from. Click the grid, solar or a battery for its history |
 | Plan | Goals, the price chart with planned charging, planned export, energy kept for dearer hours and grid events, the next 24 hours per battery, schedule clashes |
 | Schedules | Add, edit, enable and delete schedules |
 | Batteries | Add, edit and delete batteries; allow control; role, priority, solar panels, whether its meter measures the whole house |

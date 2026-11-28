@@ -55,6 +55,7 @@ class ReportsMixin:
         _export_view: Any
         _forecast_by_day: Any
         _has_solar: Any
+        _house_load: Any
         _log_failure: Any
         _price_now: Any
         _price_slots: Any
@@ -452,6 +453,16 @@ class ReportsMixin:
                             "view_error": True, "alarms": [], "active_schedules": [], "traces": [], "setting_changes": []}
         return out
 
+    def _house_now(self, actuals: dict[str, Any]) -> int | None:
+        """What the house is using now (the Flow tab's house figure): the same figure the energy accounting records."""
+        try:
+            pv = [a.pv_w for a in actuals.values() if a.online and a.pv_w is not None]
+            w = self._house_load(actuals, self.last_grid, sum(pv) if pv else 0.0)
+            return None if w is None else round(w)
+        except Exception:  # noqa: BLE001 - part of the live view, which must always be sent
+            _LOGGER.debug("house load for the live view failed", exc_info=True)
+            return None
+
     def view(self) -> dict[str, Any]:
         """JSON-safe live view for the panel."""
         now = dt_util.now()
@@ -463,6 +474,7 @@ class ReportsMixin:
         return {
             "devices": out,
             "events": [list(e) for e in list(self._snap.events)[-60:]],
+            "house_w": self._house_now(actuals),
             "grid_w": self.last_grid, "grid_source": self.grid_source, "grid_age_s": None if self.grid_age_s is None else round(self.grid_age_s),
             "now": now.isoformat(),
             "paused": self.paused, "backup": self.backup_active, "away": self.away,

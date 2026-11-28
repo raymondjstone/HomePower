@@ -15,15 +15,15 @@ export default (U) => {
     const c = this.live.combined;
     if (!c || c.soc == null || (this.data.devices || []).length < 2) return "";
     const flow = c.flow_w || 0, kind = Math.abs(flow) < 20 ? "Idle" : flow > 0 ? "Charging" : "Discharging";
-    const n = (icon, col, v, l) => `<div class="fig"><ha-icon icon="${icon}" style="color:${col}"></ha-icon><b>${v}</b><span>${l}</span></div>`;
+    const n = (icon, col, v, l, hk) => `<div class="fig"${hk ? this._histAttr(hk) : ""}><ha-icon icon="${icon}" style="color:${col}"></ha-icon><b>${v}</b><span>${l}</span></div>`;
     const flowIcon = kind === "Charging" ? "mdi:battery-charging" : kind === "Discharging" ? "mdi:battery-arrow-down" : "mdi:pause-circle";
     const flowCol = kind === "Charging" ? U.INK.charge : kind === "Discharging" ? U.INK.discharge : U.INK.hold;
     return `<div class="card" style="margin-bottom:16px"><h2><ha-icon icon="mdi:home-battery" style="color:${U.INK.ok}"></ha-icon>Home battery <span class="sub" style="font-weight:400;font-size:13px">all ${c.total} batteries together${c.online < c.total ? ` (${c.online} online)` : ""}</span></h2>
-      <div class="hb">${this._ring(c.soc, 110)}
-        <div class="held"><div><b>${fmtKwh(c.stored_kwh * 1000)}</b> <span>stored of ${fmtKwh(c.capacity_kwh * 1000)}</span></div>
+      <div class="hb"><div class="ringbox"${this._histAttr("soc")}>${this._ring(c.soc, 110)}</div>
+        <div class="held"${this._histAttr("stored")}><div><b>${fmtKwh(c.stored_kwh * 1000)}</b> <span>stored of ${fmtKwh(c.capacity_kwh * 1000)}</span></div>
           <div><b>${fmtKwh(c.usable_kwh * 1000)}</b> <span>usable above the minimum</span></div></div>
         <div class="nums">
-        ${n(flowIcon, flowCol, fmtW(Math.abs(flow)), `${kind} right now`)}
+        ${n(flowIcon, flowCol, fmtW(Math.abs(flow)), `${kind} right now`, "flow")}
         ${c.runtime_h != null ? n("mdi:clock-outline", U.INK.auto, this._hours(c.runtime_h), `lasts at ${fmtW(Math.abs(flow) > 20 ? Math.abs(flow) : c.load_w)}`) : ""}
         ${c.full_in_h != null ? n("mdi:timer-sand", U.INK.auto, this._hours(c.full_in_h), "until full at this rate") : ""}
         ${c.load_w != null ? n("mdi:home", U.INK.auto, fmtW(c.load_w), "house load") : ""}</div></div></div>`;
@@ -92,16 +92,16 @@ export default (U) => {
     const grid = this._gridW();
     const s = this.data.settings || {};
     const netTxt = Math.abs(net) < 20 ? "Idle" : net > 0 ? "Charging" : "Discharging";
-    const tile = (l, v, sub, c, icon, ic) => `<div class="card tile"><ha-icon icon="${icon}" style="color:${ic || c || U.INK.auto}"></ha-icon><div class="lbl">${l}</div><div class="val" ${c ? `style="color:${c}"` : ""}>${v}</div><div class="sub">${sub}</div></div>`;
+    const tile = (l, v, sub, c, icon, ic, hk) => `<div class="card tile"${hk ? this._histAttr(hk) : ""}><ha-icon icon="${icon}" style="color:${ic || c || U.INK.auto}"></ha-icon><div class="lbl">${l}</div><div class="val" ${c ? `style="color:${c}"` : ""}>${v}</div><div class="sub">${sub}</div></div>`;
     const level = cap ? Math.round((stored / cap) * 100) : 0;
     const tiles = `<div class="grid g-tiles g-over">
-      ${tile("Battery flow", fmtW(Math.abs(net)), netTxt + (s.total_charge_limit_w && net > 0 ? ` · cap ${fmtW(s.total_charge_limit_w)}` : "") + (s.total_discharge_limit_w && net < 0 ? ` · cap ${fmtW(s.total_discharge_limit_w)}` : ""), net > 20 ? U.INK.charge : net < -20 ? U.INK.discharge : "", "mdi:lightning-bolt")}
-      ${tile("Stored energy", fmtKwh(stored), `${level}% of ${fmtKwh(cap)}`, "", this._levelIcon(level), level < 20 ? U.INK.err : level < 50 ? U.INK.warn : U.INK.ok)}
-      ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid reading (Settings > Grid meter)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? U.INK.err : grid < -20 ? U.INK.charge : "", "mdi:transmission-tower")}
+      ${tile("Battery flow", fmtW(Math.abs(net)), netTxt + (s.total_charge_limit_w && net > 0 ? ` · cap ${fmtW(s.total_charge_limit_w)}` : "") + (s.total_discharge_limit_w && net < 0 ? ` · cap ${fmtW(s.total_discharge_limit_w)}` : ""), net > 20 ? U.INK.charge : net < -20 ? U.INK.discharge : "", "mdi:lightning-bolt", "", "flow")}
+      ${tile("Stored energy", fmtKwh(stored), `${level}% of ${fmtKwh(cap)}`, "", this._levelIcon(level), level < 20 ? U.INK.err : level < 50 ? U.INK.warn : U.INK.ok, "stored")}
+      ${tile("Grid", grid == null ? "–" : fmtW(Math.abs(grid)), grid == null ? "No grid reading (Settings > Grid meter)" : Math.abs(grid) < 20 ? "Balanced" : grid > 0 ? "Importing" : "Exporting", grid == null ? "" : grid > 20 ? U.INK.err : grid < -20 ? U.INK.charge : "", "mdi:transmission-tower", "", "grid")}
       ${tile("Batteries online", `${online} / ${ds.length}`, "Reading directly from the batteries", "", "mdi:server", online < ds.length ? U.INK.warn : U.INK.ok)}
-      ${this.live.savings ? tile("Saved today", `${esc(this.live.currency || "£")}${(+this.live.savings.today || 0).toFixed(2)}`, `This month ${esc(this.live.currency || "£")}${(+this.live.savings.month || 0).toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? U.INK.charge : U.INK.err, "mdi:piggy-bank-outline") : ""}
+      ${this.live.savings ? tile("Saved today", `${esc(this.live.currency || "£")}${(+this.live.savings.today || 0).toFixed(2)}`, `This month ${esc(this.live.currency || "£")}${(+this.live.savings.month || 0).toFixed(2)} (estimate)`, this.live.savings.today >= 0 ? U.INK.charge : U.INK.err, "mdi:piggy-bank-outline", "", "savings") : ""}
       ${this._solarTile(tile)}
-      ${this.live.price_now != null ? tile("Price now", `${esc(this.live.currency || "£")}${this.live.price_now.toFixed(3)}<small>/kWh</small>`, "From your rates", "", "mdi:tag-outline") : ""}
+      ${this.live.price_now != null ? tile("Price now", `${esc(this.live.currency || "£")}${this.live.price_now.toFixed(3)}<small>/kWh</small>`, "From your rates", "", "mdi:tag-outline", "", "price") : ""}
     </div>`;
     const cards = ds.map((d, i) => this._batCard(d, rd[i], i)).join("");
     return `${this._alertsBanner()}${this._setupCard(false)}${this._tariffBanner()}${this._homeBattery()}${this._readinessCard()}${tiles}
@@ -123,7 +123,7 @@ export default (U) => {
     const src = { forecast_solar: "Forecast.Solar", solcast_solar: "Solcast" }[sf.source] || "your solar forecast";
     const pct = sf.use_pct != null && sf.use_pct !== 100 ? ` (${+sf.use_pct}% of its figures, as set in Settings)` : "";
     return tile("Solar forecast today", sf.today_kwh != null ? k(sf.today_kwh) : "–", esc(sub || src), "", "mdi:solar-power", U.INK.warn)
-      .replace('<div class="card tile"', `<div class="card tile" title="From ${esc(src)}${pct}. Forecast against what really came: Insights."`);
+      .replace('<div class="card tile"', `<div class="card tile" title="From ${esc(src)}${pct}. Forecast against what really came: Insights."${this._histSpec("solar") ? ' data-act="hist" data-k="solar" role="button" tabindex="0"' : ""}`);
   },
 
   // A battery drawn as full as the batteries are (names written out so each is a real icon).

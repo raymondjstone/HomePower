@@ -2,7 +2,7 @@
    The panel is split over several files (panel-*.js). Each adds its methods to the class below; they are loaded with
    this file's own ?v= tag so a new version is never mixed with cached old parts. */
 const V = new URL(import.meta.url).search;
-const FILES = ["overview", "charts", "schedules", "batteries", "details", "plan", "insights", "diag", "settings"];
+const FILES = ["overview", "charts", "schedules", "batteries", "details", "plan", "insights", "diag", "settings", "history", "flow"];
 // The parts are fetched in the background: the panel element exists at once and shows a loading page with the sidebar
 // button, instead of Home Assistant showing a blank page until every file has arrived.
 let U, MODES, SERIES, DAYS, esc, fmtW, fmtKwh, slug, CSS;
@@ -98,6 +98,7 @@ class HomePowerPanel extends HTMLElement {
     this.shadowRoot.addEventListener("click", (e) => this._click(e));
     this.shadowRoot.addEventListener("change", (e) => this._change(e));
     this.shadowRoot.addEventListener("input", (e) => this._input(e));
+    this.shadowRoot.addEventListener("keydown", (e) => this._key(e));
     this._parts = true;
     this._render();                                  // the page with 'Loading' until the data arrives, never a blank one
     await this._reload(first);
@@ -210,7 +211,7 @@ class HomePowerPanel extends HTMLElement {
     const now = Date.now();
     const busy = this.tab === "diagnostics" && !!this.shadowRoot.querySelector('[id^="reg-t-"]');   // a register list is open: a refresh would wipe its filter
     if (!force && now - this._lastRender < 1900) return;
-    if (this.tab === "overview") this._render();
+    if (this.tab === "overview" || this.tab === "flow") this._render();
     else if (["plan", "insights", "diagnostics"].includes(this.tab) && now - (this._lastTabLoad || 0) > 30000 && !(this._watch && this._watch.timer) && !busy) this._tabLoad();
   }
 
@@ -236,12 +237,13 @@ class HomePowerPanel extends HTMLElement {
     const app = this.shadowRoot.getElementById("app");
     if (!app) return;
     this._lastRender = Date.now();
-    const tabs = [["overview", "mdi:view-dashboard", "Overview"], ["plan", "mdi:target", "Plan"], ["schedules", "mdi:calendar-clock", "Schedules"], ["batteries", "mdi:home-battery", "Batteries"], ["insights", "mdi:chart-line", "Insights"], ["settings", "mdi:cog", "Settings"], ["diagnostics", "mdi:stethoscope", "Diagnostics"]];
+    const tabs = [["overview", "mdi:view-dashboard", "Overview"], ["flow", "mdi:home-lightning-bolt-outline", "Flow"], ["plan", "mdi:target", "Plan"], ["schedules", "mdi:calendar-clock", "Schedules"], ["batteries", "mdi:home-battery", "Batteries"], ["insights", "mdi:chart-line", "Insights"], ["settings", "mdi:cog", "Settings"], ["diagnostics", "mdi:stethoscope", "Diagnostics"]];
     let body = "";
     try {
       if (!this._loaded && !this._loadError) body = `<div class="card empty"><h3>Loading HomePower…</h3></div>`;
       else if (this._loadError) body = `<div class="card empty"><ha-icon icon="mdi:alert-circle"></ha-icon><h3>Couldn't load HomePower</h3>${esc(this._loadError)}</div>`;
       else if (this.tab === "overview") body = this._overview();
+      else if (this.tab === "flow") body = this._flowView();
       else if (this.tab === "schedules") body = this._schedules();
       else if (this.tab === "batteries") body = this._batteries();
       else if (this.tab === "plan") body = this._planView();
@@ -267,7 +269,7 @@ ${esc(where)}</pre></div>`;
       ${paused ? `<div style="background:#b45309;color:#fff;padding:10px 20px;font-weight:500">HomePower is paused: it is only reading your batteries and will not send any commands. Batteries keep whatever they were last told to do.</div>` : ""}
       <nav>${tabs.map(([k, i, l]) => `<button class="${this.tab === k ? "on" : ""}" data-tab="${k}"><ha-icon icon="${i}"></ha-icon>${l}</button>`).join("")}</nav>
       <main>${body}</main>`;
-    if (html === this._lastHtml) return;
+    if (html === this._lastHtml) { if (this.tab === "flow") this._flowPatch(); return; }   // Flow: the figures change in place
     this._lastHtml = html;
     // A header button (Pause, Backup, Away, Safe) redraws the page: keep what was typed into Settings and not yet saved.
     const typed = this._keepForm && this.tab === "settings" ? [...app.querySelectorAll('[id^="st-"]')].filter((e) => "value" in e || "checked" in e).map((e) => [e.id, e.type === "checkbox" ? e.checked : e.value]) : null;
@@ -275,6 +277,7 @@ ${esc(where)}</pre></div>`;
     if (typed) { const now = [...app.querySelectorAll('[id^="st-"]')]; for (const [id, v] of typed) { const e = now.find((x) => x.id === id); if (e) { if (e.type === "checkbox") e.checked = v; else e.value = v; } } }
     const mb = app.querySelector("ha-menu-button");
     if (mb) { mb.hass = this._hass; mb.narrow = this._narrow; }
+    if (this.tab === "flow") this._flowPatch();
   }
 
   _color(i) { return SERIES[i % SERIES.length]; }
@@ -320,6 +323,14 @@ ${esc(where)}</pre></div>`;
   async _call(msg, errTarget, wantResult) {
     try { const res = await this._hass.callWS(msg); return wantResult ? res : true; }
     catch (e) { (errTarget || ((m) => this._err(m)))(e.message || String(e)); return false; }
+  }
+
+  // A figure that opens a popup (role="button" on a card, not a real button) opens with Enter or Space too; Escape closes the
+  // history popup (only that one: the others may hold unsaved edits).
+  _key(e) {
+    if (e.key === "Escape" && this._modal && this.shadowRoot.querySelector(".modal.hist")) { e.preventDefault(); this._closeModal(); return; }
+    const t = e.target;
+    if ((e.key === "Enter" || e.key === " ") && t && t.getAttribute && t.getAttribute("role") === "button" && t.dataset.act) { e.preventDefault(); t.click(); }
   }
 
   async _click(e) {
@@ -575,6 +586,9 @@ ${esc(where)}</pre></div>`;
         return;
       }
       case "legend": return this._toggleSeries(t.dataset.chart, t.dataset.key);
+      case "hist": return this._histModal(t.dataset.k);
+      case "hist-range": return this._histRange(parseInt(t.dataset.h, 10));
+      case "hist-legend": return this._histToggle(t.dataset.key);
       case "flowdur":
         this._flowMinV = parseInt(t.dataset.m, 10);
         try { localStorage.setItem("homepower.flowMin", String(this._flowMinV)); } catch (e) { /* optional */ }

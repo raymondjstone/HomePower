@@ -612,7 +612,10 @@ class HomePowerManager(DetailsMixin, BackupMixin):
                 return reg.async_get_entity_id("sensor", DOMAIN, f"{eid}_{uid}")
 
             return {"battery_power": find("battery_power"), "grid_power": find("grid_power"),
-                    "devices": {d: {"soc": find(f"{d}_soc"), "power": find(f"{d}_power")} for d in self.devices}}
+                    "stored_energy": find("stored_energy"), "home_battery": find("home_battery"),
+                    "savings_today": find("savings_today"), "price_now": find("price_now"),
+                    "devices": {d: {"soc": find(f"{d}_soc"), "power": find(f"{d}_power"), "solar": find(f"{d}_solar")}
+                                for d in self.devices}}
         except Exception:  # noqa: BLE001
             _LOGGER.debug("entity id lookup failed", exc_info=True)
             return {}
