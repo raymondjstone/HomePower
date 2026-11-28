@@ -11,11 +11,11 @@ from .entity import HomePowerEntity
 
 PARALLEL_UPDATES = 1    # one change at a time
 
-# key (also the icon's name in icons.json), name, manager attribute, manager setter
+# translation key (its name is in strings.json, its icon in icons.json), manager attribute, manager setter
 SWITCHES = (
-    ("pause", "Pause control", "paused", "set_paused"),
-    ("backup", "Backup mode", "backup", "set_backup"),
-    ("away", "Away mode", "away", "set_away"),
+    ("pause", "paused", "set_paused"),
+    ("backup", "backup", "set_backup"),
+    ("away", "away", "set_away"),
 )
 
 
@@ -25,10 +25,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
 
 
 class HomePowerSwitch(HomePowerEntity, SwitchEntity):
-    def __init__(self, coord, entry, key, name, attr, setter) -> None:
+    def __init__(self, coord, entry, key, attr, setter) -> None:
         super().__init__(coord, entry)
         self._attr, self._setter = attr, setter
-        self._attr_name, self._attr_translation_key = name, key
+        self._attr_translation_key = key
         self._attr_unique_id = f"{entry.entry_id}_switch_{key}"
 
     @property

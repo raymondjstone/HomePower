@@ -183,7 +183,7 @@ async def main():
     coord._account_savings(dt_util.now(), {}, -1000.0, coord._rates(), {}, 2.0)
     assert abs(coord.meter.totals["money:export"] - before - 2.0 * 0.15) < 1e-9, coord.meter.totals
     from custom_components.homepower.sensor import MoneyTotal
-    m = MoneyTotal(coord, entry, "money:export", "Export earnings", "mdi:cash-plus")
+    m = MoneyTotal(coord, entry, "money:export", "export_earnings")
     assert m.native_value == round(coord.meter.totals["money:export"], 4) and m.native_unit_of_measurement == hass.config.currency
     assert m.state_class == "total" and m.device_class == "monetary"
     print("money    :", m.native_value, m.native_unit_of_measurement)

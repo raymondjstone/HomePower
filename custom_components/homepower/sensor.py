@@ -21,11 +21,10 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEntitiesCallback) -> None:
     coord: HomePowerCoordinator = entry.runtime_data.coordinator
     add([BatteryFlow(coord, entry), StoredEnergy(coord, entry), GridPower(coord, entry),
-         EnergyTotal(coord, entry, "grid_in", "Grid energy imported"), EnergyTotal(coord, entry, "grid_out", "Grid energy exported"),
-         EnergyTotal(coord, entry, "pv_in", "Solar energy"), Savings(coord, entry, "today"), Savings(coord, entry, "month"), PriceNow(coord, entry),
-         MoneyTotal(coord, entry, MONEY_EXPORT, "Export earnings", "export_earnings"), MoneyTotal(coord, entry, MONEY_SAVED, "Battery savings", "battery_savings"),
-         HomeBattery(coord, entry), DailyShare(coord, entry, "self_consumption", "Solar self-consumption today"),
-         DailyShare(coord, entry, "cheap_share", "Cheap-rate share of grid import today")])
+         EnergyTotal(coord, entry, "grid_in", "grid_energy_imported"), EnergyTotal(coord, entry, "grid_out", "grid_energy_exported"),
+         EnergyTotal(coord, entry, "pv_in", "solar_energy"), Savings(coord, entry, "today"), Savings(coord, entry, "month"), PriceNow(coord, entry),
+         MoneyTotal(coord, entry, MONEY_EXPORT, "export_earnings"), MoneyTotal(coord, entry, MONEY_SAVED, "battery_savings"),
+         HomeBattery(coord, entry), DailyShare(coord, entry, "self_consumption"), DailyShare(coord, entry, "cheap_share")])
     known: set[str] = set()
     names: dict[str, str] = {}              # each battery's name when its sensors were made, to follow a rename
 
@@ -53,8 +52,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
             ents += [BatterySoc(coord, entry, c.device_id, c.name), BatteryDevicePower(coord, entry, c.device_id, c.name),
                      BatterySolarPower(coord, entry, c.device_id, c.name),
                      BatteryTarget(coord, entry, c.device_id, c.name),
-                     EnergyTotal(coord, entry, f"bat:{c.device_id}_in", "energy charged", c.device_id),
-                     EnergyTotal(coord, entry, f"bat:{c.device_id}_out", "energy discharged", c.device_id),
+                     EnergyTotal(coord, entry, f"bat:{c.device_id}_in", "energy_charged", c.device_id),
+                     EnergyTotal(coord, entry, f"bat:{c.device_id}_out", "energy_discharged", c.device_id),
                      Efficiency(coord, entry, c.device_id, c.name), Cycles(coord, entry, c.device_id, c.name, c.caps.capacity_wh)]
             if c.extra.get("house_meter"):     # Anker X1: the inverter's own PV inputs
                 ents.append(PvTotal(coord, entry, c.device_id, c.name))
@@ -83,7 +82,7 @@ class _AnyBattery(_Base):
 class BatteryFlow(_AnyBattery):
     """Net power across all batteries: + charging, - discharging."""
 
-    _attr_name = "Battery power"
+    _attr_translation_key = "battery_power"
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
@@ -99,7 +98,7 @@ class BatteryFlow(_AnyBattery):
 
 
 class StoredEnergy(_AnyBattery):
-    _attr_name = "Stored energy"
+    _attr_translation_key = "stored_energy"
     _attr_device_class = SensorDeviceClass.ENERGY_STORAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
@@ -129,7 +128,6 @@ class BatteryTarget(_Base):
         super().__init__(coord, entry)
         self._did = device_id
         self._on_battery(device_id)
-        self._attr_name = "target"
         self._attr_unique_id = f"{entry.entry_id}_{device_id}_target"
 
     @property
@@ -154,7 +152,7 @@ class BatteryTarget(_Base):
 class GridPower(_Base):
     """House grid power as seen by the batteries / your grid sensor: + importing, - exporting."""
 
-    _attr_name = "Grid power"
+    _attr_translation_key = "grid_power"
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
@@ -170,11 +168,11 @@ class GridPower(_Base):
 
 
 class _BatteryBase(_Base):
-    def __init__(self, coord, entry, device_id: str, name: str, suffix: str, label: str) -> None:
+    def __init__(self, coord, entry, device_id: str, name: str, suffix: str, translation_key: str) -> None:
         super().__init__(coord, entry)
         self._did = device_id
         self._on_battery(device_id)
-        self._attr_name = label
+        self._attr_translation_key = translation_key      # the name is in strings.json (entity.sensor.<key>.name)
         self._attr_unique_id = f"{entry.entry_id}_{device_id}_{suffix}"
 
     def _actual(self):
@@ -213,7 +211,7 @@ class BatteryDevicePower(_LiveReading):
     _attr_native_unit_of_measurement = UnitOfPower.WATT
 
     def __init__(self, coord, entry, device_id: str, name: str) -> None:
-        super().__init__(coord, entry, device_id, name, "power", "power")
+        super().__init__(coord, entry, device_id, name, "power", "battery_device_power")
 
     @property
     def native_value(self):
@@ -230,10 +228,8 @@ class BatterySolarPower(_LiveReading):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_translation_key = "solar_power"
-
     def __init__(self, coord, entry, device_id: str, name: str) -> None:
-        super().__init__(coord, entry, device_id, name, "solar", "solar power")
+        super().__init__(coord, entry, device_id, name, "solar", "solar_power")
 
     @property
     def native_value(self):
@@ -249,7 +245,7 @@ class PvTotal(_LiveReading):
     _attr_native_unit_of_measurement = UnitOfPower.WATT
 
     def __init__(self, coord, entry, device_id: str, name: str) -> None:
-        super().__init__(coord, entry, device_id, name, "pv_total", "PV input power")
+        super().__init__(coord, entry, device_id, name, "pv_total", "pv_total")
 
     @property
     def native_value(self):
@@ -266,7 +262,8 @@ class PvString(_LiveReading):
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(self, coord, entry, device_id: str, name: str, index: int, kind: str) -> None:
-        super().__init__(coord, entry, device_id, name, f"pv{index + 1}_{kind}", f"PV{index + 1} {kind}")
+        super().__init__(coord, entry, device_id, name, f"pv{index + 1}_{kind}", f"pv_string_{kind}")
+        self._attr_translation_placeholders = {"index": str(index + 1)}
         self._i, self._kind = index, kind
         self._attr_device_class, self._attr_native_unit_of_measurement, self._digits = self._KINDS[kind]
         self._attr_entity_registry_enabled_default = index < 4
@@ -290,12 +287,12 @@ class EnergyTotal(_Base):
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coord, entry, key: str, name: str, device_id: str | None = None) -> None:
+    def __init__(self, coord, entry, key: str, translation_key: str, device_id: str | None = None) -> None:
         super().__init__(coord, entry)
         if device_id is not None:
             self._on_battery(device_id)
         self._key = key
-        self._attr_name = name
+        self._attr_translation_key = translation_key
         self._attr_unique_id = f"{entry.entry_id}_energy_{key.replace(':', '_')}"
 
     @property
@@ -306,13 +303,12 @@ class EnergyTotal(_Base):
 class Savings(_Base):
     """Estimated money saved (avoided import minus the cost of grid charging). See the README for how."""
 
-    _attr_translation_key = "savings"
     _attr_state_class = None
 
     def __init__(self, coord, entry, period: str) -> None:
         super().__init__(coord, entry)
         self._period = period
-        self._attr_name = f"Savings {'today' if period == 'today' else 'this month'}"
+        self._attr_translation_key = "savings_today" if period == "today" else "savings_month"
         self._attr_unique_id = f"{entry.entry_id}_savings_{period}"
 
     @property
@@ -337,10 +333,10 @@ class MoneyTotal(_Base):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coord, entry, key: str, name: str, translation_key: str) -> None:
+    def __init__(self, coord, entry, key: str, translation_key: str) -> None:
         super().__init__(coord, entry)
         self._key = key
-        self._attr_name, self._attr_translation_key = name, translation_key
+        self._attr_translation_key = translation_key
         self._attr_unique_id = f"{entry.entry_id}_{key.replace(':', '_')}_total"
 
     @property
@@ -353,7 +349,6 @@ class MoneyTotal(_Base):
 
 
 class PriceNow(_Base):
-    _attr_name = "Electricity price now"
     _attr_translation_key = "price_now"
 
     def __init__(self, coord, entry) -> None:
@@ -377,11 +372,10 @@ class Efficiency(_BatteryBase):
 
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_translation_key = "efficiency"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coord, entry, device_id: str, name: str) -> None:
-        super().__init__(coord, entry, device_id, name, "efficiency", "round-trip efficiency")
+        super().__init__(coord, entry, device_id, name, "efficiency", "efficiency")
 
     @property
     def native_value(self):
@@ -394,7 +388,6 @@ class Cycles(_BatteryBase):
     # TOTAL, not TOTAL_INCREASING: the count follows edits to the capacity, so it can step down, and Home Assistant would read
     # a step down as a meter reset and add the whole count to its statistics again.
     _attr_state_class = SensorStateClass.TOTAL
-    _attr_translation_key = "cycles"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_native_unit_of_measurement = "cycles"
 
@@ -411,7 +404,7 @@ class Cycles(_BatteryBase):
 class HomeBattery(_Base):
     """All batteries as one: charge level (state) plus totals in the attributes (the Lovelace card reads these)."""
 
-    _attr_name = "Home battery"
+    _attr_translation_key = "home_battery"
     _unrecorded_attributes = frozenset({MATCH_ALL})   # live figures for the card; the charge level itself is recorded
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -444,11 +437,10 @@ class DailyShare(_Base):
 
     _attr_device_class = None
     _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_translation_key = "daily_share"
-
-    def __init__(self, coord, entry, key: str, name: str) -> None:
+    def __init__(self, coord, entry, key: str) -> None:
         super().__init__(coord, entry)
-        self._key, self._attr_name = key, name
+        self._key = key
+        self._attr_translation_key = key
         self._attr_unique_id = f"{entry.entry_id}_{key}_today"
 
     @property

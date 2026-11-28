@@ -207,10 +207,10 @@ async def main():
     await switch.async_setup_entry(hass, entry, added.extend)
     for sw in added:
         await sw.async_turn_on()
-        assert sw.is_on, sw._attr_name
+        assert sw.is_on, sw.translation_key
         await sw.async_turn_off()
-        assert not sw.is_on, sw._attr_name
-    print("switches :", [sw._attr_name for sw in added])
+        assert not sw.is_on, sw.translation_key
+    print("switches :", [sw.translation_key for sw in added])
 
     # ---- Repairs: "test control" that passes, fails, and runs no steps
     for res, kind, reason in (({"ok": True, "steps": [{"name": "read", "ok": True}]}, "create_entry", None),

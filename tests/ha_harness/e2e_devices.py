@@ -42,6 +42,7 @@ async def main():
     platform = EntityPlatform(hass=hass, logger=logging.getLogger("t"), domain="sensor", platform_name="homepower", platform=None,
                               scan_interval=timedelta(seconds=30), entity_namespace=None)
     platform.config_entry = entry
+    _home.load_entity_names(platform, "sensor")
     made = []
     entry.runtime_data.coordinator = coord
     entry.async_on_unload = lambda f: None

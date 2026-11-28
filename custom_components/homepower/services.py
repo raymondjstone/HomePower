@@ -11,11 +11,22 @@ from .runtime import running_manager
 from .core.models import Desired, Mode
 
 
+def _error(key: str, message: str, **placeholders: str) -> ServiceValidationError:
+    """An action's error, translated from strings.json (exceptions.<key>) in the frontend. The English message is passed too, so
+    the log and anything reading str(err) get the same words without the translations having to be loaded."""
+    return ServiceValidationError(message, translation_domain=DOMAIN, translation_key=key, translation_placeholders=placeholders)
+
+
+def _unknown(ids, known) -> ServiceValidationError:
+    names, have = ", ".join(ids), ", ".join(sorted(known)) or "none"
+    return _error("unknown_battery", f"no battery called {names} (known: {have})", names=names, known=have)
+
+
 def _mgr(hass: HomeAssistant):
     """The running HomePower, or a clear error: an action called while HomePower is not loaded must not quietly do nothing."""
     m = running_manager(hass)
     if m is None or m.coordinator is None:
-        raise ServiceValidationError("HomePower is not loaded (it may still be starting, or be disabled)")
+        raise _error("not_loaded", "HomePower is not loaded (it may still be starting, or be disabled)")
     return m
 
 
@@ -52,7 +63,7 @@ def async_register(hass: HomeAssistant) -> None:
         try:
             m.coordinator.set_override(call.data.get("device_ids"), d, call.data["minutes"])
         except ValueError as err:          # e.g. a mistyped battery id: say so instead of doing nothing
-            raise ServiceValidationError(str(err)) from err
+            raise _error("override_refused", str(err), error=str(err)) from err
         await m.coordinator.async_request_refresh()
 
     async def clear_override(call: ServiceCall) -> None:
@@ -61,7 +72,7 @@ def async_register(hass: HomeAssistant) -> None:
             ids = call.data.get("device_ids")
             known = {a.config.device_id for a in m.coordinator.adapters}
             if ids and (unknown := sorted(set(ids) - known)):     # as for override: a mistyped id must not silently leave one forced
-                raise ServiceValidationError(f"no battery called {', '.join(unknown)} (known: {', '.join(sorted(known)) or 'none'})")
+                raise _unknown(unknown, known)
             m.coordinator.clear_override(ids)
             await m.coordinator.async_request_refresh()
 
@@ -78,7 +89,7 @@ def async_register(hass: HomeAssistant) -> None:
             try:
                 await m.apply_scene(call.data["name"])
             except ValueError as err:   # e.g. no scene with that name: a clear message, not a stack trace in the log
-                raise ServiceValidationError(str(err)) from err
+                raise _error("scene_refused", str(err), error=str(err)) from err
 
     async def test_control(call: ServiceCall):
         m = _mgr(hass)
@@ -86,7 +97,7 @@ def async_register(hass: HomeAssistant) -> None:
             return {"ok": False}
         known = {a.config.device_id for a in m.coordinator.adapters}
         if call.data["device_id"] not in known:     # the response is optional: an automation not reading it must still hear of a typo
-            raise ServiceValidationError(f"no battery called {call.data['device_id']} (known: {', '.join(sorted(known)) or 'none'})")
+            raise _unknown([call.data["device_id"]], known)
         return await m.coordinator.test_control(call.data["device_id"])
 
     hass.services.async_register(DOMAIN, "backup", admin(backup), schema=vol.Schema({vol.Required("enabled"): bool}))

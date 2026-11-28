@@ -4,11 +4,11 @@
       "battery_savings": {
         "default": "mdi:piggy-bank-outline"
       },
+      "cheap_share": {
+        "default": "mdi:percent"
+      },
       "cycles": {
         "default": "mdi:battery-sync"
-      },
-      "daily_share": {
-        "default": "mdi:percent"
       },
       "efficiency": {
         "default": "mdi:percent"
@@ -19,8 +19,14 @@
       "price_now": {
         "default": "mdi:cash-clock"
       },
-      "savings": {
+      "savings_month": {
         "default": "mdi:piggy-bank"
+      },
+      "savings_today": {
+        "default": "mdi:piggy-bank"
+      },
+      "self_consumption": {
+        "default": "mdi:percent"
       },
       "solar_power": {
         "default": "mdi:solar-power"

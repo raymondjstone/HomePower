@@ -394,5 +394,112 @@
         }
       }
     }
+  },
+  "entity": {
+    "sensor": {
+      "battery_power": {
+        "name": "Battery power"
+      },
+      "stored_energy": {
+        "name": "Stored energy"
+      },
+      "target": {
+        "name": "target"
+      },
+      "grid_power": {
+        "name": "Grid power"
+      },
+      "charge": {
+        "name": "charge"
+      },
+      "battery_device_power": {
+        "name": "power"
+      },
+      "solar_power": {
+        "name": "solar power"
+      },
+      "pv_total": {
+        "name": "PV input power"
+      },
+      "pv_string_voltage": {
+        "name": "PV{index} voltage"
+      },
+      "pv_string_current": {
+        "name": "PV{index} current"
+      },
+      "pv_string_power": {
+        "name": "PV{index} power"
+      },
+      "grid_energy_imported": {
+        "name": "Grid energy imported"
+      },
+      "grid_energy_exported": {
+        "name": "Grid energy exported"
+      },
+      "solar_energy": {
+        "name": "Solar energy"
+      },
+      "energy_charged": {
+        "name": "energy charged"
+      },
+      "energy_discharged": {
+        "name": "energy discharged"
+      },
+      "savings_today": {
+        "name": "Savings today"
+      },
+      "savings_month": {
+        "name": "Savings this month"
+      },
+      "export_earnings": {
+        "name": "Export earnings"
+      },
+      "battery_savings": {
+        "name": "Battery savings"
+      },
+      "price_now": {
+        "name": "Electricity price now"
+      },
+      "efficiency": {
+        "name": "round-trip efficiency"
+      },
+      "cycles": {
+        "name": "cycles"
+      },
+      "home_battery": {
+        "name": "Home battery"
+      },
+      "self_consumption": {
+        "name": "Solar self-consumption today"
+      },
+      "cheap_share": {
+        "name": "Cheap-rate share of grid import today"
+      }
+    },
+    "switch": {
+      "pause": {
+        "name": "Pause control"
+      },
+      "backup": {
+        "name": "Backup mode"
+      },
+      "away": {
+        "name": "Away mode"
+      }
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "HomePower is not loaded (it may still be starting, or be disabled)"
+    },
+    "unknown_battery": {
+      "message": "no battery called {names} (known: {known})"
+    },
+    "override_refused": {
+      "message": "The override was not set: {error}"
+    },
+    "scene_refused": {
+      "message": "The scene was not applied: {error}"
+    }
   }
 }

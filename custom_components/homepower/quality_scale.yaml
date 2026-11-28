@@ -54,19 +54,19 @@ rules:
     status: todo
     comment: "Batteries are found from the panel, not through Home Assistant discovery."
   discovery-update-info: todo
-  docs-data-update: todo
+  docs-data-update: done
   docs-examples: done
   docs-known-limitations: done
   docs-supported-devices: done
   docs-supported-functions: done
   docs-troubleshooting: done
-  docs-use-cases: todo
+  docs-use-cases: done
   dynamic-devices: done
   entity-category: done
   entity-device-class: done
   entity-disabled-by-default: done
-  entity-translations: todo
-  exception-translations: todo
+  entity-translations: done
+  exception-translations: done
   icon-translations: done
   reconfiguration-flow:
     status: exempt

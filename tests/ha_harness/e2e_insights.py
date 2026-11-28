@@ -48,7 +48,7 @@ async def main():
     # --- the new sensors
     hb = S.HomeBattery(coord, entry)
     assert hb.native_value == c["soc"] and hb.extra_state_attributes["homepower"] is True and hb.extra_state_attributes["batteries"][0]["name"] == "A"
-    assert S.DailyShare(coord, entry, "self_consumption", "x").native_value is None     # no solar yet: unknown, not 0
+    assert S.DailyShare(coord, entry, "self_consumption").native_value is None     # no solar yet: unknown, not 0
 
     # --- scenes: defaults exist, apply sets flags, a scene with limits changes settings
     assert {"Normal", "Holiday", "Storm coming", "Hands off"} <= set(mgr.scenes)

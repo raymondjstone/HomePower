@@ -14,6 +14,20 @@ from custom_components.homepower.manager import HomePowerManager
 from custom_components.homepower.coordinator import HomePowerCoordinator
 
 
+def load_entity_names(platform, domain: str) -> None:
+    """Give a hand-made EntityPlatform the entity names from translations/en.json, as Home Assistant's loader does for a real
+    one (it cannot find the integration here: the config folder is a temporary one). Entities are named from these, not from
+    the code, so without them every battery sensor would be called just "HomePower A"."""
+    import json
+
+    path = os.path.join(ROOT, "custom_components", "homepower", "translations", "en.json")
+    with open(path, encoding="utf-8") as f:
+        names = json.load(f)["entity"].get(domain, {})
+    flat = {f"component.homepower.entity.{domain}.{key}.name": v["name"] for key, v in names.items()}
+    target = getattr(platform, "platform_data", None) or platform      # where the release in use keeps them
+    target.platform_translations = target.object_id_platform_translations = flat
+
+
 def new_entry(options=None):
     return ConfigEntry(data={}, disabled_by=None, discovery_keys={}, domain="homepower", entry_id="e1", minor_version=1,
                        options=options or {}, pref_disable_new_entities=False, pref_disable_polling=False, source="user",

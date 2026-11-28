@@ -8,8 +8,8 @@ sidebar panel, and schedules and optimises how they charge and discharge.
 
 [![Watch the HomePower promo video on YouTube](https://img.youtube.com/vi/qVNSPHF0my8/maxresdefault.jpg)](https://www.youtube.com/watch?v=qVNSPHF0my8)
 
-**Contents:** [Install](#install) · [Screenshots](#screenshots) · [Supported batteries](#supported-batteries) · [Getting started](#getting-started) ·
-[How HomePower decides](#how-homepower-decides) · [Schedules](#schedules) · [Goals](#goals) ·
+**Contents:** [Install](#install) · [Screenshots](#screenshots) · [Use cases](#use-cases) · [Supported batteries](#supported-batteries) · [Getting started](#getting-started) ·
+[How data is updated](#how-data-is-updated) · [How HomePower decides](#how-homepower-decides) · [Schedules](#schedules) · [Goals](#goals) ·
 [Tariff and prices](#tariff-and-prices) · [Grid reading](#grid-reading) · [Solar](#solar) ·
 [Limits and protection](#limits-and-protection) · [Taking and handing back control](#taking-and-handing-back-control) ·
 [Modes, scenes and overrides](#modes-scenes-and-overrides) ·
@@ -74,6 +74,31 @@ Savings, battery health and plan against actual.
 
 ![The Insights tab: savings, battery health and plan against actual](https://raw.githubusercontent.com/raymondjstone/HomePower/develop/docs/images/insights.png)
 
+## Use cases
+
+What people set HomePower up to do, and where each is described:
+
+- **Charge on a cheap night rate, run the house on it by day** (Octopus Go, Intelligent, Cosy, Economy 7 and the like):
+  enter the cheap-rate hours, add a goal such as "90 % by 07:00", and HomePower charges in the cheapest half-hours before
+  then. See [Goals](#goals) and [Tariff and prices](#tariff-and-prices).
+- **Follow a dynamic tariff** (Octopus Agile, Nord Pool): HomePower reads the price entity and charges in the cheapest
+  slots before a goal's deadline. See [Tariff and prices](#tariff-and-prices).
+- **Use more of your own solar:** charge from surplus only, leave room in the battery for tomorrow's forecast, and switch
+  on a load such as an immersion heater once the battery is full. See [Solar](#solar).
+- **Sell at the best price:** export stored energy only in the best-paid half-hours, down to a level you choose. See
+  [Paid export](#paid-export).
+- **Take part in saving sessions** (Octopus Saving Sessions or similar, from a binary sensor, calendar or event entity): charge beforehand, then run the
+  house and export through the event. See [Grid events](#grid-events-saving-sessions).
+- **Keep power for a storm or outage:** backup mode keeps a reserve, by hand or while an entity (a weather alert) is on.
+  See [Modes, scenes and overrides](#modes-scenes-and-overrides).
+- **Never import, or never export past a limit:** one battery follows the grid meter to hold import at 0 W, and the
+  import / export limits cap the house. See [Limits and protection](#limits-and-protection).
+- **Manage batteries from two makers as one:** an Anker and an EcoFlow side by side, sharing one plan and one set of
+  limits, shown as one home battery. See [Several batteries](#several-batteries).
+- **See what the batteries earn:** savings, export earnings and round-trip efficiency, as sensors for the Energy
+  dashboard. See [Entities, services and card](#entities-services-and-card) and [How savings are estimated](#how-savings-are-estimated).
+- **Just watch:** a new battery is monitor-only, so HomePower can be used purely as a dashboard without sending a single command.
+
 ## Supported batteries
 
 | Battery | How HomePower connects | Modes |
@@ -124,6 +149,24 @@ The four modes mean: **Auto** = the battery runs its own logic; **Charge** / **D
 The **Setup check** (on Overview until everything is done, always on Diagnostics) lists each of these with a *Fix* or
 *Test now* button: batteries reporting, control allowed and tested, prices known, cheap-rate hours confirmed, grid reading
 available and live.
+
+## How data is updated
+
+HomePower polls: the batteries do not push their readings to Home Assistant (the one exception is EcoFlow's opt-in live feed, below).
+
+| What | How often |
+|---|---|
+| Every battery's readings, the decision, and any command | Every **10 seconds**, all batteries in one cycle. A command is sent only when the battery is not already doing it, then read back to confirm. |
+| Anker X1 extras | PV string voltages and currents every 15 s; temperature every minute; pack voltages every 5 minutes; software version every 6 hours |
+| EcoFlow (developer API) | Every **30 seconds** through EcoFlow's cloud (the cycles in between use the last reading). With the opt-in [live feed](#settings-reference) on, readings arrive over EcoFlow's MQTT feed within seconds instead; if it cannot connect, the 30-second polling carries on and the feed is tried again every 10 minutes. After a rate limit or a refused request EcoFlow is left alone for 5 minutes. |
+| EcoFlow (local Modbus) | Every 10 seconds, like Anker |
+| Grid reading, price, solar forecast, weather and other entities you chose | Read from Home Assistant's own state each cycle, so they are as fresh as the integration behind them. A grid reading older than 5 minutes is not steered by. |
+| Cheap-rate hours learned from a price sensor's history | Re-checked every 6 hours |
+| Energy, money and plan history | Saved every 5 minutes, and at shutdown |
+
+When a battery stops answering, its last readings are shown as **stale**, and after the *offline after* setting (5 minutes
+by default) it is shown **offline** and its sensors become unavailable. A battery the network reports as not there at all is
+shown offline straight away. Its readings come back as soon as it answers again; nothing has to be reloaded.
 
 ## How HomePower decides
 
