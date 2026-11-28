@@ -77,9 +77,9 @@ rules:
   stale-devices: done
   # Platinum
   async-dependency:
-    status: todo
-    comment: "paho-mqtt runs its own thread."
+    status: done
+    comment: "The EcoFlow live feed uses aiomqtt, on Home Assistant's event loop; the rest talks through aiohttp and HomePower's own asyncio Modbus client."
   inject-websession: done
   strict-typing:
     status: done
-    comment: "mypy --strict over the whole integration (settings in pyproject.toml), checked in CI. paho-mqtt ships its own types."
+    comment: "mypy --strict over the whole integration (settings in pyproject.toml), checked in CI. aiomqtt ships its own types."

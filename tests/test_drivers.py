@@ -872,70 +872,6 @@ def test_a_failed_ecoflow_hand_back_keeps_the_users_original_reserve_for_the_ret
     asyncio.run(go())
 
 
-def test_live_connection_finishing_after_stop_is_closed_not_kept():
-    import types
-    from hp.drivers.ecoflow_live import EcoFlowLive
-
-    class FakeClient:
-        def __init__(self, *a, **k):
-            self.calls = []
-
-        def __getattr__(self, name):
-            return lambda *a, **k: self.calls.append(name)
-
-    made = []
-
-    def client_factory(*a, **k):
-        made.append(FakeClient())
-        return made[-1]
-    mqtt = types.SimpleNamespace(Client=client_factory, CallbackAPIVersion=types.SimpleNamespace(VERSION2=2))
-    cert = {"certificateAccount": "acc", "certificatePassword": "pw", "url": "x", "port": 8883}
-    live = EcoFlowLive(None, None)
-    live._connect(mqtt, cert, live._gen)                     # a normal connection is kept
-    assert live._client is made[0] and "loop_start" in made[0].calls
-    live.stop()
-    assert live._client is None and "disconnect" in made[0].calls
-    gen_then = live._gen - 1                                 # a connection that started before the stop and finishes after it
-    live._connect(mqtt, cert, gen_then)
-    assert live._client is None and "disconnect" in made[1].calls and "loop_stop" in made[1].calls
-
-
-def test_stopping_live_updates_never_blocks_the_event_loop():
-    import threading
-    import types
-    from hp.drivers.ecoflow_live import EcoFlowLive
-
-    release = threading.Event()
-
-    class SlowClient:                                         # loop_stop() waits for the network thread, which may be stuck
-        def __init__(self, *a, **k):
-            self.calls = []
-
-        def loop_stop(self):
-            release.wait(5)
-            self.calls.append("loop_stop")
-
-        def __getattr__(self, name):
-            return lambda *a, **k: self.calls.append(name)
-
-    async def go():
-        made = []
-        mqtt = types.SimpleNamespace(Client=lambda *a, **k: made.append(SlowClient()) or made[-1],
-                                     CallbackAPIVersion=types.SimpleNamespace(VERSION2=2))
-        live = EcoFlowLive(None, asyncio.get_running_loop())
-        live._connect(mqtt, {"certificateAccount": "a", "certificatePassword": "p", "url": "x", "port": 8883}, live._gen)
-        live.stop()                                           # returns at once, with the slow part handed off
-        assert live._client is None and "loop_stop" not in made[0].calls
-        release.set()
-        for _ in range(100):
-            if "loop_stop" in made[0].calls:
-                break
-            await asyncio.sleep(0.02)
-        c = made[0].calls
-        assert c.index("disconnect") < c.index("loop_stop")      # disconnect while the loop can still send it
-    asyncio.run(go())
-
-
 def test_ecoflow_retry_never_overwrites_the_users_own_reserve():
     async def go():
         d = eco({"cmsBattSoc": 0.0, "soc": 31, "powGetBpCms": 0.0, "backupReverseSoc": 30, "powGetSysGrid": 0})
@@ -1713,45 +1649,6 @@ def test_one_odd_device_never_stops_the_network_scan(monkeypatch):
         return await discovery.scan(["10.0.0.1", "10.0.0.2", "10.0.0.3"])
     found = asyncio.run(go())
     assert {f["host"] for f in found} == {"10.0.0.1", "10.0.0.3"}       # the odd one is skipped, the others are still found
-
-
-def test_live_messages_after_stop_or_with_the_loop_closed_are_dropped_quietly():
-    import types
-    from hp.drivers.ecoflow_live import EcoFlowLive
-
-    class FakeClient:
-        def __getattr__(self, name):
-            return lambda *a, **k: None
-
-    class Loop:
-        def __init__(self):
-            self.sent, self.closed = [], False
-
-        def call_soon_threadsafe(self, *a):
-            if self.closed:
-                raise RuntimeError("Event loop is closed")
-            self.sent.append(a)
-
-        def is_closed(self):
-            return self.closed
-
-        def run_in_executor(self, _ex, fn, *a):
-            fn(*a)
-    made = []
-    mqtt = types.SimpleNamespace(Client=lambda *a, **k: made.append(FakeClient()) or made[-1],
-                                 CallbackAPIVersion=types.SimpleNamespace(VERSION2=2))
-    live = EcoFlowLive(None, None)
-    live.loop = Loop()
-    live._connect(mqtt, {"certificateAccount": "acc", "certificatePassword": "pw", "url": "x", "port": 8883}, live._gen)
-    msg = types.SimpleNamespace(topic="/open/acc/SN1/quota", payload=b"{}")
-    made[0].on_message(None, None, msg)
-    assert len(live.loop.sent) == 1                       # delivered while running
-    live.loop.closed = True
-    made[0].on_message(None, None, msg)                   # Home Assistant stopping: no error raised in paho's thread
-    live.loop.closed = False
-    live.stop()
-    made[0].on_message(None, None, msg)                   # stopped: a late message is not delivered to the old drivers
-    assert len(live.loop.sent) == 1
 
 
 def test_a_generic_set_point_that_does_not_fit_is_refused_not_wrapped_round():

@@ -9,6 +9,7 @@ import pytest
 from hp.adapters.direct import DirectAdapter
 from hp.drivers import discovery
 from hp.drivers.ecoflow import EcoFlowError, EcoFlowStreamDriver
+from hp.drivers import ecoflow_live
 from hp.drivers.ecoflow_live import RETRY_AFTER_S, EcoFlowLive
 from hp.drivers.modbus import ModbusError
 
@@ -18,81 +19,158 @@ from core.modbus_map import MapError, parse_map
 from core.models import Actual, Capabilities, Desired, DeviceConfig, Mode
 
 
+class MqttError(Exception):
+    pass
+
+
 class Client:
-    """Stands in for paho's client: records what is asked of it."""
+    """Stands in for aiomqtt's client: records what is asked of it; the test feeds it messages or drops the connection."""
 
-    def __init__(self, **kw):
+    refuse = 0                                    # connections still to refuse (broker down, wrong password...)
+
+    def __init__(self, hostname, port, **kw):
+        self.hostname, self.port, self.kw = hostname, port, kw
         self.subs, self.calls = [], []
+        self.inbox = asyncio.Queue()
 
-    def __getattr__(self, name):                  # username_pw_set, tls_set, connect_async, loop_start, disconnect...
-        return lambda *a, **kw: self.calls.append(name)
+    async def __aenter__(self):
+        if Client.refuse:
+            Client.refuse -= 1
+            raise MqttError("refused")
+        self.calls.append("connect")
+        return self
 
-    def subscribe(self, topics):
+    async def _exit(self, *exc):
+        self.calls.append("disconnect")
+
+    async def __aexit__(self, *exc):
+        await self._exit(*exc)
+
+    async def subscribe(self, topics):
         self.subs += [t for t, _ in topics]
 
+    @property
+    def messages(self):
+        return self._messages()
 
-def mqtt(made):
-    def client(**kw):
-        made.append(Client())
+    async def _messages(self):
+        while True:
+            item = await self.inbox.get()
+            if item is None:                       # the broker dropped the connection
+                raise MqttError("connection lost")
+            yield types.SimpleNamespace(topic=item[0], payload=item[1])
+
+
+def aiomqtt(made):
+    def client(*a, **kw):
+        made.append(Client(*a, **kw))
         return made[-1]
-    return types.SimpleNamespace(Client=client, CallbackAPIVersion=types.SimpleNamespace(VERSION2=2))
+    return types.SimpleNamespace(Client=client, MqttError=MqttError)
 
 
 class Api:
     def __init__(self, error=None):
         self.error = error
+        self.gate = None                           # an Event: certification() waits for it
 
     async def certification(self):
+        if self.gate is not None:
+            await self.gate.wait()
         if self.error:
             raise self.error
         return {"certificateAccount": "acct", "certificatePassword": "pw", "url": "broker", "port": "8883"}
 
 
 def install(monkeypatch, module):
-    paho, sub = types.ModuleType("paho"), types.ModuleType("paho.mqtt")
-    paho.mqtt, sub.client = sub, module
-    for name, mod in (("paho", paho), ("paho.mqtt", sub), ("paho.mqtt.client", module)):
-        monkeypatch.setitem(sys.modules, name, mod)
+    Client.refuse = 0
+    monkeypatch.setitem(sys.modules, "aiomqtt", module)
+
+
+async def settle(cond, tries=300):
+    for _ in range(tries):
+        if cond():
+            return True
+        await asyncio.sleep(0.01)
+    return cond()
 
 
 def test_live_feed_connects_subscribes_delivers_and_stops(monkeypatch):
     made, got = [], []
-    install(monkeypatch, mqtt(made))
+    install(monkeypatch, aiomqtt(made))
 
     async def run():
-        loop = asyncio.get_running_loop()
-        live = EcoFlowLive(Api(), loop)
+        live = EcoFlowLive(Api(), asyncio.get_running_loop())
         live.register("SN1", got.append)
         assert live._task is None                                   # off until switched on
         live.enabled = True
         live.ensure()
-        await live._task
+        assert await settle(lambda: live.connected)
         c = made[0]
-        assert live.error is None and live._client is c and "loop_start" in c.calls
-        c.on_connect(c, None, None, 0)
-        assert live.connected and "/open/acct/SN1/quota" in c.subs
+        assert (c.hostname, c.port, c.kw["username"], c.kw["password"]) == ("broker", 8883, "acct", "pw")
+        assert c.kw["tls_context"] is not None and live.error is None and live._client is c
+        assert await settle(lambda: {"/open/acct/SN1/quota", "/open/acct/SN1/status"} <= set(c.subs))
         live.register("SN2", got.append)                            # added while connected: subscribed at once
-        assert "/open/acct/SN2/status" in c.subs
-        c.on_message(None, None, types.SimpleNamespace(topic="/open/acct/SN1/quota", payload=json.dumps({"params": {"soc": 50}})))
-        c.on_message(None, None, types.SimpleNamespace(topic="/open/acct/SN1/quota", payload=b"not json"))
-        c.on_message(None, None, types.SimpleNamespace(topic="/open/acct/SN1/status", payload=b"{}"))
-        await asyncio.sleep(0.05)
-        assert live.messages == 1 and got[0]["soc"] == 50
-        c.on_disconnect()
-        assert not live.connected
+        assert await settle(lambda: "/open/acct/SN2/status" in c.subs)
+        for item in (("/open/acct/SN1/quota", json.dumps({"params": {"soc": 50}})), ("/open/acct/SN1/quota", b"not json"),
+                     ("/open/acct/SN1/status", b"{}"), ("/open/acct/OTHER/quota", b'{"params": {"soc": 1}}')):
+            c.inbox.put_nowait(item)
+        assert await settle(lambda: c.inbox.empty())
+        await asyncio.sleep(0.02)
+        assert live.messages == 1 and got == [{"soc": 50}]
         live.unregister("SN1", lambda f: None)                      # not its owner: ignored
         assert "SN1" in live._devs
         live.unregister("SN1")
         live.unregister("SN2")                                      # the last one: stops
-        assert live._client is None
+        assert live._client is None and not live.connected and live._task is None
+        assert await settle(lambda: "disconnect" in c.calls)        # it said goodbye to the broker
+        c.inbox.put_nowait(("/open/acct/SN1/quota", b'{"params": {"soc": 9}}'))
         await asyncio.sleep(0.05)
-        assert "disconnect" in c.calls and "loop_stop" in c.calls
+        assert got == [{"soc": 50}]                                 # nothing reaches the drivers after a stop
+
+    asyncio.run(run())
+
+
+def test_live_feed_reconnects_with_a_growing_wait(monkeypatch):
+    made, waits = [], []
+    install(monkeypatch, aiomqtt(made))
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(s, *a):
+        waits.append(s)
+        await real_sleep(0)
+    monkeypatch.setattr(ecoflow_live.asyncio, "sleep", fake_sleep)
+
+    async def run():
+        live = EcoFlowLive(Api(), asyncio.get_running_loop())
+        live.enabled = True
+        Client.refuse = 6                                            # the broker refuses six times in a row
+        live.register("SN1", print)
+        for _ in range(500):
+            if live.connected:
+                break
+            await real_sleep(0.005)
+        assert live.connected
+        assert waits[:6] == [5.0, 10.0, 20.0, 40.0, 80.0, 120.0]       # doubling, up to two minutes
+        assert len(made) == 7 and live.error is None
+        made[-1].inbox.put_nowait(None)                              # the connection drops
+        for _ in range(500):
+            if len(made) == 8 and live.connected:
+                break
+            await real_sleep(0.005)
+        assert len(made) == 8 and live.connected
+        assert waits[-1] == 5.0                                      # a connection that worked starts the wait again from 5 s
+        for _ in range(500):
+            if "/open/acct/SN1/quota" in made[-1].subs:
+                break
+            await real_sleep(0.005)
+        assert "/open/acct/SN1/quota" in made[-1].subs               # subscribed again after the reconnect
+        live.stop()
 
     asyncio.run(run())
 
 
 def test_live_feed_failure_is_reported_and_retried_later(monkeypatch):
-    install(monkeypatch, mqtt([]))
+    install(monkeypatch, aiomqtt([]))
 
     async def run():
         live = EcoFlowLive(Api(RuntimeError("refused")), asyncio.get_running_loop())
@@ -103,29 +181,53 @@ def test_live_feed_failure_is_reported_and_retried_later(monkeypatch):
         first = live._task
         live.ensure()
         assert live._task is first                                  # not again until the wait is over
-        monkeypatch.setitem(sys.modules, "paho.mqtt.client", None)  # the import fails: polling only
-        monkeypatch.setitem(sys.modules, "paho", None)
+        monkeypatch.setitem(sys.modules, "aiomqtt", None)           # the import fails: polling only
         live._next_try, live._task = 0.0, None
-        await live._start()
+        await live._run()
         assert "not installed" in live.error
 
     asyncio.run(run())
 
 
-def test_a_connection_finishing_after_a_stop_is_closed(monkeypatch):
+def test_stopping_while_connecting_keeps_nothing_and_never_raises(monkeypatch):
     made = []
+    install(monkeypatch, aiomqtt(made))
 
     async def run():
-        live = EcoFlowLive(Api(), asyncio.get_running_loop())
-        live._connect(mqtt(made), await Api().certification(), gen=live._gen - 1)
-        assert live._client is None and "disconnect" in made[0].calls
+        api = Api()
+        api.gate = asyncio.Event()
+        live = EcoFlowLive(api, asyncio.get_running_loop())
+        live.enabled = True
+        live.register("SN1", print)
+        await asyncio.sleep(0.02)                                   # waiting for EcoFlow's certificate
+        task = live._task
+        live.stop()                                                 # unload, or live updates switched off, meanwhile
+        api.gate.set()
+        await asyncio.sleep(0.05)
+        assert task.cancelled() and made == [] and live._client is None
 
     asyncio.run(run())
-    loopless = EcoFlowLive(Api(), None)
-    loopless._client = Client()
-    kept = loopless._client
-    loopless.stop()                                                 # at shutdown, with no loop left: closed where it is
-    assert "disconnect" in kept.calls
+
+    class Task:
+        def done(self):
+            return False
+
+        def cancel(self):
+            raise RuntimeError("Event loop is closed")
+
+        def add_done_callback(self, fn):
+            pass
+
+    class ClosedLoop:                                               # Home Assistant stopping: the loop is gone
+        def create_task(self, coro):
+            coro.close()
+            return Task()
+
+    live = EcoFlowLive(Api(), ClosedLoop())
+    live.enabled = True
+    live.register("SN1", print)
+    live.stop()                                                     # quietly does nothing
+    assert live._task is None
 
 
 def test_scan_never_goes_outside_a_private_network_and_survives_anything(monkeypatch):
@@ -238,3 +340,59 @@ def test_ecoflow_refusing_the_keys_is_noticed_and_forgotten_once_they_work():
     assert asyncio.run(drv.read()).online and not drv.auth_failed
     drv.api.code, drv._cache = "500", None
     assert not asyncio.run(drv.read()).online and not drv.auth_failed      # an ordinary failure is not about the keys
+
+
+def test_an_old_connection_closing_late_never_hides_the_new_one(monkeypatch):
+    made = []
+    install(monkeypatch, aiomqtt(made))
+
+    async def run():
+        live = EcoFlowLive(Api(), asyncio.get_running_loop())
+        live.enabled = True
+        live.register("SN1", print)
+        assert await settle(lambda: live.connected)
+        old = made[0]
+        slow = asyncio.Event()
+
+        async def slow_exit(*exc):                   # saying goodbye to a broker that is slow to answer
+            await slow.wait()
+            old.calls.append("disconnect")
+        old._exit = slow_exit
+        closing = live._task
+        live.stop()
+        await asyncio.sleep(0.02)
+        assert closing in live._extra and not closing.done()  # held while it closes, so asyncio cannot drop it half way
+        live.ensure()                                 # switched back on while the old one is still closing
+        assert await settle(lambda: live.connected and len(made) == 2)
+        slow.set()
+        assert await settle(lambda: "disconnect" in old.calls)
+        await asyncio.sleep(0.02)
+        assert closing.done() and closing not in live._extra
+        assert live.connected and live._client is made[1]       # the new connection is still the one in use
+        live.stop()
+
+    asyncio.run(run())
+
+
+def test_a_stopped_connection_never_comes_back_even_if_closing_fails(monkeypatch):
+    made = []
+    install(monkeypatch, aiomqtt(made))
+
+    async def run():
+        live = EcoFlowLive(Api(), asyncio.get_running_loop())
+        live.enabled = True
+        live.register("SN1", print)
+        assert await settle(lambda: live.connected)
+
+        async def failing_exit(*exc):                 # the broker drops us while we say goodbye: aiomqtt raises instead
+            made[0].calls.append("disconnect")
+            raise MqttError("lost while disconnecting")
+        made[0]._exit = failing_exit
+        closing = live._task
+        live.stop()
+        assert await settle(lambda: closing.done())
+        await asyncio.sleep(0.05)
+        assert len(made) == 1 and live._task is None and not live.connected      # stays stopped: no second connection
+        assert live.error is None                                                 # and no made-up problem shown
+
+    asyncio.run(run())

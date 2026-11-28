@@ -233,8 +233,8 @@ p.live.alerts = [];
 {
   p.live = { ...p.live, ecoflow_live: { on: true, connected: true, messages: 42, problem: null } };
   must("settings: a connected live feed says so", p._settingsView().includes("connected, 42 updates received"));
-  p.live = { ...p.live, ecoflow_live: { on: true, connected: false, messages: 0, problem: "paho-mqtt is not installed: using polling only" } };
-  must("settings: a live feed that is not working says why", p._settingsView().includes("not connected (paho-mqtt is not installed: using polling only)"));
+  p.live = { ...p.live, ecoflow_live: { on: true, connected: false, messages: 0, problem: "aiomqtt is not installed: using polling only" } };
+  must("settings: a live feed that is not working says why", p._settingsView().includes("not connected (aiomqtt is not installed: using polling only)"));
   p.live = { ...p.live, ecoflow_live: { on: false, connected: false, messages: 0, problem: null } };
   must("settings: nothing said while the live feed is off", !p._settingsView().includes("Right now:"));
 }

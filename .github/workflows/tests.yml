@@ -43,7 +43,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install "${{ matrix.homeassistant }}" pytest paho-mqtt
+      - run: python -m pip install "${{ matrix.homeassistant }}" pytest aiomqtt
       # e2e_solar_forecast.py loads Home Assistant's real Forecast.Solar integration: install the library version that
       # release's own manifest asks for (read without importing the integration, which needs it)
       - run: |
@@ -62,7 +62,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - run: python -m pip install "homeassistant==2026.2.3" paho-mqtt "mypy==2.4.1"
+      - run: python -m pip install "homeassistant==2026.2.3" aiomqtt "mypy==2.4.1"
       - run: python -m mypy
 
   # How much of the integration the unit tests and the real-Home-Assistant checks run between them. Reported, not enforced.
@@ -74,7 +74,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.14"
-      - run: python -m pip install homeassistant pytest paho-mqtt pillow pyyaml coverage
+      - run: python -m pip install homeassistant pytest aiomqtt pillow pyyaml coverage
       - run: |
           req=$(python -c "import importlib.util, json, os; d = os.path.dirname(importlib.util.find_spec('homeassistant').origin); print(' '.join(json.load(open(os.path.join(d, 'components', 'forecast_solar', 'manifest.json')))['requirements']))")
           python -m pip install $req
@@ -98,7 +98,7 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
-      - run: python -m pip install homeassistant pytest paho-mqtt   # (the payload script uses the tests' shared setup, which needs pytest)
+      - run: python -m pip install homeassistant pytest aiomqtt   # (the payload script uses the tests' shared setup, which needs pytest)
       - run: python tests/ha_harness/dump_panel_payload.py tests/panel_dom/payload.json
       - run: npm install --no-save --prefix tests/panel_dom jsdom@29.1.1
       - name: Panel tests

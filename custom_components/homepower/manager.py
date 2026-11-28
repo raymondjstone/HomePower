@@ -207,7 +207,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
 
     def live_status(self) -> dict[str, Any] | None:
         """The EcoFlow live feed, for Settings and Diagnostics: on or off, connected, how many updates came, and why it is
-        not working when it is not (paho-mqtt missing, refused...). None when no EcoFlow battery uses it."""
+        not working when it is not (aiomqtt missing, refused...). None when no EcoFlow battery uses it."""
         hubs = list(self._hubs.values())
         if not hubs:
             return None
