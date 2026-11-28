@@ -32,6 +32,11 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .tile .lbl{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--secondary-text-color)}
 .tile .val{font-size:28px;font-weight:600;margin:4px 0}
 .tile .sub{font-size:12px;color:var(--secondary-text-color)}
+.g-over{grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}
+.g-over .tile{text-align:center;padding:14px 8px}.g-over .tile>ha-icon{--mdc-icon-size:30px}
+.g-over .tile .lbl{font-size:11px;margin-top:6px}.g-over .tile .val{font-size:22px}.g-over .tile .val small{font-size:13px;font-weight:500}
+.strip{display:flex;gap:12px;align-items:center;margin:0 0 16px;padding:10px 14px;border-radius:12px;font-size:14px;border:1px solid var(--hp-auto);background:color-mix(in srgb,var(--hp-auto) 10%,var(--card-background-color))}
+.strip>ha-icon{color:var(--hp-auto);--mdc-icon-size:28px;flex:none}
 .bat{display:flex;gap:14px;align-items:center}
 .bat .info{flex:1;min-width:0}
 .bat .nm{font-weight:600;font-size:16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -53,9 +58,12 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .plot-x span{position:absolute;transform:translateX(-50%);font-size:11px;color:var(--secondary-text-color);white-space:nowrap}
 .plot-x span:first-child{transform:none}.plot-x span:last-child{transform:translateX(-100%)}
 .durs{display:inline-flex;gap:4px;flex-wrap:wrap;margin-left:12px;vertical-align:middle}
-.hb{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center}
-.hb .nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px 18px}
-.hb .nums b{display:block;font-size:20px;font-weight:600}.hb .nums span{font-size:12px;color:var(--secondary-text-color)}
+.hb{display:grid;grid-template-columns:auto auto 1fr;gap:22px;align-items:center}
+.hb b{font-size:20px;font-weight:600}.hb span{font-size:12px;color:var(--secondary-text-color)}
+.hb .held{display:grid;gap:8px}
+.hb .nums{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));row-gap:12px}
+.hb .fig{display:flex;flex-direction:column;align-items:center;text-align:center;gap:2px;padding:0 8px;border-left:1px solid var(--divider-color)}
+.hb .fig ha-icon{--mdc-icon-size:28px}
 .banner{display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:var(--card-background-color);border:1px solid var(--warning-color,#b45309);border-left-width:5px;border-radius:12px;padding:12px 16px;margin-bottom:16px}
 .banner .t{flex:1;min-width:200px}
 .scenes{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -64,7 +72,7 @@ main{padding:16px;max-width:1200px;margin:0 auto}
 .chk{display:grid;gap:6px}.chk .it{display:grid;grid-template-columns:24px 1fr auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--divider-color)}
 .chk .it:last-child{border-bottom:0}.chk .ok{color:var(--hp-ok)}.chk .no{color:var(--hp-warn)}.chk small{display:block;color:var(--secondary-text-color)}
 @media(max-width:700px){header{flex-wrap:wrap;padding:10px 12px;gap:8px}header h1{flex-basis:100%;order:-1;font-size:18px}header .btn{padding:6px 10px;font-size:12px}
- main{padding:10px}.hb{grid-template-columns:1fr;justify-items:center;text-align:center}.plot-y{width:46px}.card{padding:14px}nav button{padding:12px 10px}.durs{margin-left:0;margin-top:6px;display:flex}}
+ main{padding:10px}.hb{grid-template-columns:1fr;justify-items:center;text-align:center}.hb .nums{align-self:stretch;justify-self:stretch}.plot-y{width:46px}.card{padding:14px}nav button{padding:12px 10px}.durs{margin-left:0;margin-top:6px;display:flex}}
 .tl{margin:8px 0 14px}
 .tl .row{display:grid;grid-template-columns:130px 1fr;gap:10px;align-items:center;margin:8px 0}
 .tl .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
