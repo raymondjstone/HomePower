@@ -68,3 +68,12 @@ def test_anker_model_choice_and_names():
     assert discovered_name("ecoflow", "STREAM AC 5000", "ES21ABC123") == "STREAM AC 5000 C123"
     assert discovered_name("anker", None, None) == "Anker battery"
     assert norm_serial("  ") is None and norm_serial(" ab1 ") == "AB1"
+
+
+def test_new_device_id_never_overwrites_and_is_always_valid():
+    from hp.core.found import new_device_id
+    assert new_device_id("Garage Battery", {}) == "garage_battery"
+    assert new_device_id("Garage Battery", {"garage_battery": {}, "garage_battery_2": {}}) == "garage_battery_3"
+    assert new_device_id("  ***  ", {}) == "battery"            # nothing usable in the name
+    assert new_device_id(None, {"battery": {}}) == "battery_2"
+    assert len(new_device_id("x" * 200, {})) <= 96               # the id limit save_device checks

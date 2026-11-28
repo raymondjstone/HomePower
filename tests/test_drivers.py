@@ -470,7 +470,7 @@ def test_map_validation():
             parse_map(bad)
     with pytest.raises(MapError):
         parse_map("{not json")
-    assert parse_map(json_dump := __import__("json").dumps(ANKER_AS_MAP))["soc"]["addrs"] == [10014]
+    assert parse_map(__import__("json").dumps(ANKER_AS_MAP))["soc"]["addrs"] == [10014]
 
 
 def test_generic_driver_reads_and_controls_through_the_map():
@@ -603,7 +603,6 @@ def test_ecoflow_ac5000_style_readings_decode_and_stay_read_only():
 
 def test_ecoflow_live_messages_and_driver_merge():
     import asyncio
-    from hp.core.models import Mode
     from hp.drivers.ecoflow import EcoFlowStreamDriver
     from hp.drivers.ecoflow_live import EcoFlowLive, parse_topic, push_params
 
@@ -1772,3 +1771,50 @@ def test_a_generic_set_point_that_does_not_fit_is_refused_not_wrapped_round():
     assert writes == []                                    # nothing written, not even the control mode
     asyncio.run(drv.apply(Desired(Mode.CHARGE, 3000)))
     assert writes == [(11, [3]), (10, [(-30000) & 0xFFFF])]
+
+
+def test_ecoflow_probe_reports_what_setup_needs():
+    """The figures the Add-battery form fills itself from (cmsBattFullEnergy is Wh: 3840 on a STREAM Ultra, as the EcoFlow-Cloud
+    integration shows), and nothing made up for what the cloud API does not say."""
+    async def go():
+        d = eco({"cmsBattSoc": 0.0, "soc": 43, "powGetBpCms": 250.0, "backupReverseSoc": 15, "cmsBattFullEnergy": 3840,
+                 "productName": "STREAM Ultra"})
+        p = await d.probe()
+        assert (p["soc"], p["power_w"], p["capacity_wh"], p["model"], p["serial"], p["reserve"]) == (43, 250, 3840, "STREAM Ultra", "BK61X", 15)
+        assert p["max_charge_w"] is None and p["max_discharge_w"] is None and p["min_soc"] is None
+        assert d.last_quota["soc"] == 43
+        for bad in (0, -5, "lots", None):              # missing, zero or not a number: asked for, never guessed
+            d.api = FakeApi({"soc": 43, "cmsBattFullEnergy": bad})
+            assert (await d.probe())["capacity_wh"] is None, bad
+        d.api = FakeApi({"soc": 43, "cmsBattFullEnergy": "3840"})    # EcoFlow sometimes sends numbers as text
+        assert (await d.probe())["capacity_wh"] == 3840
+    asyncio.run(go())
+
+
+def test_ecoflow_refuses_rather_than_guessing_and_sends_nothing():
+    """Two refusals that guard a battery's own settings: an ES5000 whose charge level is not known is not held or charged (the
+    Hold level is the charge level), and a STREAM whose backup reserve cannot be read now is not taken over (Auto has to put
+    exactly that reserve back)."""
+    from hp.drivers.ecoflow import EcoFlowStreamDriver
+
+    async def go():
+        d = eco(dict(ES5000))
+        await d.read()
+        blind = {k: v for k, v in ES5000.items() if EcoFlowStreamDriver._decode({k: v}).soc is None}
+        d._state, d.last_quota = dict(blind), dict(blind)
+        assert EcoFlowStreamDriver._decode(blind).soc is None
+        for mode in (Mode.HOLD, Mode.CHARGE):
+            with pytest.raises(ValueError, match="charge level is not known"):
+                await d.apply(Desired(mode, 800))
+        assert d.api.sent == []
+
+        # A fresh reply that leaves the reserve out is filled from the last reading (EcoFlow sends partial replies), so the
+        # refusal is for a reserve that is there but has no value, in the last reading and the fresh one alike.
+        d = eco({"soc": 60, "powGetBpCms": 0.0, "backupReverseSoc": None})
+        await d.read()
+        d.api._q = {"soc": 60, "powGetBpCms": 0.0}
+        d._cache = None
+        with pytest.raises(ValueError, match="could not read the battery's backup reserve"):
+            await d.apply(Desired(Mode.HOLD))
+        assert d.api.sent == [] and d._orig is None          # nothing written, nothing remembered as ours
+    asyncio.run(go())
