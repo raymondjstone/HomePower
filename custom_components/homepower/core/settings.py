@@ -20,13 +20,13 @@ DEFAULTS: dict = {
     "ecoflow_live": False, "dry_run": False, "erase_on_remove": False, "solar_room": True, "base_load_w": 0, "notify_full": False, "offpeak_extra": "", "save_for_peak": False, "hold_for_dearer": False,
     "weather_boost": False, "weather_entity": "", "temp_sensor_entity": "", "forecast_temp_entity": "", "weather_online": False,
     "compare_tariffs": "", "weekly_digest": False, "export_rates_entity": "", "export_discharge": False, "export_keep_pct": 0, "wear_cost": None, "event_entity": "", "event_charge_pct": 0, "forecast_reserve_kwh": 0, "forecast_reserve_pct": 50, "divert_cheap": False, "x1_grid_limits": False, "daily_summary_time": "", "divert_entity": "", "divert_export_w": 500, "divert_min_soc": 95, "notify_low_pct": 0, "notify_cheap_soon": False, "cheap_soon_below_pct": 60,
-    "offline_after_min": 5,
+    "offline_after_min": 5, "auto_discover": True,
 }
 INT_KEYS = ("import_limit_w", "cooldown_s", "total_charge_limit_w", "total_discharge_limit_w", "export_limit_w", "backup_reserve_pct",
             "notify_low_pct", "cheap_soon_below_pct", "forecast_reserve_kwh", "forecast_reserve_pct", "divert_export_w", "divert_min_soc", "base_load_w", "export_keep_pct", "event_charge_pct",
             "offline_after_min", "forecast_use_pct")
 FLOAT_KEYS = ("price_peak", "price_offpeak", "forecast_share", "export_price", "wear_cost")
-BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "hold_for_dearer", "weather_boost", "weather_online", "notify_full", "notify_cheap_soon", "export_discharge")
+BOOL_KEYS = ("weekly_digest", "x1_grid_limits", "divert_cheap", "dry_run", "peak_shaving", "grid_invert", "offpeak_auto", "ecoflow_live", "erase_on_remove", "solar_room", "save_for_peak", "hold_for_dearer", "weather_boost", "weather_online", "notify_full", "notify_cheap_soon", "export_discharge", "auto_discover")
 STR_KEYS = ("rates_unit", "grid_import_entity", "grid_export_entity", "zero_import_device", "rates_entity", "offpeak_start", "offpeak_end", "currency",
             "forecast_entity", "storm_entity", "away_entity", "notify_service", "weather_entity", "temp_sensor_entity", "forecast_temp_entity",
             "offpeak_extra", "daily_summary_time", "divert_entity", "grid_order", "compare_tariffs", "export_rates_entity", "event_entity")

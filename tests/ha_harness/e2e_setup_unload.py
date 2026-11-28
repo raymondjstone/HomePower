@@ -19,7 +19,7 @@ async def main():
     dt_util.set_default_time_zone(dt_util.get_time_zone("Europe/London"))
     tmp = tempfile.mkdtemp(); hass = HomeAssistant(tmp); hass.config.config_dir = tmp
     dev = FakeAnker(); srv = await asyncio.start_server(dev.handle, "127.0.0.1", 0); port = srv.sockets[0].getsockname()[1]
-    entry = ConfigEntry(data={}, disabled_by=None, discovery_keys={}, domain=DOMAIN, entry_id="e1", minor_version=1, options={},
+    entry = ConfigEntry(data={}, disabled_by=None, discovery_keys={}, domain=DOMAIN, entry_id="e1", minor_version=1, options={"auto_discover": False},
                         pref_disable_new_entities=False, pref_disable_polling=False, source="user", subentries_data=[],
                         title="HomePower", unique_id="homepower", version=1)
     forwarded, unloaded = [], []

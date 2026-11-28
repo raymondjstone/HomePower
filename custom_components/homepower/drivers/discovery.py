@@ -19,6 +19,15 @@ def subnet_hosts(address: str, prefix: int, limit: int = 254) -> list[str]:
     return [str(h) for h in net.hosts() if h != ip][:limit]
 
 
+async def read_serial(client: ModbusTcpClient, x1: bool) -> str | None:
+    """An Anker battery's serial number (10100), read the same way by the network scan and by the battery's own driver, so the
+    two can be compared to recognise a battery that has moved to another address. The X1 keeps it low byte first."""
+    try:
+        return (to_text_low_first if x1 else to_text)(await client.read_input(10100, 12 if x1 else 8)) or None
+    except ModbusError:
+        return None
+
+
 async def probe_host(host: str, port: int = 502, unit: int = 1, timeout: float = 1.0) -> dict | None:
     """Return details if an Anker-style battery answers on host:port, else None."""
     client = ModbusTcpClient(host, port, unit, timeout=timeout)
@@ -43,10 +52,8 @@ async def probe_host(host: str, port: int = 502, unit: int = 1, timeout: float =
                 info["model"] = to_text(await client.read_input(32768, 16)) or None
             except ModbusError:
                 info["model"] = None
-        try:
-            info["serial"] = (to_text_low_first if x1 else to_text)(await client.read_input(10100, 12 if x1 else 8)) or None
-        except ModbusError:
-            info["serial"] = None
+        info["serial"] = await read_serial(client, x1)
+        info["x1"] = x1
         return info
     except Exception:  # noqa: BLE001 - any device may answer on 502 (an inverter, a PLC): whatever it sends, it is just "not an Anker"
         return None                     # and must never stop the scan of the other addresses

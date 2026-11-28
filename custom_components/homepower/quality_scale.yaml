@@ -51,9 +51,11 @@ rules:
   devices: done
   diagnostics: done
   discovery:
-    status: todo
-    comment: "Batteries are found from the panel, not through Home Assistant discovery."
-  discovery-update-info: todo
+    status: done
+    comment: "EcoFlow STREAM batteries through zeroconf (_ecoflow._tcp); Anker batteries, which announce nothing, through HomePower's own network scan raising integration_discovery flows. Each is confirmed by the user and added monitor-only."
+  discovery-update-info:
+    status: done
+    comment: "A known battery found at another address (matched by its serial) gets the new address."
   docs-data-update: done
   docs-examples: done
   docs-known-limitations: done

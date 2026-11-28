@@ -10,7 +10,6 @@ from test_drivers import FakeAnker
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import ServiceValidationError, Unauthorized
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.data_entry_flow import AbortFlow
 from custom_components.homepower import config_flow, diagnostics, repairs, services, switch
 from custom_components.homepower.core import device_settings
 from custom_components.homepower.core.serde import ValidationError
@@ -32,7 +31,8 @@ async def set_up_flow(hass):
     existing = []
     hass.config_entries = SimpleNamespace(
         flow=SimpleNamespace(async_progress_by_handler=lambda *a, **kw: [], async_abort=lambda i: None),
-        async_entry_for_domain_unique_id=lambda d, u: existing[0] if existing else None)
+        async_entry_for_domain_unique_id=lambda d, u: existing[0] if existing else None,
+        async_entries=lambda d=None, include_ignore=True, include_disabled=True: list(existing))
 
     def flow():
         f = config_flow.HomePowerConfigFlow()
@@ -45,12 +45,8 @@ async def set_up_flow(hass):
     assert r["type"] == "create_entry" and r["title"] == "HomePower" and r["data"] == {}, r
     assert isinstance(config_flow.HomePowerConfigFlow.async_get_options_flow(None), HomePowerOptionsFlow)
     existing.append(SimpleNamespace(entry_id="e1", source="user", unique_id="homepower", data={}, options={}))
-    try:
-        await flow().async_step_user()
-    except AbortFlow as err:
-        assert err.reason == "already_configured"
-    else:
-        raise AssertionError("a second HomePower was allowed")
+    r = await flow().async_step_user()          # one HomePower: checked in the flow (not the manifest, so batteries can be discovered)
+    assert r["type"] == "abort" and r["reason"] == "single_instance_allowed", r
     print("set up   : one entry only")
 
 

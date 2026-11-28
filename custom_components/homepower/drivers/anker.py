@@ -20,6 +20,7 @@ from ..core.models import Actual, Desired, DeviceConfig, Mode
 import time
 
 from ..core.anker_x1_map import alarm_texts
+from .discovery import read_serial
 from .stamp import stamp
 from .modbus import ModbusError, ModbusTcpClient, describe_failure, known_down, detect_word_order, from_i32, to_i32, to_text, to_text_low_first, to_u32
 
@@ -102,6 +103,11 @@ class AnkerModbusDriver:
 
     async def close(self) -> None:
         await self.client.close()
+
+    async def read_serial(self) -> str | None:
+        """The battery's serial over HomePower's own connection (a second Modbus client could be refused, or disturb control).
+        Read the same way as the network scan reads it, so the two can be compared."""
+        return await read_serial(self.client, bool(self.config.extra.get("house_meter")))
 
     # ------------------------------------------------------------------ read
     async def _blocks(self) -> tuple[list[int], list[int]]:

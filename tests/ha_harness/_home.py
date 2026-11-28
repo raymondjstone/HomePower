@@ -29,8 +29,9 @@ def load_entity_names(platform, domain: str) -> None:
 
 
 def new_entry(options=None):
+    # auto_discover off unless a script asks for it: the background battery scan must never reach the real network from a test
     return ConfigEntry(data={}, disabled_by=None, discovery_keys={}, domain="homepower", entry_id="e1", minor_version=1,
-                       options=options or {}, pref_disable_new_entities=False, pref_disable_polling=False, source="user",
+                       options={"auto_discover": False, **(options or {})}, pref_disable_new_entities=False, pref_disable_polling=False, source="user",
                        subentries_data=[], title="HomePower", unique_id="homepower", version=1)
 
 

@@ -94,6 +94,8 @@ def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
                "unit_id": _int(raw.get("unit_id"), "unit id", 0, 255, 1)}
         if driver == "ecoflow_modbus" and _flag(raw.get("reverse_sign"), "reverse sign", False):
             out["reverse_sign"] = True
+        if serial := str(raw.get("serial") or "").strip()[:64]:
+            out["serial"] = serial      # kept so a battery that moves to another address is recognised (see core/found.py)
         return out
     if driver == "ecoflow_stream":
         region = str(raw.get("region") or "eu")

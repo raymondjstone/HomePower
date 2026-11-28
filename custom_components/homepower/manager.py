@@ -296,7 +296,8 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         keys = ("host", "port", "unit_id", "sn", "region", "access_key", "secret_key")
         return cached[1] if all(old_conn.get(k) == new_conn.get(k) for k in keys) else None
 
-    async def discover_anker(self) -> list[dict]:
+    async def discover_anker(self, skip: set[str] | frozenset[str] = frozenset()) -> list[dict]:
+        """Anker batteries on the local network. Addresses in `skip` are not contacted at all."""
         hosts: list[str] = []
         try:
             from homeassistant.components import network
@@ -305,7 +306,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
                 if not ad.get("enabled"):
                     continue
                 for v4 in ad.get("ipv4", []):
-                    hosts += [h for h in discovery.subnet_hosts(v4["address"], int(v4["network_prefix"])) if h not in hosts]
+                    hosts += [h for h in discovery.subnet_hosts(v4["address"], int(v4["network_prefix"])) if h not in hosts and h not in skip]
         except Exception:  # noqa: BLE001
             return []
         return await discovery.scan(hosts)
@@ -416,11 +417,27 @@ class HomePowerManager(DetailsMixin, BackupMixin):
     def _check_new_device(self, raw: dict) -> None:
         check_new_device(raw, self.devices)
 
+    def _with_saved_serial(self, raw: dict) -> dict:
+        """The panel's form has no serial field, so an edit would drop the one discovery saved. It is kept while the battery stays
+        at the same address; pointed at another address, it may be another battery, so the old serial is not carried over."""
+        old = self.devices.get(str(raw.get("device_id") or ""))
+        conn, was = raw.get("connection"), (old or {}).get("connection") or {}
+        if not isinstance(conn, dict) or conn.get("serial") or not was.get("serial"):
+            return raw
+        try:
+            same = (str(conn.get("host") or "").strip(), int(conn.get("port") or 502)) == (was.get("host"), int(was.get("port") or 502))
+        except (TypeError, ValueError):
+            return raw          # a port that is not a number: validation says so
+        if not same:
+            return raw
+        return {**raw, "connection": {**conn, "serial": was["serial"]}}
+
     async def save_device(self, raw: dict, new: bool = False) -> dict:
         if new and str(raw.get("device_id") or "").strip() in self.devices:
             # adding, not editing: never replace a battery that has the same id (one added meanwhile in another tab, say)
             raise ValidationError("A battery with that name already exists. Give this one a different name.")
         self._check_new_device(raw)
+        raw = self._with_saved_serial(raw)
         d = device_to_dict(device_from_dict(await self._autofill(self._with_saved_secret(raw))))
         old = self.devices.get(d["device_id"])
         if old and old.get("control_enabled", True) and not d["control_enabled"]:

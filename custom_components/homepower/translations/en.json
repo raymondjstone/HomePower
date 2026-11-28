@@ -12,18 +12,42 @@
           "access_key": "Access key",
           "secret_key": "Secret key"
         }
+      },
+      "discovery_confirm": {
+        "title": "Battery found: {name}",
+        "description": "HomePower found a battery at {host}. Add it to HomePower? It starts monitor-only: HomePower reads and shows it but sends no commands until you allow control. EcoFlow STREAM: switch on Modbus TCP in the EcoFlow app first (STREAM system > Energy management > Device integration > Third-party control). {error}",
+        "data": {
+          "name": "Name",
+          "kind": "Model",
+          "control_enabled": "Let HomePower send commands to this battery"
+        }
+      },
+      "discovery_details": {
+        "title": "Connected: {readings}",
+        "description": "The battery did not report these; enter them from its label or the vendor app.",
+        "data": {
+          "capacity_wh": "Capacity (Wh)",
+          "max_charge_w": "Max charge (W)",
+          "max_discharge_w": "Max discharge (W)"
+        }
       }
     },
     "abort": {
       "single_instance_allowed": "Only one HomePower instance is supported.",
       "already_configured": "HomePower is already set up.",
       "not_loaded": "HomePower is not running yet. Try again in a moment.",
-      "reauth_successful": "The new keys are saved."
+      "reauth_successful": "The new keys are saved.",
+      "battery_added": "{name} was added to HomePower (monitor-only until you allow control). Open HomePower > Batteries to check its readings.",
+      "battery_known": "HomePower already has this battery (its address was updated if it had changed).",
+      "discovery_off": "Finding batteries automatically is switched off in HomePower's settings.",
+      "invalid": "The battery could not be added: {error}"
     },
     "error": {
       "cannot_connect": "EcoFlow did not accept these keys.",
-      "no_match": "These keys work, but their account has none of your batteries."
-    }
+      "no_match": "These keys work, but their account has none of your batteries.",
+      "cannot_connect_battery": "HomePower could not read the battery."
+    },
+    "flow_title": "{name}"
   },
   "options": {
     "step": {

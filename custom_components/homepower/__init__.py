@@ -14,9 +14,10 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from datetime import timedelta
 
-from . import services
+from . import autodiscover, services
 from .const import DOMAIN, SIGNAL_UPDATE, STORAGE_KEY, STORAGE_VERSION
 from .coordinator import HomePowerCoordinator
+from .core.found import new_device_id
 from .entity import battery_ids, prepare_devices
 from .manager import HomePowerManager
 from .runtime import HomePowerConfigEntry, HomePowerData
@@ -95,6 +96,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) ->
     prepare_devices(hass, entry, manager.devices)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
+    await _add_discovered(hass, entry, manager)
+    autodiscover.async_start(hass, entry, manager)        # Anker batteries found on the network (Settings: find automatically)
+
     # A daily safety copy of batteries, schedules, goals, scenes and settings (no secrets), newest 7 kept.
     async def _backup(_now=None) -> None:
         try:
@@ -110,6 +114,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) ->
 
     await _async_register_panel(hass)
     return True
+
+
+async def _add_discovered(hass: HomeAssistant, entry: HomePowerConfigEntry, manager: HomePowerManager) -> None:
+    """A battery found and confirmed before HomePower was set up (the discovery set HomePower up with it): add it now that
+    HomePower runs, then forget it, so it is added once. If it cannot be added, say so; it can be added by hand."""
+    pending = entry.data.get("discovered")
+    if not pending:
+        return
+    hass.config_entries.async_update_entry(entry, data={k: v for k, v in entry.data.items() if k != "discovered"})
+    for raw in pending if isinstance(pending, list) else [pending]:
+        try:
+            await manager.save_device({**raw, "device_id": raw.get("device_id") or new_device_id(raw.get("name"), manager.devices)}, new=True)
+        except Exception as err:  # noqa: BLE001 - one battery that will not save must not stop HomePower starting
+            _LOGGER.warning("the battery found on the network could not be added: %s", err)
+            from homeassistant.components import persistent_notification
+
+            persistent_notification.async_create(
+                hass, f"HomePower could not add {raw.get('name') or 'the battery'} it found ({err}). Add it in HomePower > Batteries > Add.",
+                title="HomePower", notification_id="homepower_discovered")
 
 
 BACKUPS_KEPT = 7

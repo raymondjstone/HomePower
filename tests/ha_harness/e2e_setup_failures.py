@@ -85,7 +85,8 @@ async def entry():
     hass.config_entries = SimpleNamespace(async_forward_entry_setups=forward, async_unload_platforms=forward,
                                           async_get_known_entry=lambda i: e, async_entries=lambda d=None: [e],
                                           async_update_entry=lambda *a, **kw: True)
-    fake_entry = SimpleNamespace(entry_id="e1", options={}, data={}, runtime_data=None, pref_disable_polling=True, add_update_listener=lambda f: (lambda: None),
+    # auto_discover off: the background battery scan must never reach the real network from a test
+    fake_entry = SimpleNamespace(entry_id="e1", options={"auto_discover": False}, data={}, runtime_data=None, pref_disable_polling=True, add_update_listener=lambda f: (lambda: None),
                                  async_on_unload=unloads.append, state=e.state,
                                  async_create_background_task=lambda hass, coro, name: tasks.append(coro))
 

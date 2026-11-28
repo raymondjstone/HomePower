@@ -136,7 +136,8 @@ The four modes mean: **Auto** = the battery runs its own logic; **Charge** / **D
 
 1. **Add a battery** (panel > Batteries > Add, or Configure > Add battery). Anker batteries are found by a network scan;
    EcoFlow batteries are listed from your account once you enter your keys. Capacity, power limits and minimum charge are
-   read from the battery itself where it reports them.
+   read from the battery itself where it reports them. Batteries on your network may also simply turn up as **discovered**
+   in Settings > Devices & services: see [Batteries found automatically](#batteries-found-automatically).
 2. **Check the readings.** A new battery is **monitor-only**: HomePower reads and shows it but sends no commands.
 3. **Allow control** on the battery when you are ready, then run **Test control** (Diagnostics). The test sends a tiny,
    safe command, checks the battery follows it, and hands it back. Taking control changes settings in the battery itself
@@ -149,6 +150,31 @@ The four modes mean: **Auto** = the battery runs its own logic; **Charge** / **D
 The **Setup check** (on Overview until everything is done, always on Diagnostics) lists each of these with a *Fix* or
 *Test now* button: batteries reporting, control allowed and tested, prices known, cheap-rate hours confirmed, grid reading
 available and live.
+
+### Batteries found automatically
+
+Batteries can be added by hand as above, or found for you:
+
+- **EcoFlow STREAM** batteries with Modbus TCP switched on (EcoFlow app: STREAM system > Energy management > Device
+  integration > Third-party control) announce themselves on your network (zeroconf `_ecoflow._tcp`), and Home Assistant
+  passes them to HomePower. They are added as *EcoFlow STREAM 5000 / AC 5000 - local Modbus*.
+- **Anker** batteries announce nothing, so HomePower looks for them itself: the same network scan as *Add battery*, a couple
+  of minutes after Home Assistant starts and then every 12 hours. It reads only, and never contacts an address HomePower
+  already talks to (an Anker battery accepts one Modbus client at a time). It scans your own subnet only (at most a /24),
+  and only private addresses.
+
+A battery found this way appears under **Settings > Devices & services** as *Discovered: HomePower*. Press **Add**, give
+it a name (and, for an Anker Solarbank, pick the model: an X1 is recognised by itself), and it is added
+**monitor-only**, like any new battery; HomePower asks only for what the battery does not report. **Ignore** keeps
+that battery from being offered again. If HomePower is not set up yet, adding a discovered battery sets it up with that
+battery.
+
+**A battery that moves to another IP address** (a new DHCP lease) is recognised by its serial number, and its address is
+updated by itself the next time it is found; nothing has to be re-entered. Batteries added before this kept no serial:
+HomePower reads it once over its own connection to the battery, so later moves are recognised too.
+
+Switch it all off with Settings > Finding batteries > *Find batteries automatically*: then nothing is scanned and nothing
+is offered.
 
 ## How data is updated
 
@@ -540,6 +566,7 @@ EcoFlow keys are only included if you tick the box.
 | Alerts & heads-ups | Extra notify service, battery full, battery low level, cheap-rate-soon warning and its level, daily summary time |
 | Solar surplus | The switch to run, export needed, minimum home battery charge |
 | EcoFlow | Live feed (see below) |
+| Finding batteries | Find batteries automatically (on by default: see [Batteries found automatically](#batteries-found-automatically)) |
 | Backup & restore | Save to file, restore from file |
 | If you remove HomePower | Erase everything when HomePower is deleted |
 
