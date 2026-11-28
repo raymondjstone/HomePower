@@ -1,12 +1,13 @@
 """Plain-language checks and summaries built from what HomePower already knows. No Home Assistant imports."""
 from __future__ import annotations
+from typing import Any
 
 from datetime import time
 from math import sqrt
 from statistics import mean
 
 
-def ecoflow_report(results: list[dict], match_pct: int | None, rate_w: int | None, verdict: str) -> dict:
+def ecoflow_report(results: list[dict[str, Any]], match_pct: int | None, rate_w: int | None, verdict: str) -> dict[str, Any]:
     """A one-glance summary of how well control of a battery that picks its own rate has worked (from the command log)."""
     sent = len(results)
     worked = sum(1 for r in results if r.get("ok"))
@@ -27,17 +28,17 @@ def ecoflow_report(results: list[dict], match_pct: int | None, rate_w: int | Non
             "verdict": verdict, "advice": advice}
 
 
-def _name(d: dict) -> str:
+def _name(d: dict[str, Any]) -> str:
     return d.get("name") or d.get("device_id") or "a battery"
 
 
-def _monitor_only(row: dict, by_id: dict) -> list[str]:
+def _monitor_only(row: dict[str, Any], by_id: dict[str, Any]) -> list[str]:
     """Batteries picked by name that HomePower only reads (control off): the schedule or goal does nothing to them."""
     return [f"{_name(by_id[i])} is monitor-only (control is off in its battery settings), so this does nothing to it until you turn control on."
             for i in (row.get("device_ids") or []) if i in by_id and by_id[i].get("control_enabled") is False]
 
 
-def schedule_warnings(s: dict, devices: list[dict]) -> list[str]:
+def schedule_warnings(s: dict[str, Any], devices: list[dict[str, Any]]) -> list[str]:
     """Things worth telling the user about right after they save a schedule (it is still saved)."""
     by_id = {d["device_id"]: d for d in devices}
     picked = [by_id[i] for i in (s.get("device_ids") or []) if i in by_id] or list(by_id.values())
@@ -58,7 +59,7 @@ def schedule_warnings(s: dict, devices: list[dict]) -> list[str]:
     return out
 
 
-def goal_warnings(g: dict, devices: list[dict]) -> list[str]:
+def goal_warnings(g: dict[str, Any], devices: list[dict[str, Any]]) -> list[str]:
     by_id = {d["device_id"]: d for d in devices}
     picked = [by_id[i] for i in (g.get("device_ids") or []) if i in by_id] or list(by_id.values())
     out = _monitor_only(g, by_id)
@@ -79,7 +80,7 @@ def _minutes(t: time) -> int:
 def window_drift(cfg_start: time | None, cfg_end: time | None, seen_start: time | None, seen_end: time | None,
                  tol_min: int = 60) -> str | None:
     """The cheap-rate window you typed in against the one the price history shows. A message if they now differ clearly."""
-    if None in (cfg_start, cfg_end, seen_start, seen_end):
+    if cfg_start is None or cfg_end is None or seen_start is None or seen_end is None:
         return None
 
     def gap(a: time, b: time) -> int:
@@ -88,7 +89,8 @@ def window_drift(cfg_start: time | None, cfg_end: time | None, seen_start: time 
 
     if gap(cfg_start, seen_start) <= tol_min and gap(cfg_end, seen_end) <= tol_min:
         return None
-    f = lambda t: t.strftime("%H:%M")  # noqa: E731
+    def f(t: time) -> str:
+        return t.strftime("%H:%M")
     return (f"Your prices look to have changed: the cheap rate now seems to run {f(seen_start)}-{f(seen_end)}, but HomePower is set "
             f"to {f(cfg_start)}-{f(cfg_end)}. Update the cheap-rate hours in Settings if that is right.")
 

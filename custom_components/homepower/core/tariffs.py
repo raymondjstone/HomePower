@@ -4,6 +4,7 @@ Tariffs are typed one per line in Settings, in main currency units per kWh:
     Name; peak=0.28; cheap=0.07; window=00:30-05:30, 13:00-16:00; export=0.15; standing=0.45
 `cheap` and `window` are optional (a flat tariff), `export` and `standing` (per day) default to 0."""
 from __future__ import annotations
+from typing import Any
 
 from datetime import time
 from math import isfinite
@@ -16,8 +17,8 @@ def _t(v: str) -> time:
     return time(int(h), int(m))
 
 
-def parse_tariffs(text: str) -> list[dict]:
-    out: list[dict] = []
+def parse_tariffs(text: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for line in str(text or "").splitlines():
         line = line.strip()
         if not line:
@@ -64,7 +65,7 @@ def _in_window(slot: int, windows: list[tuple[time, time]]) -> bool:
     return any((a <= t < b) if a < b else (t >= a or t < b) for a, b in windows)
 
 
-def compare(usage: dict[str, dict[str, list[float]]], tariffs: list[dict], days: int = 30) -> dict:
+def compare(usage: dict[str, dict[str, list[float]]], tariffs: list[dict[str, Any]], days: int = 30) -> dict[str, Any]:
     """Cost of the recorded half-hourly import/export under each tariff, over the newest `days` days that have data."""
     keys = sorted(usage)[-days:]
     res = []
@@ -83,7 +84,7 @@ def compare(usage: dict[str, dict[str, list[float]]], tariffs: list[dict], days:
             "monthly": monthly(usage, tariffs)}
 
 
-def monthly(usage: dict[str, dict[str, list[float]]], tariffs: list[dict]) -> dict:
+def monthly(usage: dict[str, dict[str, list[float]]], tariffs: list[dict[str, Any]]) -> dict[str, Any]:
     """Each tariff's cost month by month over all the recorded days, and which tariff has been cheaper than the first
     one listed (taken to be the one you are on) for the last few complete months running."""
     months: dict[str, list[str]] = {}

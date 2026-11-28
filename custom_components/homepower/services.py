@@ -1,7 +1,10 @@
 """homepower.* services: pause/resume and manual overrides, usable from automations."""
 from __future__ import annotations
 
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from collections.abc import Awaitable, Callable, Coroutine, Iterable
+from typing import TYPE_CHECKING, Any
+
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError, Unauthorized
 from homeassistant.helpers import config_validation as cv
 
@@ -10,6 +13,11 @@ from .const import DOMAIN
 from .runtime import running_manager
 from .core.models import Desired, Mode
 
+if TYPE_CHECKING:
+    from .manager import HomePowerManager
+
+type _Handler = Callable[[ServiceCall], Awaitable[ServiceResponse]]
+
 
 def _error(key: str, message: str, **placeholders: str) -> ServiceValidationError:
     """An action's error, translated from strings.json (exceptions.<key>) in the frontend. The English message is passed too, so
@@ -17,12 +25,12 @@ def _error(key: str, message: str, **placeholders: str) -> ServiceValidationErro
     return ServiceValidationError(message, translation_domain=DOMAIN, translation_key=key, translation_placeholders=placeholders)
 
 
-def _unknown(ids, known) -> ServiceValidationError:
+def _unknown(ids: Iterable[str], known: Iterable[str]) -> ServiceValidationError:
     names, have = ", ".join(ids), ", ".join(sorted(known)) or "none"
     return _error("unknown_battery", f"no battery called {names} (known: {have})", names=names, known=have)
 
 
-def _mgr(hass: HomeAssistant):
+def _mgr(hass: HomeAssistant) -> HomePowerManager:
     """The running HomePower, or a clear error: an action called while HomePower is not loaded must not quietly do nothing."""
     m = running_manager(hass)
     if m is None or m.coordinator is None:
@@ -31,10 +39,10 @@ def _mgr(hass: HomeAssistant):
 
 
 def async_register(hass: HomeAssistant) -> None:
-    def admin(handler):
+    def admin(handler: _Handler) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResponse]]:
         """Like the panel and websocket API, these services need an administrator. A call with no user behind it (an automation,
         a script) is allowed, as for Home Assistant's own admin services."""
-        async def wrapper(call: ServiceCall):
+        async def wrapper(call: ServiceCall) -> ServiceResponse:
             uid = call.context.user_id
             if uid:
                 user = await hass.auth.async_get_user(uid)
@@ -91,7 +99,7 @@ def async_register(hass: HomeAssistant) -> None:
             except ValueError as err:   # e.g. no scene with that name: a clear message, not a stack trace in the log
                 raise _error("scene_refused", str(err), error=str(err)) from err
 
-    async def test_control(call: ServiceCall):
+    async def test_control(call: ServiceCall) -> ServiceResponse:
         m = _mgr(hass)
         if not m or not m.coordinator:
             return {"ok": False}

@@ -7,6 +7,7 @@ number is shown as the register holds it, so nothing is presented with a guessed
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import re
@@ -92,11 +93,11 @@ def wanted(x1: bool, packs: int | None = None) -> list[tuple[int, int, str, str,
     return out
 
 
-def addresses(entries) -> list[int]:
+def addresses(entries: Iterable[tuple[Any, ...]]) -> list[int]:
     return sorted({a + i for a, n, *_ in entries for i in range(n)})
 
 
-def anker_rows(entries, values: dict[str, int], order: str | None, x1: bool) -> list[dict]:
+def anker_rows(entries: Iterable[tuple[Any, ...]], values: dict[str, int], order: str | None, x1: bool) -> list[dict[str, Any]]:
     """One row per register entry the battery answered: {addr, name, access, kind, value, unit}."""
     def word(a: int) -> int | None:
         return values.get(str(a))
@@ -124,7 +125,7 @@ def anker_rows(entries, values: dict[str, int], order: str | None, x1: bool) -> 
             alarms = alarm_texts(words) if x1 and addr == 10042 else []
             shown = ", ".join(alarms) if alarms else ("none" if not any(words) else "code " + " ".join(str(w) for w in words if w))
         elif addr == 10167 and n == 16:      # PV strings: voltage in 0.1 V then current in 0.01 A, string 1 first (X1)
-            def s16(w):
+            def s16(w: int) -> int:
                 return w - 0x10000 if w & 0x8000 else w
             strings = [f"PV{i + 1} {max(0, s16(words[2 * i])) / 10:.1f} V {max(0, s16(words[2 * i + 1])) / 100:.2f} A" for i in range(8) if words[2 * i] or words[2 * i + 1]]
             shown = ", ".join(strings) or "no PV"
@@ -242,11 +243,11 @@ _EF: dict[str, tuple[str, str, str]] = {
 }
 
 
-def _num(v) -> str:
+def _num(v: Any) -> str:
     return f"{v:.2f}".rstrip("0").rstrip(".") if isinstance(v, float) else str(v)
 
 
-def ecoflow_rows(quota: dict) -> list[dict]:
+def ecoflow_rows(quota: dict[str, Any]) -> list[dict[str, Any]]:
     """Rows for an EcoFlow battery's values, named as the Ecoflow-Cloud integration names them; anything it does not name
     is listed under its own key (kind "other") so nothing the battery sent is hidden."""
     rows = []
@@ -272,7 +273,7 @@ def ecoflow_rows(quota: dict) -> list[dict]:
     return rows
 
 
-def actual_fields(a) -> dict:
+def actual_fields(a: Any) -> dict[str, Any]:
     """Everything the battery's last reading carries, in plain types (None for what it did not report)."""
     if a is None:
         return {}

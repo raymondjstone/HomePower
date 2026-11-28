@@ -121,7 +121,7 @@ class ModbusTcpClient:
         async with self._lock:
             last: Exception | None = None
             reason = "closed"
-            body = None
+            body: bytes | None = None
             for _ in range(2):  # one transparent reconnect
                 patient, phase = False, "connect"
                 try:

@@ -1,5 +1,7 @@
 """Websocket API used by the HomePower sidebar panel."""
 from __future__ import annotations
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components import websocket_api
 from homeassistant.const import __version__ as HA_VERSION
@@ -13,32 +15,41 @@ from .core.serde import ValidationError
 from .core.settings import DEFAULTS, SettingsError, clean
 from .runtime import running_manager
 
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
 
-def _mgr(hass: HomeAssistant):
+    from .coordinator import HomePowerCoordinator
+    from .manager import HomePowerManager
+
+# what a command below returns: the result sent back to the panel
+type _Command = Callable[[HomeAssistant, dict[str, Any]], Awaitable[Any]]
+
+
+def _mgr(hass: HomeAssistant) -> HomePowerManager:
     mgr = running_manager(hass)
     if mgr is None:
         raise ValidationError("HomePower is still starting; try again in a moment")
     return mgr
 
 
-def _coord(hass: HomeAssistant):
+def _coord(hass: HomeAssistant) -> HomePowerCoordinator:
     c = _mgr(hass).coordinator
     if c is None:
         raise ValidationError("HomePower is still starting; try again in a moment")
     return c
 
 
-def _entry(hass: HomeAssistant):
+def _entry(hass: HomeAssistant) -> ConfigEntry[Any] | None:
     entries = hass.config_entries.async_entries(DOMAIN)
     return entries[0] if entries else None
 
 
-def _settings(entry) -> dict:
+def _settings(entry: ConfigEntry[Any]) -> dict[str, Any]:
     cfg = {**entry.data, **entry.options}
     return {k: cfg.get(k, d) for k, d in DEFAULTS.items()}
 
 
-def _payload(hass: HomeAssistant) -> dict:
+def _payload(hass: HomeAssistant) -> dict[str, Any]:
     from . import VERSION                          # here, not at the top: __init__ imports this module
 
     mgr, entry = _mgr(hass), _entry(hass)
@@ -69,7 +80,7 @@ def async_register(hass: HomeAssistant) -> None:
 @websocket_api.websocket_command({vol.Required("type"): "homepower/get"})
 @websocket_api.require_admin
 @callback
-def ws_get(hass, connection, msg):
+def ws_get(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     try:
         connection.send_result(msg["id"], _payload(hass))
     except ValidationError as err:   # e.g. still starting
@@ -79,7 +90,7 @@ def ws_get(hass, connection, msg):
 @websocket_api.websocket_command({vol.Required("type"): "homepower/subscribe"})
 @websocket_api.require_admin
 @websocket_api.async_response
-async def ws_subscribe(hass, connection, msg):
+async def ws_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     """Push the live view whenever the control loop finishes a cycle."""
     @callback
     def push() -> None:
@@ -99,8 +110,8 @@ async def ws_subscribe(hass, connection, msg):
     push()
 
 
-def _guard(fn):
-    async def wrapper(hass, connection, msg):
+def _guard(fn: _Command) -> Callable[[HomeAssistant, websocket_api.ActiveConnection, dict[str, Any]], Coroutine[Any, Any, None]]:
+    async def wrapper(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
         try:
             result = await fn(hass, msg)
         except ValidationError as err:
@@ -117,7 +128,7 @@ def _guard(fn):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_save_device(hass, msg):
+async def ws_save_device(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return await _mgr(hass).save_device(msg["device"], new=msg["new"])
 
 
@@ -127,7 +138,7 @@ async def ws_save_device(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_reorder_devices(hass, msg):
+async def ws_reorder_devices(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     await _mgr(hass).reorder_devices(msg["device_ids"])
     return {}
 
@@ -136,7 +147,7 @@ async def ws_reorder_devices(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_scan_registers(hass, msg):
+async def ws_scan_registers(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return await _mgr(hass).scan_registers(msg["device_id"])
 
 
@@ -146,7 +157,7 @@ async def ws_scan_registers(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_read_registers(hass, msg):
+async def ws_read_registers(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return await _mgr(hass).read_registers(msg["device_id"], msg["addresses"], msg["names"])
 
 
@@ -154,7 +165,7 @@ async def ws_read_registers(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_device_details(hass, msg):
+async def ws_device_details(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return await _mgr(hass).device_details(msg["device_id"])
 
 
@@ -163,7 +174,7 @@ async def ws_device_details(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_device_setting(hass, msg):
+async def ws_device_setting(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return await _mgr(hass).set_device_setting(msg["device_id"], msg["key"], msg["value"])
 
 
@@ -172,7 +183,7 @@ async def ws_device_setting(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_register_notes(hass, msg):
+async def ws_register_notes(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return await _mgr(hass).register_note(msg["device_id"], msg.get("address"), msg.get("label"))
 
 
@@ -185,7 +196,7 @@ _SCENARIO = {vol.Required("reserve"): _PCT, vol.Required("cheap"): _PCT}
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_whatif(hass, msg):
+async def ws_whatif(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     c = _coord(hass)
     try:
         return c.whatif(msg["days"], {"reserve_pct": msg["base"]["reserve"], "cheap_pct": msg["base"]["cheap"]},
@@ -198,7 +209,7 @@ async def ws_whatif(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_backups(hass, msg):
+async def ws_backups(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return {"backups": await _mgr(hass).list_backups()}
 
 
@@ -206,7 +217,7 @@ async def ws_backups(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_backup_now(hass, msg):
+async def ws_backup_now(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     from . import _write_backup
 
     entry = _entry(hass)
@@ -221,7 +232,7 @@ async def ws_backup_now(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_restore_backup(hass, msg):
+async def ws_restore_backup(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return await _mgr(hass).restore_backup(msg["name"], _entry(hass))
 
 
@@ -231,7 +242,7 @@ async def ws_restore_backup(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_delete_device(hass, msg):
+async def ws_delete_device(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     await _mgr(hass).delete_device(msg["device_id"])
     return {}
 
@@ -242,7 +253,7 @@ async def ws_delete_device(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_save_schedule(hass, msg):
+async def ws_save_schedule(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     mgr = _mgr(hass)
     if msg["new"] and str(msg["schedule"].get("id") or "").strip() in mgr.schedules:     # added (or renamed to) a name in use
         raise ValidationError("A schedule with that name already exists.")
@@ -256,7 +267,7 @@ async def ws_save_schedule(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_delete_schedule(hass, msg):
+async def ws_delete_schedule(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     await _mgr(hass).delete_schedule(msg["schedule_id"])
     return {}
 
@@ -267,8 +278,10 @@ async def ws_delete_schedule(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_save_settings(hass, msg):
+async def ws_save_settings(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     entry = _entry(hass)
+    if entry is None:              # removed while the panel was open: say so rather than fail with an internal error
+        raise ValidationError("HomePower is still starting; try again in a moment")
     try:
         new = clean(msg["settings"])
     except SettingsError as err:
@@ -282,7 +295,7 @@ async def ws_save_settings(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_pause(hass, msg):
+async def ws_pause(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     await _mgr(hass).set_paused(msg["paused"])
     return {"paused": msg["paused"]}
 
@@ -298,7 +311,7 @@ async def ws_pause(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_override(hass, msg):
+async def ws_override(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     from .core.models import Desired, Mode
 
     coord = _coord(hass)
@@ -315,7 +328,7 @@ async def ws_override(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_clear_override(hass, msg):
+async def ws_clear_override(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     coord = _coord(hass)
     coord.clear_override(msg["device_ids"] or None)
     await coord.async_request_refresh()
@@ -326,7 +339,7 @@ async def ws_clear_override(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_discover_anker(hass, msg):
+async def ws_discover_anker(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     """Scan the local network for Anker batteries that have Modbus TCP switched on."""
     return {"found": await _mgr(hass).discover_anker()}
 
@@ -338,7 +351,7 @@ async def ws_discover_anker(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_discover_ecoflow(hass, msg):
+async def ws_discover_ecoflow(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return {"devices": await _mgr(hass).discover_ecoflow(msg["region"], msg["access_key"], msg["secret_key"])}
 
 
@@ -346,7 +359,7 @@ async def ws_discover_ecoflow(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_probe(hass, msg):
+async def ws_probe(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     """Read the battery once (no writes) so the user can see it works before saving."""
     return await _mgr(hass).probe(msg["device"])
 
@@ -358,7 +371,7 @@ async def ws_probe(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_control(hass, msg):
+async def ws_control(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     """Allow / stop HomePower sending commands to one battery (monitor-only when off)."""
     mgr = _mgr(hass)
     dev = mgr.devices.get(msg["device_id"])
@@ -373,7 +386,7 @@ async def ws_control(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_scan_ports(hass, msg):
+async def ws_scan_ports(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     """Which well-known ports a device on the local network is listening on (read-only: connects and listens, sends nothing)."""
     from .drivers.portscan import scan, scan_wide
 
@@ -387,7 +400,7 @@ async def ws_scan_ports(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_safe(hass, msg):
+async def ws_safe(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     """Safe mode: hand every battery back and stop sending commands (or leave it)."""
     await _mgr(hass).set_safe(msg["enabled"])
     return {}
@@ -397,7 +410,7 @@ async def ws_safe(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_debug(hass, msg):
+async def ws_debug(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     """Everything useful for a bug report in one file: readings, command results, plan against actual, recent events."""
     c = _coord(hass)
     return c.debug_bundle()
@@ -407,7 +420,7 @@ async def ws_debug(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_hardware_report(hass, msg):
+async def ws_hardware_report(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     """How each battery really responded to control (model, firmware, test and command results), to share: no names, keys,
     serial numbers or addresses."""
     return _coord(hass).hardware_report()
@@ -417,7 +430,7 @@ async def ws_hardware_report(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_confirm(hass, msg):
+async def ws_confirm(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     """Allow the first real command to a battery whose control has not been tested yet."""
     await _mgr(hass).confirm_first_command(msg["device_id"])
     return {}
@@ -427,7 +440,7 @@ async def ws_confirm(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_save_goal(hass, msg):
+async def ws_save_goal(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     mgr = _mgr(hass)
     if msg["new"] and str(msg["goal"].get("id") or "").strip() in mgr.goals:
         raise ValidationError("A goal with that name already exists.")
@@ -439,7 +452,7 @@ async def ws_save_goal(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_delete_goal(hass, msg):
+async def ws_delete_goal(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     await _mgr(hass).delete_goal(msg["goal_id"])
     return {}
 
@@ -450,7 +463,7 @@ async def ws_delete_goal(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_flag(hass, msg):
+async def ws_flag(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     mgr = _mgr(hass)
     await (mgr.set_backup if msg["flag"] == "backup" else mgr.set_away)(msg["enabled"])
     return {}
@@ -460,7 +473,7 @@ async def ws_flag(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_preview(hass, msg):
+async def ws_preview(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return _coord(hass).preview_view(msg["hours"])
 
 
@@ -468,7 +481,7 @@ async def ws_preview(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_diagnostics(hass, msg):
+async def ws_diagnostics(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     c = _coord(hass)
     return c.scrub({"devices": c.diagnostics(), "events": [list(e) for e in list(c._snap.events)[-100:]],
                     "alerts": sorted(c.alerts.active()), "notes": c.last_result.notes,
@@ -481,7 +494,7 @@ async def ws_diagnostics(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_solar_forecast(hass, msg):
+async def ws_solar_forecast(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return _coord(hass).solar_comparison(msg["days"], msg.get("day"))
 
 
@@ -489,7 +502,7 @@ async def ws_solar_forecast(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_compare_tariffs(hass, msg):
+async def ws_compare_tariffs(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     try:
         return _coord(hass).tariff_comparison(msg["days"])
     except ValueError as err:          # the tariffs typed in Settings (e.g. one saved before a check was added): say what is wrong
@@ -500,7 +513,7 @@ async def ws_compare_tariffs(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_test(hass, msg):
+async def ws_test(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return await _coord(hass).test_control(msg["device_id"])
 
 
@@ -509,7 +522,7 @@ async def ws_test(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_save_scene(hass, msg):
+async def ws_save_scene(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     mgr = _mgr(hass)
     if msg["new"] and str(msg["scene"].get("name") or "").strip() in mgr.scenes:     # added (or renamed to) a name in use
         raise ValidationError("A scene with that name already exists.")
@@ -520,7 +533,7 @@ async def ws_save_scene(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_delete_scene(hass, msg):
+async def ws_delete_scene(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     await _mgr(hass).delete_scene(msg["name"])
     return {}
 
@@ -529,7 +542,7 @@ async def ws_delete_scene(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_apply_scene(hass, msg):
+async def ws_apply_scene(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     await _mgr(hass).apply_scene(msg["name"])
     return {}
 
@@ -538,7 +551,7 @@ async def ws_apply_scene(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_export(hass, msg):
+async def ws_export(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     entry = _entry(hass)
     return _mgr(hass).export_all(_settings(entry) if entry else {}, bool(msg.get("include_secrets")))
 
@@ -547,5 +560,5 @@ async def ws_export(hass, msg):
 @websocket_api.require_admin
 @websocket_api.async_response
 @_guard
-async def ws_import(hass, msg):
+async def ws_import(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
     return await _mgr(hass).import_all(msg["data"], _entry(hass))

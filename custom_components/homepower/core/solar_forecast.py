@@ -11,13 +11,14 @@ starts and then kept: it is the last forecast made before the hour. (After an ho
 replaces its forecast with its own estimate of what came, and a forecast can be revised: neither is a forecast any more.)
 """
 from __future__ import annotations
+from typing import Any, cast
 
 from datetime import datetime, timedelta, tzinfo
 
 KEEP_DAYS = 120
 
 
-def _num(x) -> float | None:
+def _num(x: Any) -> float | None:
     try:
         f = float(x)
     except (TypeError, ValueError, OverflowError):
@@ -25,7 +26,7 @@ def _num(x) -> float | None:
     return f if f == f and abs(f) != float("inf") and f >= 0 else None
 
 
-def hours_by_day(wh_hours: dict, tz: tzinfo, keyed_by_end: bool = False) -> dict[str, list[float]]:
+def hours_by_day(wh_hours: Any, tz: tzinfo | None, keyed_by_end: bool = False) -> dict[str, list[float]]:
     """{"2026-11-25T08:00:00+00:00": Wh, ...} (each the energy expected in the hour starting then) -> {local day: [kWh x 24]}.
     With `keyed_by_end` each key is the END of its hour instead (Forecast.Solar before Home Assistant moved its keys to
     the period start), so it is moved back an hour. Entries that are not a time and a finite, non-negative number are
@@ -57,8 +58,8 @@ def remaining_kwh(hours: list[float] | None, now: datetime) -> float | None:
 class SolarForecastLog:
     """Per local day: {"first": kWh first seen that day, "hours": [kWh x 24] latest hourly forecast}."""
 
-    def __init__(self, data: dict | None = None) -> None:
-        self.days: dict[str, dict] = {}
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
+        self.days: dict[str, dict[str, Any]] = {}
         for day, row in (data.items() if isinstance(data, dict) else []):       # a damaged save never stops start-up
             if not isinstance(day, str) or len(day) != 10 or not isinstance(row, dict):
                 continue
@@ -97,14 +98,14 @@ class SolarForecastLog:
         if not row:
             return None
         if row["first"] is not None:
-            return row["first"]
+            return cast(float, row["first"])
         return round(sum(row["hours"]), 2) if row["hours"] else None
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return {d: dict(r) for d, r in self.days.items()}
 
 
-def compare_days(log: SolarForecastLog, actual: dict[str, float], today: str, n: int = 30) -> list[dict]:
+def compare_days(log: SolarForecastLog, actual: dict[str, Any], today: str, n: int = 30) -> list[dict[str, Any]]:
     """The last n days up to today: the forecast and the solar measured (None where either is not known)."""
     end = datetime.fromisoformat(today).date()
     out = []
@@ -117,7 +118,7 @@ def compare_days(log: SolarForecastLog, actual: dict[str, float], today: str, n:
     return out
 
 
-def compare_hours(forecast: list[float] | None, actual_half_hours: list[float] | None) -> list[dict]:
+def compare_hours(forecast: list[float] | None, actual_half_hours: list[float] | None) -> list[dict[str, Any]]:
     """Today hour by hour: the latest forecast and the solar measured (half-hours added into hours)."""
     fc = forecast if isinstance(forecast, list) and len(forecast) == 24 else None
     act = actual_half_hours if isinstance(actual_half_hours, list) and len(actual_half_hours) == 48 else None

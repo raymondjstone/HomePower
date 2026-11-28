@@ -1,6 +1,8 @@
 """HomePower switches: pause control, backup mode, away mode."""
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -25,7 +27,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, add: AddEnt
 
 
 class HomePowerSwitch(HomePowerEntity, SwitchEntity):
-    def __init__(self, coord, entry, key, attr, setter) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, key: str, attr: str, setter: str) -> None:
         super().__init__(coord, entry)
         self._attr, self._setter = attr, setter
         self._attr_translation_key = key
@@ -35,8 +37,8 @@ class HomePowerSwitch(HomePowerEntity, SwitchEntity):
     def is_on(self) -> bool:
         return bool(getattr(self.coordinator.manager, self._attr))
 
-    async def async_turn_on(self, **kwargs) -> None:
+    async def async_turn_on(self, **kwargs: Any) -> None:
         await getattr(self.coordinator.manager, self._setter)(True)
 
-    async def async_turn_off(self, **kwargs) -> None:
+    async def async_turn_off(self, **kwargs: Any) -> None:
         await getattr(self.coordinator.manager, self._setter)(False)

@@ -22,7 +22,7 @@ class HaEntityAdapter(DeviceAdapter):
     def _kw(self, key: str) -> bool:
         """Is this power entity in kW? HomePower works in W; a kW sensor read as W would be 1000 times too small."""
         st = self.hass.states.get(self.ent.get(key, ""))
-        return bool(st) and str(st.attributes.get("unit_of_measurement") or "").strip().lower() == "kw"
+        return st is not None and str(st.attributes.get("unit_of_measurement") or "").strip().lower() == "kw"
 
     def _states(self) -> dict[str, str | None]:
         out: dict[str, str | None] = {}

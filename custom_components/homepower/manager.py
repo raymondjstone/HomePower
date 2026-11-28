@@ -1,10 +1,11 @@
 """Persistent batteries, schedules and goals; runtime flags; and the bridge to the coordinator."""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import asyncio
 import logging
+from functools import partial
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -37,6 +38,14 @@ from .drivers.modbus_generic import GenericModbusDriver
 from .manager_details import DetailsMixin
 from .manager_backup import BackupMixin
 
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+
+    from .adapters.base import DeviceAdapter
+    from .core.goals import Goal
+    from .core.models import DeviceConfig
+    from .core.schedule import ScheduleEntry
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,57 +59,57 @@ class HomePowerManager(DetailsMixin, BackupMixin):
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
-        self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        self.devices: dict[str, dict] = {}
-        self.schedules: dict[str, dict] = {}
-        self.goals: dict[str, dict] = {}
+        self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self.devices: dict[str, dict[str, Any]] = {}
+        self.schedules: dict[str, dict[str, Any]] = {}
+        self.goals: dict[str, dict[str, Any]] = {}
         self.coordinator: HomePowerCoordinator | None = None
         self.paused = False
         self.backup = False       # manual "backup mode" (keep a reserve)
         self.away = False         # manual "away / holiday" mode
         self.safe = False         # safe mode: everything handed back, nothing sent until it is switched off
         self.energy: dict[str, float] = {}       # lifetime kWh counters
-        self.ledger_days: dict[str, dict] = {}   # savings ledger
-        self.ledger_stores: dict | None = None   # cost of the energy stored in each battery (None = saved by an older version)
-        self.profile_data: dict = {}             # learned usual household load
-        self.usage_data: dict = {}               # grid import/export per half-hour per day (tariff comparison)
-        self.daily_data: dict = {}               # daily self-consumption / cheap-rate figures
-        self.health_data: dict = {}              # weekly battery efficiency
-        self.grid_events: list = []              # times a battery reported the grid down
-        self.trend_data: dict = {}               # daily temperature / pack-voltage spread per battery
-        self.pv_health_data: dict = {}           # X1: which solar strings are used and their energy per day
-        self.solar_forecast_data: dict = {}      # the solar forecast per day (first total, latest hours), for forecast vs actual
+        self.ledger_days: dict[str, dict[str, Any]] = {}   # savings ledger
+        self.ledger_stores: dict[str, Any] | None = None   # cost of the energy stored in each battery (None = saved by an older version)
+        self.profile_data: dict[str, Any] = {}             # learned usual household load
+        self.usage_data: dict[str, Any] = {}               # grid import/export per half-hour per day (tariff comparison)
+        self.daily_data: dict[str, Any] = {}               # daily self-consumption / cheap-rate figures
+        self.health_data: dict[str, Any] = {}              # weekly battery efficiency
+        self.grid_events: list[Any] = []              # times a battery reported the grid down
+        self.trend_data: dict[str, Any] = {}               # daily temperature / pack-voltage spread per battery
+        self.pv_health_data: dict[str, Any] = {}           # X1: which solar strings are used and their energy per day
+        self.solar_forecast_data: dict[str, Any] = {}      # the solar forecast per day (first total, latest hours), for forecast vs actual
         self.register_notes: dict[str, dict[str, str]] = {}   # the user's own names for registers they have identified
-        self.scenes: dict[str, dict] = {}        # saved combinations of modes and limits
-        self.event_state: dict[str, bool] = {}   # heads-up messages currently showing
-        self.tests: dict[str, dict] = {}         # last control-test result per battery
+        self.scenes: dict[str, dict[str, Any]] = {}        # saved combinations of modes and limits
+        self.event_state: dict[str, Any] = {}    # heads-up messages currently showing (and each battery's last firmware)
+        self.tests: dict[str, dict[str, Any]] = {}         # last control-test result per battery
         self.pv_seen: set[str] = set()           # batteries that have reported solar power (so they have panels)
         self.forecast_days: dict[str, float] = {}   # solar forecast kWh by date, kept so 'tomorrow' is still known after midnight
         self.divert_on: str = ""                 # the solar-surplus load we switched on (to switch it off after a restart)
-        self._adapters: dict[str, tuple[dict, Any]] = {}  # reuse live connections between rebuilds
+        self._adapters: dict[str, tuple[dict[str, Any], DeviceAdapter]] = {}  # reuse live connections between rebuilds
         self.forced: set[str] = set()  # batteries HomePower has put into forced control
-        self.weather_data: dict = {}                 # outdoor temperature by day and what it did to the house's use
-        self.trace_data: dict = {}                   # what happened after each command to EcoFlow batteries
+        self.weather_data: dict[str, Any] = {}                 # outdoor temperature by day and what it did to the house's use
+        self.trace_data: dict[str, Any] = {}                   # what happened after each command to EcoFlow batteries
         self.confirmed: set[str] = set()             # batteries whose first command the user has allowed
-        self.plan_log_data: dict = {}                # planned against actual power per half hour
+        self.plan_log_data: dict[str, Any] = {}                # planned against actual power per half hour
         self.charge_rates: dict[str, int] = {}       # measured charge power of batteries that pick their own rate
-        self.ecoflow_orig: dict[str, dict] = {}     # EcoFlow settings as they were before HomePower held/charged (kept across restarts)
+        self.ecoflow_orig: dict[str, dict[str, Any]] = {}     # EcoFlow settings as they were before HomePower held/charged (kept across restarts)
         self._live_on = False                       # opt-in setting: EcoFlow live (MQTT) updates
-        self._hubs: dict[tuple, EcoFlowLive] = {}   # live-update connections, one per EcoFlow account
+        self._hubs: dict[tuple[Any, ...], EcoFlowLive] = {}   # live-update connections, one per EcoFlow account
 
     # ------------------------------------------------------------------ persistence
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
-        def plain(key: str) -> dict:
+        def plain(key: str) -> dict[str, Any]:
             v = data.get(key)
             return v if isinstance(v, dict) else {}
 
-        def seq(key: str) -> list:
+        def seq(key: str) -> list[Any]:
             v = data.get(key)
             return v if isinstance(v, list) else []
 
-        def rows(key: str, id_key: str) -> dict:     # a damaged row must never stop HomePower starting
-            return {r[id_key]: r for r in (data.get(key) if isinstance(data.get(key), list) else []) if isinstance(r, dict) and isinstance(r.get(id_key), str)}
+        def rows(key: str, id_key: str) -> dict[str, Any]:     # a damaged row must never stop HomePower starting
+            return {r[id_key]: r for r in seq(key) if isinstance(r, dict) and isinstance(r.get(id_key), str)}
         self.devices, self.schedules, self.goals = rows("devices", "device_id"), rows("schedules", "id"), rows("goals", "id")
         self.paused = bool(data.get("paused", False))
         self.backup = bool(data.get("backup", False))
@@ -119,10 +128,6 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         self.divert_on = str(data.get("divert_on") or "")
         self.pv_seen = {x for x in seq("pv_seen") if isinstance(x, str)}
         self.forecast_days = {k: v for k, v in plain("forecast_days").items() if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")}
-        def plain(key: str) -> dict:     # a damaged value in a newer field must never stop HomePower starting
-            v = data.get(key)
-            return v if isinstance(v, dict) else {}
-
         self.plan_log_data, self.trace_data, self.weather_data = dict(plain("plan_log")), dict(plain("traces")), dict(plain("weather"))
         self.pv_health_data = dict(plain("pv_health"))
         self.solar_forecast_data = dict(plain("solar_forecast"))
@@ -131,8 +136,8 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         self.confirmed = {c for c in conf if isinstance(c, str)} if isinstance(conf, list) else set()
         self.charge_rates = {k: int(v) for k, v in plain("charge_rates").items() if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")}
         self.ecoflow_orig = {k: dict(v) for k, v in plain("ecoflow_orig").items() if isinstance(v, dict)}
-        scenes = data.get("scenes")
-        self.scenes = {s["name"]: s for s in (scenes if isinstance(scenes, list) else DEFAULT_SCENES) if isinstance(s, dict) and isinstance(s.get("name"), str)}
+        scenes: Any = data.get("scenes") if isinstance(data.get("scenes"), list) else DEFAULT_SCENES
+        self.scenes = {s["name"]: s for s in scenes if isinstance(s, dict) and isinstance(s.get("name"), str)}
 
     async def _save(self) -> None:
         c = self.coordinator
@@ -162,23 +167,23 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         self.hass.async_create_task(self._save())
 
     # ------------------------------------------------------------------ building the live objects
-    def make_adapter(self, cfg):
+    def make_adapter(self, cfg: DeviceConfig) -> DeviceAdapter:
         driver = cfg.extra.get("driver", "entities")
         if driver == "anker_modbus":
             did = cfg.device_id
-            return DirectAdapter(cfg, AnkerModbusDriver(cfg, orig=self.ecoflow_orig.get(did), on_orig=lambda v, did=did: self._keep_orig(did, v)))
+            return DirectAdapter(cfg, AnkerModbusDriver(cfg, orig=self.ecoflow_orig.get(did), on_orig=partial(self._keep_orig, did)))
         if driver == "ecoflow_stream":
             did = cfg.device_id
             return DirectAdapter(cfg, EcoFlowStreamDriver(cfg, async_get_clientsession(self.hass), self._live_hub(cfg),
-                                                          orig=self.ecoflow_orig.get(did), on_orig=lambda v, did=did: self._keep_orig(did, v)))
+                                                          orig=self.ecoflow_orig.get(did), on_orig=partial(self._keep_orig, did)))
         if driver == "ecoflow_modbus":
             did = cfg.device_id
-            return DirectAdapter(cfg, EcoFlowModbusDriver(cfg, orig=self.ecoflow_orig.get(did), on_orig=lambda v, did=did: self._keep_orig(did, v)))
+            return DirectAdapter(cfg, EcoFlowModbusDriver(cfg, orig=self.ecoflow_orig.get(did), on_orig=partial(self._keep_orig, did)))
         if driver == "modbus_generic":
             return DirectAdapter(cfg, GenericModbusDriver(cfg))
         return HaEntityAdapter(self.hass, cfg)
 
-    def _keep_orig(self, device_id: str, value: dict | None) -> None:
+    def _keep_orig(self, device_id: str, value: dict[str, Any] | None) -> None:
         """An EcoFlow battery's own settings were remembered (or handed back): keep them across a restart."""
         if value:
             self.ecoflow_orig[device_id] = dict(value)
@@ -186,7 +191,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             self.ecoflow_orig.pop(device_id, None)
         self.hass.async_create_task(self._save())
 
-    def _live_hub(self, cfg) -> EcoFlowLive | None:
+    def _live_hub(self, cfg: DeviceConfig) -> EcoFlowLive | None:
         """One shared live-update connection per EcoFlow account."""
         c = cfg.extra.get("connection", {})
         key = (c.get("access_key"), c.get("secret_key"), c.get("region"))      # a corrected secret must not reuse the hub built with the old one
@@ -200,7 +205,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             hub.enabled = self._live_on
         return hub
 
-    def live_status(self) -> dict | None:
+    def live_status(self) -> dict[str, Any] | None:
         """The EcoFlow live feed, for Settings and Diagnostics: on or off, connected, how many updates came, and why it is
         not working when it is not (paho-mqtt missing, refused...). None when no EcoFlow battery uses it."""
         hubs = list(self._hubs.values())
@@ -217,11 +222,14 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             if not on:
                 hub.stop()
 
-    def build(self):
+    def build(self) -> tuple[list[DeviceAdapter], list[ScheduleEntry], list[Goal]]:
         """Validate everything stored and build adapters/schedules/goals; bad rows are skipped.
 
         Unchanged batteries keep their adapter (and open connection / remembered state)."""
-        adapters, schedules, goals, keep = [], [], [], {}
+        adapters: list[DeviceAdapter] = []
+        schedules: list[ScheduleEntry] = []
+        goals: list[Goal] = []
+        keep: dict[str, tuple[dict[str, Any], DeviceAdapter]] = {}
         for d in self.devices.values():
             try:
                 cached = self._adapters.get(d["device_id"])
@@ -262,7 +270,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             await self.coordinator.async_request_refresh()
 
     # ------------------------------------------------------------------ setup helpers (panel + Configure flow)
-    async def probe(self, raw: dict) -> dict:
+    async def probe(self, raw: dict[str, Any]) -> dict[str, Any]:
         """Connect with the given settings and return live readings; never changes anything on the device."""
         raw = self._with_saved_secret(raw)
         # Placeholder limits only so the config validates; probing never uses or saves them.
@@ -278,14 +286,15 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         try:
             if not hasattr(adapter, "driver"):
                 return {}
-            return await adapter.driver.probe()
+            info: dict[str, Any] = await cast(Any, adapter).driver.probe()
+            return info
         except Exception as err:  # noqa: BLE001 - shown to the user as "could not connect"
             raise ValidationError(f"could not read the battery: {err}") from err
         finally:
             if live is None:   # never close the connection the control loop is using
                 await adapter.close()
 
-    def _live_adapter_for(self, raw: dict, cfg):
+    def _live_adapter_for(self, raw: dict[str, Any], cfg: DeviceConfig) -> DeviceAdapter | None:
         """Testing a battery that is already connected reuses its connection: devices that accept a single
         client would otherwise refuse (or disturb) the second one."""
         cached = self._adapters.get(raw.get("device_id") or "")
@@ -296,7 +305,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         keys = ("host", "port", "unit_id", "sn", "region", "access_key", "secret_key")
         return cached[1] if all(old_conn.get(k) == new_conn.get(k) for k in keys) else None
 
-    async def discover_anker(self, skip: set[str] | frozenset[str] = frozenset()) -> list[dict]:
+    async def discover_anker(self, skip: set[str] | frozenset[str] = frozenset()) -> list[dict[str, Any]]:
         """Anker batteries on the local network. Addresses in `skip` are not contacted at all."""
         hosts: list[str] = []
         try:
@@ -311,7 +320,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             return []
         return await discovery.scan(hosts)
 
-    async def discover_ecoflow(self, region: str, access_key: str, secret_key: str) -> list[dict]:
+    async def discover_ecoflow(self, region: str, access_key: str, secret_key: str) -> list[dict[str, Any]]:
         try:
             items = await EcoFlowApi(async_get_clientsession(self.hass), region, access_key, secret_key).devices()
         except EcoFlowError as err:
@@ -319,7 +328,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         return [{"sn": i.get("sn"), "name": i.get("deviceName") or i.get("productName") or i.get("sn"),
                  "online": bool(i.get("online")), "product": i.get("productName")} for i in items if i.get("sn")]
 
-    def _with_saved_secret(self, raw: dict) -> dict:
+    def _with_saved_secret(self, raw: dict[str, Any]) -> dict[str, Any]:
         """When editing, a blank secret key means 'keep the one already stored'."""
         conn = dict(raw.get("connection") or {})
         old = self.devices.get(raw.get("device_id") or "", {}).get("connection", {})
@@ -364,7 +373,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             await self.coordinator.async_request_refresh()
 
     # ------------------------------------------------------------------ mutations (raise ValidationError on bad input)
-    async def _autofill(self, raw: dict) -> dict:
+    async def _autofill(self, raw: dict[str, Any]) -> dict[str, Any]:
         """Capacity, power limits and minimum SOC come from the battery itself, not from the user."""
         profile = PROFILE_BY_ID.get(raw.get("kind"), PROFILE_BY_ID["custom"])
         driver = profile["driver"]
@@ -385,7 +394,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         return raw
 
     @staticmethod
-    def _map_controls(raw: dict) -> bool:
+    def _map_controls(raw: dict[str, Any]) -> bool:
         from .core.modbus_map import MapError, has_control, parse_map
 
         conn = raw.get("connection") or {}
@@ -414,10 +423,10 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             c._set_release(device_id, c._snap.devices[device_id], False)      # also clears the coordinator's own saved copy
         return True
 
-    def _check_new_device(self, raw: dict) -> None:
+    def _check_new_device(self, raw: dict[str, Any]) -> None:
         check_new_device(raw, self.devices)
 
-    def _with_saved_serial(self, raw: dict) -> dict:
+    def _with_saved_serial(self, raw: dict[str, Any]) -> dict[str, Any]:
         """The panel's form has no serial field, so an edit would drop the one discovery saved. It is kept while the battery stays
         at the same address; pointed at another address, it may be another battery, so the old serial is not carried over."""
         old = self.devices.get(str(raw.get("device_id") or ""))
@@ -432,7 +441,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             return raw
         return {**raw, "connection": {**conn, "serial": was["serial"]}}
 
-    async def save_device(self, raw: dict, new: bool = False) -> dict:
+    async def save_device(self, raw: dict[str, Any], new: bool = False) -> dict[str, Any]:
         if new and str(raw.get("device_id") or "").strip() in self.devices:
             # adding, not editing: never replace a battery that has the same id (one added meanwhile in another tab, say)
             raise ValidationError("A battery with that name already exists. Give this one a different name.")
@@ -498,7 +507,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         if c is None:
             return
         try:  # cosmetic clean-up: it must never stop a battery being deleted
-            reg, eid = er.async_get(self.hass), c.config_entry.entry_id
+            reg, eid = er.async_get(self.hass), cast("ConfigEntry[Any]", c.config_entry).entry_id
             # its own sensors exactly (see sensor.py): a prefix would also catch another battery's ("garage" and "garage_2")
             mine = {f"{eid}_{device_id}_{s}" for s in BATTERY_SENSOR_SUFFIXES} | {f"{eid}_energy_bat_{device_id}_{d}" for d in ("in", "out")}
             for ent in list(er.async_entries_for_config_entry(reg, eid)):
@@ -510,7 +519,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         except Exception:  # noqa: BLE001
             _LOGGER.debug("could not remove entities for %s", device_id, exc_info=True)
 
-    async def save_schedule(self, raw: dict) -> dict:
+    async def save_schedule(self, raw: dict[str, Any]) -> dict[str, Any]:
         s = schedule_to_dict(schedule_from_dict(raw))
         self.schedules[s["id"]] = s
         await self._apply()
@@ -520,7 +529,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         self.schedules.pop(schedule_id, None)
         await self._apply()
 
-    async def save_goal(self, raw: dict) -> dict:
+    async def save_goal(self, raw: dict[str, Any]) -> dict[str, Any]:
         g = goal_to_dict(goal_from_dict(raw))
         self.goals[g["id"]] = g
         await self._apply()
@@ -531,7 +540,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         await self._apply()
 
     # ------------------------------------------------------------------ scenes
-    async def save_scene(self, raw: dict) -> dict:
+    async def save_scene(self, raw: dict[str, Any]) -> dict[str, Any]:
         try:
             s = clean_scene(raw)
         except SceneError as err:
@@ -557,7 +566,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
         self.paused = bool(s["paused"]) or self.safe          # safe mode means nothing is sent: a scene cannot quietly end it
         c = self.coordinator
         if s["settings"] and c is not None:
-            entry = c.config_entry
+            entry = cast("ConfigEntry[Any]", c.config_entry)
             self.hass.config_entries.async_update_entry(entry, options={**entry.options, **s["settings"]})
         await self._save()
         if c is not None:
@@ -567,14 +576,14 @@ class HomePowerManager(DetailsMixin, BackupMixin):
     # ------------------------------------------------------------------ backup / restore
 
     # ------------------------------------------------------------------ views
-    def warnings_for(self, kind: str, row: dict) -> list[str]:
+    def warnings_for(self, kind: str, row: dict[str, Any]) -> list[str]:
         """Plain-language heads-ups about a schedule or goal that has just been saved (it is saved either way)."""
         from .core.report import goal_warnings, schedule_warnings
 
         devs = self.public_devices()
         return (schedule_warnings if kind == "schedule" else goal_warnings)(row, devs)
 
-    def public_devices(self) -> list[dict]:
+    def public_devices(self) -> list[dict[str, Any]]:
         """Devices for the UI: secrets are never sent to the browser."""
         out = []
         for saved in self.devices.values():
@@ -588,7 +597,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             out.append(d)
         return out
 
-    def entity_ids(self) -> dict:
+    def entity_ids(self) -> dict[str, Any]:
         """HA entity ids of HomePower's own sensors (the panel uses them for long-term history)."""
         from homeassistant.helpers import entity_registry as er
 
@@ -597,7 +606,7 @@ class HomePowerManager(DetailsMixin, BackupMixin):
             return {}
         try:  # only used for the history charts: never let it break the panel's main payload
             reg = er.async_get(self.hass)
-            eid = c.config_entry.entry_id
+            eid = cast("ConfigEntry[Any]", c.config_entry).entry_id
 
             def find(uid: str) -> str | None:
                 return reg.async_get_entity_id("sensor", DOMAIN, f"{eid}_{uid}")

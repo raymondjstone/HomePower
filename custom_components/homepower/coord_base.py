@@ -1,5 +1,6 @@
 """What the coordinator and its parts share: timings, the per-battery status record, alert kinds and small helpers."""
 from __future__ import annotations
+from typing import Any
 
 import re
 import logging
@@ -46,12 +47,12 @@ def repair_id(key: str) -> str:
     return f"{slug}_{hashlib.sha1(key.encode()).hexdigest()[:8]}"
 
 
-def x1_limits_take(state: dict, did: str) -> tuple[dict, dict]:
+def x1_limits_take(state: dict[str, Any], did: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """The X1 limits HomePower wrote for a battery ({"export": W}) and what those slots had before ({"export": [mode, W]}),
     taken out of the saved state (put them back with x1_limits_keep). Kept as flag keys so they survive a restart:
     "x1lim:<id>:<label>:<W>" and "x1orig:<id>:<label>:<mode>:<W>"."""
-    mine: dict = {}
-    orig: dict = {}
+    mine: dict[str, Any] = {}
+    orig: dict[str, Any] = {}
     for k in [k for k in state if k.startswith((f"x1lim:{did}:", f"x1orig:{did}:"))]:
         parts = k[len("x1lim:" if k.startswith("x1lim:") else "x1orig:") + len(did) + 1:].split(":")
         if k.startswith("x1lim:") and len(parts) == 2 and parts[1].isdigit():
@@ -62,7 +63,7 @@ def x1_limits_take(state: dict, did: str) -> tuple[dict, dict]:
     return mine, orig
 
 
-def x1_limits_keep(state: dict, did: str, mine: dict, orig: dict) -> None:
+def x1_limits_keep(state: dict[str, Any], did: str, mine: dict[str, Any], orig: dict[str, Any]) -> None:
     for label, w in mine.items():
         state[f"x1lim:{did}:{label}:{int(w)}"] = True
     for label, (mode, w) in orig.items():
@@ -88,20 +89,20 @@ class DeviceStatus:
     awaiting_confirm: bool = False  # the first command to an unproven battery is waiting for the user
     waited: int = 0                 # cycles a slow (cloud) battery has been given to show a command's effect
     last_keepalive: float = 0.0
-    last_command: dict | None = None
+    last_command: dict[str, Any] | None = None
     last_applied: Desired | None = None   # what we last sent, to tell a new instruction from a retry
 
 
 @dataclass(slots=True)
 class Snapshot:
     devices: dict[str, DeviceStatus] = field(default_factory=dict)
-    events: deque = field(default_factory=lambda: deque(maxlen=200))  # diagnostics log
+    events: deque[Any] = field(default_factory=lambda: deque(maxlen=200))  # diagnostics log
 
 
 _PRIVATE_KEY = re.compile(r"ssid|wifi|pass|mac|^sn$|serial|lat|lon|addr|ip$|token", re.I)
 
 
-def _real(v) -> float:
+def _real(v: Any) -> float:
     """A sensor's number, or ValueError. "nan" and "inf" parse as floats but are no reading: let one through and a forecast,
     price or temperature turns the plan into NaN, which stops the decision engine every cycle."""
     f = float(v)

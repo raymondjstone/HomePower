@@ -80,4 +80,6 @@ rules:
     status: todo
     comment: "paho-mqtt runs its own thread."
   inject-websession: done
-  strict-typing: todo
+  strict-typing:
+    status: done
+    comment: "mypy --strict over the whole integration (settings in pyproject.toml), checked in CI. paho-mqtt ships its own types."

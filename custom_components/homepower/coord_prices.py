@@ -4,7 +4,7 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 run on the coordinator itself and use its state."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import time as _time
 from datetime import datetime, timedelta
@@ -16,27 +16,42 @@ from .core.report import window_drift
 from .core.sanity import cycling_margin
 from .coord_base import _LOGGER, TARIFF_REFRESH_S, TARIFF_HISTORY_DAYS, _real
 
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+    from .core.dayplan import DayPlan
+    from .core.goals import Goal
+
+    from .adapters.base import DeviceAdapter
+    from .core.alerts import AlertTracker
+    from .core.insights import Health
+    from .core.insights import LoadProfile
+    from .core.insights import UsageHistory
+    from .core.settings import AppSettings
+
 
 class PricesMixin:
     if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
         _tariff_checked: Any
+        _tariff_key: tuple[str, Any] | None
+        _tariff_busy: bool
         _exp_table: Any
         _glow: Any
         _log: Any
         _notify: Any
-        adapters: Any
-        alerts: Any
+        adapters: list[DeviceAdapter]
+        alerts: AlertTracker
         day_plan: Any
-        hass: Any
-        health: Any
-        profile: Any
-        settings: Any
-        usage: Any
+        hass: HomeAssistant
+        health: Health
+        profile: LoadProfile
+        settings: AppSettings
+        usage: UsageHistory
 
     def _rates_entity(self) -> str:
         return self.settings.rates_entity or self._glow().get("rate", "")
 
-    def history_window(self) -> tuple | None:
+    def history_window(self) -> tuple[Any, ...] | None:
         """The cheap period found in the price history, as (start, end) to plan with; None until one has been found.
         The window is read from when the sensor's value changed, and such sensors (smart-meter/DCC data in particular) lag
         the real switch by up to an hour. A late *start* only wastes cheap time, but a late *end* would plan charging into
@@ -65,7 +80,7 @@ class PricesMixin:
         inf = self._tariff if s.offpeak_auto and ent else None
         if inf is not None:   # anything the user typed in wins; history only fills the blanks
             if (a is None or b is None) and not s.offpeak_extra:   # typed-in extra periods mean the user knows the hours
-                a, b = self.history_window()
+                a, b = cast("tuple[Any, Any]", self.history_window())     # there is one: inf is the history's window
             peak = inf.peak if peak is None else peak
             off = inf.offpeak if off is None else off
         if not slots and peak is None and off is None:
@@ -89,7 +104,7 @@ class PricesMixin:
             from homeassistant.components.recorder import get_instance, history
             end = dt_util.utcnow()
 
-            def load():
+            def load() -> list[Any]:
                 return history.get_significant_states(self.hass, end - timedelta(days=TARIFF_HISTORY_DAYS), end, [ent],
                                                       include_start_time_state=True, significant_changes_only=False,
                                                       no_attributes=True).get(ent, [])
@@ -178,7 +193,7 @@ class PricesMixin:
     def _event_entities(self) -> list[str]:
         return [e.strip() for e in str(getattr(self.settings, "event_entity", "") or "").split(",") if e.strip()]
 
-    def _event_windows(self) -> list:
+    def _event_windows(self) -> list[Any]:
         """Start and end of the events the chosen entities describe (a calendar, the Octopus saving-session entities...)."""
         from .core.events import event_windows
 
@@ -189,7 +204,7 @@ class PricesMixin:
                 out += event_windows(dict(st.attributes), dt_util.DEFAULT_TIME_ZONE)
         return sorted(set(out))
 
-    def _event_goal(self, now: datetime):
+    def _event_goal(self, now: datetime) -> Goal | None:
         """Settings > Grid events: a goal that charges the batteries up, in the cheapest half-hours, before the next event starts."""
         pct = int(getattr(self.settings, "event_charge_pct", 0) or 0)
         if not pct:
@@ -198,7 +213,7 @@ class PricesMixin:
 
         return charge_goal(next_event_start(self._event_windows(), now), pct, now)
 
-    def _day_plan(self, rates: RateTable | None, now: datetime, actuals: dict):
+    def _day_plan(self, rates: RateTable | None, now: datetime, actuals: dict[str, Any]) -> DayPlan | None:
         """Where the stored energy is worth most until refilling is cheapest (core/dayplan.py). Only when paid export or 'keep
         stored energy for dearer hours' is on, and prices are known."""
         from .core.dayplan import plan_day
@@ -266,7 +281,7 @@ class PricesMixin:
         p = rates.price_at(now) if rates else None
         return None if p is None else to_main_units(p, self._unit(rates))
 
-    def tariff_comparison(self, days: int = 30) -> dict:
+    def tariff_comparison(self, days: int = 30) -> dict[str, Any]:
         """The recorded half-hourly usage priced under each tariff typed in Settings (see core/tariffs.py)."""
         from .core.tariffs import compare, parse_tariffs
         return compare(self.usage.days, parse_tariffs(self.settings.compare_tariffs), days)
@@ -294,7 +309,7 @@ class PricesMixin:
         ahead = [x.price for x in rates.slots_between(now, now + timedelta(hours=24))]
         return min(ahead) if ahead else rates.offpeak
 
-    def _price_slots(self, now: datetime, hours: int) -> list[dict]:
+    def _price_slots(self, now: datetime, hours: int) -> list[dict[str, Any]]:
         rates = self._rates()
         if rates is None:
             return []
@@ -305,7 +320,7 @@ class PricesMixin:
                  "cheap": rates.in_cheap_window(x.start.astimezone(now.tzinfo).time()) if rates.windows else (x.price < mean - 0.1 * abs(mean))}
                 for x in found]
 
-    def _export_view(self, rates: RateTable | None, now: datetime) -> dict:
+    def _export_view(self, rates: RateTable | None, now: datetime) -> dict[str, Any]:
         """Paid export, for the panel: what exporting pays now, what buying it back costs, and whether it is worth it."""
         from .core.engine import export_pays
 
@@ -317,7 +332,7 @@ class PricesMixin:
                 "planned": bool(getattr(self, "day_plan", None)),
                 "export_now_w": self.day_plan.export_now_w if getattr(self, "day_plan", None) else None}
 
-    def _cycling(self, did: str, rates: RateTable | None, now: datetime) -> dict | None:
+    def _cycling(self, did: str, rates: RateTable | None, now: datetime) -> dict[str, Any] | None:
         """What storing a kWh in this battery is worth right now: the cheapest import in the next 24 h against the dearest
         price it could avoid, at this battery's own measured round-trip efficiency (or an 85 % estimate until it has one)."""
         if rates is None:

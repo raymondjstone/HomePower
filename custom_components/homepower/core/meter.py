@@ -1,5 +1,6 @@
 """Smart-meter readings: a sensor may report power (W/kW) or a cumulative energy counter (Wh/kWh)."""
 from __future__ import annotations
+from typing import Any, cast
 
 _POWER = {"w": 1.0, "kw": 1000.0, "mw": 1e6}
 _ENERGY_KWH = {"wh": 0.001, "kwh": 1.0, "mwh": 1000.0}
@@ -13,7 +14,7 @@ class MeterReader:
     and falls to 0 once it has been still for twice the previous step (or MAX_WINDOW_S)."""
 
     def __init__(self) -> None:
-        self._c: dict[str, dict] = {}
+        self._c: dict[str, dict[str, Any]] = {}
 
     def read(self, key: str, state: str | None, unit: str | None, now_s: float) -> float | None:
         try:
@@ -41,9 +42,9 @@ class MeterReader:
             else:
                 c["w"], c["step"] = None, None
             c["kwh"], c["t"] = kwh, now
-            return c["w"]
+            return cast("float | None", c["w"])
         if c["w"] is None:
             return None
         if now - c["t"] > min(MAX_WINDOW_S, 2 * max(c["step"] or 60, 60)):
             return 0.0
-        return c["w"]
+        return cast("float | None", c["w"])

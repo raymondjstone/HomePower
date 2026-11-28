@@ -34,33 +34,34 @@ def anker_registers(x1: bool) -> tuple[int, ...]:
     return X1_REGISTERS if x1 else SB_REGISTERS
 
 
-def _s(key, label, kind, group, value, *, unit="", lo=None, hi=None, step=None, options=None, hint="", locked="") -> dict:
+def _s(key: str, label: str, kind: str, group: str, value: Any, *, unit: str = "", lo: int | None = None, hi: int | None = None,
+       step: int | None = None, options: dict[Any, str] | None = None, hint: str = "", locked: str = "") -> dict[str, Any]:
     return {"key": key, "label": label, "kind": kind, "group": group, "value": value, "unit": unit, "min": lo, "max": hi, "step": step,
             "options": [{"value": v, "label": t} for v, t in (options or {}).items()], "hint": hint, "locked": locked}
 
 
-def _on(v) -> bool:
+def _on(v: Any) -> bool:
     """A switch value as EcoFlow sends it: a real boolean, a number, or (rarely) text."""
     return v.strip().lower() in ("true", "1", "on", "yes") if isinstance(v, str) else bool(v)
 
 
-def _int(v, default: int) -> int:
+def _int(v: Any, default: int) -> int:
     try:
         return int(float(v))
     except (TypeError, ValueError, OverflowError):
         return default
 
 
-def _u32(regs: dict, addr: int, order: str | None) -> int | None:
+def _u32(regs: dict[int, int], addr: int, order: str | None) -> int | None:
     a, b = regs.get(addr), regs.get(addr + 1)
     if a is None or b is None or order is None:
         return None
     return (a << 16 | b) if order == "big" else (b << 16 | a)
 
 
-def anker_settings(x1: bool, regs: dict[int, int], order: str | None, controlled: bool) -> list[dict]:
+def anker_settings(x1: bool, regs: dict[int, int], order: str | None, controlled: bool) -> list[dict[str, Any]]:
     """The Anker settings this battery answered for. regs: register address -> value."""
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     mode = regs.get(10064)
     lock_mode = "HomePower is managing this battery's mode. Turn on \"monitor only\" in Edit to set it yourself." if controlled else ""
     if x1:
@@ -116,7 +117,7 @@ def anker_settings(x1: bool, regs: dict[int, int], order: str | None, controlled
     return out
 
 
-def anker_write_plan(x1: bool, key: str, value, regs: dict[int, int], order: str | None, controlled: bool) -> list[tuple[int, list[int]]]:
+def anker_write_plan(x1: bool, key: str, value: Any, regs: dict[int, int], order: str | None, controlled: bool) -> list[tuple[int, list[int]]]:
     """[(first register, words)] to write for one change, or ValueError saying why not. regs must be fresh."""
     found = {s["key"]: s for s in anker_settings(x1, regs, order, controlled)}
     s = found.get(key)
@@ -171,9 +172,9 @@ _MODES = {"self_powered": ("operateSelfPoweredOpen", "operateSelfPoweredOpen", "
           "ai_mode": ("operateIntelligentScheduleModeOpen", "operateIntelligentScheduleModeOpen", "Operating mode: AI mode")}
 
 
-def ecoflow_settings(quota: dict, controlled: bool) -> list[dict]:
+def ecoflow_settings(quota: dict[str, Any], controlled: bool) -> list[dict[str, Any]]:
     """The STREAM settings the developer API lets an owner change, for the keys this battery actually sent."""
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for key, (qk, _cfg, label) in _AC_KEYS.items():
         if qk in quota:
             out.append(_s(key, label, "switch", "Controls", _on(quota[qk])))
@@ -191,7 +192,7 @@ def ecoflow_settings(quota: dict, controlled: bool) -> list[dict]:
     return out
 
 
-def ecoflow_write_params(key: str, value, quota: dict, controlled: bool) -> dict:
+def ecoflow_write_params(key: str, value: Any, quota: dict[str, Any], controlled: bool) -> dict[str, Any]:
     """The developer-API command parameters for one change, or ValueError saying why not."""
     found = {s["key"]: s for s in ecoflow_settings(quota, controlled)}
     s = found.get(key)
@@ -220,7 +221,7 @@ def ecoflow_write_params(key: str, value, quota: dict, controlled: bool) -> dict
 
 
 # ------------------------------------------------------------------------------------- reading and writing through a driver
-async def read_settings(driver, controlled: bool) -> tuple[str, list[dict], dict]:
+async def read_settings(driver: Any, controlled: bool) -> tuple[str, list[dict[str, Any]], dict[Any, Any]]:
     """(family, settings, the fresh readings they came from) for a battery that has settings that can be changed; family "" if none."""
     if hasattr(driver, "read_registers") and hasattr(driver, "scan"):          # an Anker battery
         x1 = bool(driver.config.extra.get("house_meter"))
@@ -240,7 +241,7 @@ async def read_settings(driver, controlled: bool) -> tuple[str, list[dict], dict
     return "", [], {}
 
 
-async def apply_change(driver, key: str, value, controlled: bool) -> str:
+async def apply_change(driver: Any, key: str, value: Any, controlled: bool) -> str:
     """Check one change against the vendor's rules and send it. Returns the family; ValueError says why a change is refused."""
     family, _, state = await read_settings(driver, controlled)
     if not family:

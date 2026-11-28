@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import Callable
+from typing import Callable, cast
 
 from .dayplan import DayPlan
 from .events import GOAL_ID as EVENT_GOAL_ID
@@ -117,6 +117,11 @@ def export_pays(export_now: float | None, buyback: float | None, wear: float = 0
     return export_now > max(0.0, buyback) / ROUND_TRIP + max(0.0, wear)
 
 
+def _soc(d: DevIn) -> float:
+    """The charge of a battery the caller has already checked reports one (mypy cannot follow those filters)."""
+    return cast(float, d.actual.soc)
+
+
 def _can_discharge(d: DevIn, above: int) -> bool:
     caps, act = d.config.caps, d.actual
     return (d.controllable and act.online and act.soc is not None and Mode.DISCHARGE in caps.supported_modes
@@ -158,7 +163,7 @@ def _auto_target(w: World, g: Goal, devs: list[DevIn], deadline: datetime, res: 
         res.notes.append(f"goal '{g.id}': still learning your usual use, so it aims for {g.target_soc}% for now")
         return g.target_soc
     target = min(g.target_soc, auto)
-    res.notes.append(f"goal '{g.id}': auto target {target}% (about {use / 1000:.1f} kWh of usual use over the {hours:.0f} h after the deadline)")
+    res.notes.append(f"goal '{g.id}': auto target {target}% (about {cast(float, use) / 1000:.1f} kWh of usual use over the {hours:.0f} h after the deadline)")
     return target
 
 
@@ -221,9 +226,9 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str, str]]:
                 # A battery that is idle and within GOAL_TOLERANCE_PTS of its target counts as there: otherwise, while the house draws a
                 # little from it, it would be topped up again and again (one command each time), usually at the dearest rate.
                 # A battery we told to charge carries on to the target even if it does not report its mode.
-                short = tgt(d) - d.actual.soc
+                short = tgt(d) - _soc(d)
                 charging = d.actual.mode is Mode.CHARGE or d.commanded is Mode.CHARGE
-                return float(tgt(d)) if not charging and 0 < short < GOAL_TOLERANCE_PTS else d.actual.soc
+                return float(tgt(d)) if not charging and 0 < short < GOAL_TOLERANCE_PTS else _soc(d)
 
             needs = [Need(d.config.device_id, soc_for_plan(d), d.config.caps.capacity_wh, d.config.caps.max_charge_w, tgt(d),
                           not d.config.caps.power_control, w.efficiency.get(d.config.device_id)) for d in devs]
@@ -245,7 +250,7 @@ def _plan_goals(w: World, res: Result) -> dict[str, tuple[Desired, str, str]]:
             # a grid slot always beats another goal's solar-only entry: that one may draw nothing at all, and the deadline would be missed
             if p > 0 and (did not in out or out[did][2] == "solar" or p > (out[did][0].power_w or 0)):
                 out[did] = (Desired(Mode.CHARGE, p, target_soc=tgt(d)), f"goal '{g.id}'", "both" if g.source == "both" else "grid")
-            elif (p <= 0 and g.source != "grid" and not w.export_better and did not in out and d.actual.soc < target
+            elif (p <= 0 and g.source != "grid" and not w.export_better and did not in out and _soc(d) < target
                   and d.config.caps.power_control):
                 # no grid slot right now: take whatever solar would otherwise be exported (and nothing from the grid)
                 out[did] = (Desired(Mode.CHARGE, g.max_power_w, target_soc=target), f"goal '{g.id}'", "solar")
@@ -268,7 +273,7 @@ def compute(w: World) -> Result:
                      and _can_discharge(d, max(_floor(d.config.caps, w), w.export_keep_pct))]
         if w.day_plan.export_now_w > 0 and exporters:
             export_w = split_power(w.day_plan.export_now_w, [
-                (d.config.device_id, max(1.0, d.config.caps.capacity_wh * d.actual.soc / 100), d.config.caps.max_discharge_w) for d in exporters])
+                (d.config.device_id, max(1.0, d.config.caps.capacity_wh * _soc(d) / 100), d.config.caps.max_discharge_w) for d in exporters])
         export_ok = bool(export_w)
     else:
         export_ok = S.export_discharge and export_pays(w.export_price_now, w.buyback_price, S.wear_cost)
@@ -335,7 +340,7 @@ def compute(w: World) -> Result:
             soc = 50.0 if soc is None else soc
             weight = c.capacity_wh * ((100 - soc) if mode is Mode.CHARGE else soc) / 100
             items.append((did, max(weight, 1.0), c.max_charge_w if mode is Mode.CHARGE else c.max_discharge_w))
-        for did, p in split_power(e.total_power_w, items).items():
+        for did, p in split_power(cast(int, e.total_power_w), items).items():   # only entries with a total are grouped
             old = res.wants[did]
             res.wants[did] = replace(old, power_w=p) if p > 0 else Desired(Mode.HOLD)
 
@@ -412,9 +417,9 @@ def compute(w: World) -> Result:
             cands = []
             for d in free:
                 c = d.config.caps
-                if Mode.DISCHARGE in c.supported_modes and c.max_discharge_w > 0 and d.actual.soc > _floor(c, w) + SOC_MARGIN:
+                if Mode.DISCHARGE in c.supported_modes and c.max_discharge_w > 0 and _soc(d) > _floor(c, w) + SOC_MARGIN:
                     cands.append((d.config.device_id, max(0.0, -(d.actual.power_w or 0.0)), c.max_discharge_w,
-                                  max(c.capacity_wh * d.actual.soc / 100, 1.0)))
+                                  max(c.capacity_wh * _soc(d) / 100, 1.0)))
             for did, p in peak_shave(w.grid_w, S.import_limit_w, cands).items():
                 res.wants[did] = Desired(Mode.DISCHARGE, p, reserve_soc=_floor(by_id[did].config.caps, w))
                 res.reasons[did] = "peak shaving"
@@ -422,15 +427,15 @@ def compute(w: World) -> Result:
             discharging = {did: max(0.0, -(by_id[did].actual.power_w or 0.0)) for did, x in res.wants.items()
                            if x.mode is Mode.DISCHARGE and res.reasons[did] != "manual override" and by_id[did].actual.online
                            and by_id[did].actual.power_w is not None}      # unknown is not 0: trimming from 0 would flap
-            commanded = {did: float(res.wants[did].power_w if res.wants[did].power_w is not None else by_id[did].config.caps.max_discharge_w)
+            commanded = {did: float(cast(int, res.wants[did].power_w) if res.wants[did].power_w is not None else by_id[did].config.caps.max_discharge_w)
                          for did in discharging}
             chargers, held = [], set()
             for d in free:
                 c = d.config.caps
                 if (d.config.device_id not in res.wants and Mode.CHARGE in c.supported_modes and c.max_charge_w > 0 and c.power_control
-                        and d.actual.soc < 98 and "charge" not in w.load_blocks):
+                        and _soc(d) < 98 and "charge" not in w.load_blocks):
                     chargers.append((d.config.device_id, max(0.0, d.actual.power_w or 0.0), c.max_charge_w,
-                                     max(c.capacity_wh * (100 - d.actual.soc) / 100, 1.0)))
+                                     max(c.capacity_wh * (100 - _soc(d)) / 100, 1.0)))
                     if d.release_pending and d.commanded is Mode.CHARGE:
                         held.add(d.config.device_id)
             trims, charges = export_guard(w.grid_w, S.export_limit_w, discharging, chargers, commanded, held)
@@ -449,7 +454,7 @@ def compute(w: World) -> Result:
 
     # Battery power that passes the house meter. Charging from a battery's own panels never does: counting it would make the house
     # look like it imports less than it does, and the import-limit headroom would let the others charge past the limit.
-    online_net = sum((p - min(max(0.0, x.actual.pv_w or 0.0), p)) if (p := x.actual.power_w or 0.0) > 0 else p
+    online_net = sum((pw - min(max(0.0, x.actual.pv_w or 0.0), pw)) if (pw := x.actual.power_w or 0.0) > 0 else pw
                      for x in w.devices if x.actual.online)
     # Never get in the way of solar charging: not this battery's own panels, nor surplus from anywhere else in the house. Surplus a
     # battery is soaking up never shows at the meter, and a battery's discharge going out is not solar: so the batteries are taken out of

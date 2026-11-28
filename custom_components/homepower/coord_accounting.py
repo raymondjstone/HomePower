@@ -13,11 +13,30 @@ from .core.insights import Diverter
 from .core.rates import RateTable, to_main_units
 from .coord_base import _LOGGER, MONEY_SAVED, MONEY_EXPORT
 
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+    from .adapters.base import DeviceAdapter
+    from .coord_base import Snapshot
+    from .core.energy import EnergyMeter
+    from .core.energy import Ledger
+    from .core.insights import DailyStats
+    from .core.insights import Diverter
+    from .core.insights import Health
+    from .core.insights import LoadProfile
+    from .core.insights import PlanLog
+    from .core.insights import UsageHistory
+    from .core.pv_health import PvHealth
+    from .core.sanity import RateLearner
+    from .core.settings import AppSettings
+    from .core.traces import CommandTrace
+    from .manager import HomePowerManager
+
 
 class AccountingMixin:
     if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
         _divert_entity: Any
-        diverter: Any
+        diverter: Diverter
         _cheapest_price: Any
         _combined: Any
         _export_price_now: Any
@@ -26,24 +45,24 @@ class AccountingMixin:
         _is_cheap: Any
         _log: Any
         _price_now: Any
-        _snap: Any
+        _snap: Snapshot
         _unit: Any
-        adapters: Any
-        daily: Any
-        hass: Any
-        health: Any
-        ledger: Any
-        manager: Any
-        meter: Any
+        adapters: list[DeviceAdapter]
+        daily: DailyStats
+        hass: HomeAssistant
+        health: Health
+        ledger: Ledger
+        manager: HomePowerManager
+        meter: EnergyMeter
         paused: Any
-        plan_log: Any
-        profile: Any
-        pv_health: Any
-        rate_learner: Any
-        settings: Any
+        plan_log: PlanLog
+        profile: LoadProfile
+        pv_health: PvHealth
+        rate_learner: RateLearner
+        settings: AppSettings
         shown_actuals: Any
-        traces: Any
-        usage: Any
+        traces: CommandTrace
+        usage: UsageHistory
 
     async def _divert(self, now_s: float, actuals: dict[str, Actual], grid: float | None) -> None:
         """Solar surplus: run a chosen load while the batteries are full and power is being exported."""
@@ -138,7 +157,7 @@ class AccountingMixin:
             planned = None
             # only what it was actually told: monitor-only, paused or under test it is sent nothing (decision None), so it is
             # not scored against a plan it never got
-            if want is not None and want.mode is not Mode.AUTO and st.decision is not None:
+            if st is not None and want is not None and want.mode is not Mode.AUTO and st.decision is not None:
                 planned = {Mode.CHARGE: 1, Mode.DISCHARGE: -1}.get(want.mode, 0) * float(want.power_w or 0)
             self.plan_log.add(now, did, planned, act.power_w if act.online else None)
 
@@ -161,7 +180,7 @@ class AccountingMixin:
         for devs in self.plan_log.days.values():
             devs.pop(did, None)
 
-    def _learn_rates(self, adapters) -> None:
+    def _learn_rates(self, adapters: list[DeviceAdapter]) -> None:
         changed = False
         for a in adapters:
             st = self._snap.devices.get(a.config.device_id)

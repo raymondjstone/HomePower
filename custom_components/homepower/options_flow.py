@@ -5,10 +5,12 @@ EcoFlow through your EcoFlow developer keys (devices listed from your account). 
 is needed. New batteries start in monitor-only mode until you allow control.
 """
 from __future__ import annotations
+from typing import TYPE_CHECKING, Any, cast
 
 import re
 
 from homeassistant import config_entries
+from homeassistant.data_entry_flow import AbortFlow
 from homeassistant.helpers import selector as sel
 
 from ._schema import vol
@@ -16,6 +18,9 @@ from .core.profiles import DRIVERS, PROFILE_BY_ID, PROFILES
 from .core.serde import ValidationError, fill_from_probe
 from .core.settings import DEFAULTS, SettingsError, clean
 from .runtime import running_manager
+
+if TYPE_CHECKING:
+    from .manager import HomePowerManager
 
 FLOW_SETTING_KEYS = ("import_limit_w", "peak_shaving", "export_limit_w", "grid_import_entity", "grid_export_entity", "rates_entity", "price_peak",
                      "price_offpeak", "offpeak_start", "offpeak_end", "offpeak_auto", "forecast_entity", "forecast_use_pct", "backup_reserve_pct", "storm_entity",
@@ -35,23 +40,23 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_") or "battery"
 
 
-def _num(lo, hi, unit=None, step=1):
-    cfg = {"min": lo, "max": hi, "step": step, "mode": sel.NumberSelectorMode.BOX}
+def _num(lo: float, hi: float, unit: str | None = None, step: float = 1) -> sel.NumberSelector:
+    cfg: sel.NumberSelectorConfig = {"min": lo, "max": hi, "step": step, "mode": sel.NumberSelectorMode.BOX}
     if unit:  # the validator rejects unit_of_measurement=None
         cfg["unit_of_measurement"] = unit
     return sel.NumberSelector(sel.NumberSelectorConfig(**cfg))
 
 
-def _plain(err) -> str:
+def _plain(err: object) -> str:
     """A settings error names the setting by its key (the panel shows its label instead): here, as words."""
     return re.sub(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b", lambda m: m.group(0).replace("_", " "), str(err))
 
 
-def _dropdown(options, custom=False):
+def _dropdown(options: list[Any], custom: bool = False) -> sel.SelectSelector:
     return sel.SelectSelector(sel.SelectSelectorConfig(options=options, custom_value=custom, mode=sel.SelectSelectorMode.DROPDOWN))
 
 
-def _readings(info: dict) -> str:
+def _readings(info: dict[str, Any]) -> str:
     if not info:
         return ""
     bits = []
@@ -71,22 +76,26 @@ def _readings(info: dict) -> str:
 
 class HomePowerOptionsFlow(config_entries.OptionsFlow):
     def __init__(self) -> None:
-        self._d: dict = {}
-        self._info: dict = {}
-        self._found: list[dict] | None = None
-        self._eco_devices: list[dict] = []
+        self._d: dict[str, Any] = {}
+        self._info: dict[str, Any] = {}
+        self._found: list[dict[str, Any]] | None = None
+        self._eco_devices: list[dict[str, Any]] = []
 
-    def _mgr(self):
-        return running_manager(self.hass)
+    def _mgr(self) -> HomePowerManager:
+        """The running HomePower. Unloaded (or reloading) while this dialog is open: the dialog ends, as it would on opening."""
+        mgr = running_manager(self.hass)
+        if mgr is None:
+            raise AbortFlow("not_loaded")
+        return mgr
 
-    def _done(self):
+    def _done(self) -> config_entries.ConfigFlowResult:
         return self.async_create_entry(data=dict(self.config_entry.options))
 
     def _driver(self) -> str:
-        return PROFILE_BY_ID[self._d["kind"]]["driver"]
+        return str(PROFILE_BY_ID[self._d["kind"]]["driver"])
 
-    async def async_step_init(self, user_input=None):
-        mgr = self._mgr()
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
+        mgr = running_manager(self.hass)
         if mgr is None:
             return self.async_abort(reason="not_loaded")
         menu = ["add_battery", "add_schedule", "add_goal", "settings", "money"]
@@ -99,7 +108,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_menu(step_id="init", menu_options=menu)
 
     # ---------------------------------------------------------------- add battery
-    async def async_step_add_battery(self, user_input=None):
+    async def async_step_add_battery(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         if user_input is not None:
             self._d = {"name": user_input["name"].strip(), "kind": user_input["kind"]}
             driver = self._driver()
@@ -119,7 +128,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         }))
 
     # ---- Anker: scan the network, then read the battery to prove it works
-    async def async_step_anker_find(self, user_input=None):
+    async def async_step_anker_find(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         mgr = self._mgr()
         errors, detail = {}, ""
         if user_input is not None:
@@ -143,7 +152,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                                       "error": detail})
 
     # ---- EcoFlow STREAM 5000 over its own local Modbus TCP (Third-party control in the EcoFlow app)
-    async def async_step_ecoflow_local(self, user_input=None):
+    async def async_step_ecoflow_local(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         errors, detail = {}, ""
         if user_input is not None:
             conn = {"host": str(user_input["host"]).strip(), "port": int(user_input.get("port", 502))}
@@ -162,7 +171,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             description_placeholders={"error": detail})
 
     # ---- Generic Modbus device described by a register map
-    async def async_step_modbus_map(self, user_input=None):
+    async def async_step_modbus_map(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         errors, detail = {}, ""
         prof = PROFILE_BY_ID[self._d["kind"]]
         if user_input is not None:
@@ -176,14 +185,14 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                 return await self.async_step_battery_details()
             except ValidationError as err:
                 errors, detail = {"base": "cannot_connect"}, str(err)
-        fields: dict = {vol.Required("host"): str, vol.Optional("port", default=502): _num(1, 65535),
+        fields: dict[str, Any] = {vol.Required("host"): str, vol.Optional("port", default=502): _num(1, 65535),
                         vol.Optional("unit_id", default=int(prof.get("default_unit", 1))): _num(0, 255)}
         fields[vol.Optional("map") if prof.get("preset_map") else vol.Required("map")] = sel.TextSelector(sel.TextSelectorConfig(multiline=True))
         return self.async_show_form(step_id="modbus_map", errors=errors, data_schema=vol.Schema(fields),
                                     description_placeholders={"error": detail, "preset": "built in" if prof.get("preset_map") else "required"})
 
     # ---- EcoFlow: account keys -> list devices -> pick one
-    async def async_step_ecoflow_account(self, user_input=None):
+    async def async_step_ecoflow_account(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         errors, detail = {}, ""
         if user_input is not None:
             try:
@@ -203,7 +212,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                                     vol.Required("secret_key"): sel.TextSelector(sel.TextSelectorConfig(type=sel.TextSelectorType.PASSWORD))}),
             description_placeholders={"error": detail})
 
-    async def async_step_ecoflow_device(self, user_input=None):
+    async def async_step_ecoflow_device(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         errors, detail = {}, ""
         if user_input is not None:
             self._d["connection"]["sn"] = user_input["sn"]
@@ -218,7 +227,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                                     description_placeholders={"error": detail})
 
     # ---- direct batteries: everything the battery can report is read from it; ask only for the rest
-    async def async_step_battery_details(self, user_input=None):
+    async def async_step_battery_details(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         sized = self._driver() in ("anker_modbus", "ecoflow_modbus") or (self._driver() == "modbus_generic" and self._info.get("control"))
         wanted = ("capacity_wh", "max_charge_w", "max_discharge_w") if sized else ("capacity_wh",)
         missing = [k for k in wanted if not self._info.get(k)]
@@ -232,20 +241,20 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             self._d.setdefault("min_soc", 10)  # safe floor when the battery reports none
             return await self._save_battery()
         selectors = {"capacity_wh": _num(100, 200000, "Wh", 10), "max_charge_w": _num(0, 50000, "W", 50), "max_discharge_w": _num(0, 50000, "W", 50)}
-        fields: dict = {vol.Required(k): selectors[k] for k in missing}
+        fields: dict[str, Any] = {vol.Required(k): selectors[k] for k in missing}
         fields[vol.Optional("control_enabled", default=False)] = bool
         return self.async_show_form(step_id="battery_details", data_schema=vol.Schema(fields),
                                     description_placeholders={"readings": _readings(self._info) or "connected"})
 
     # ---- advanced: any battery via Home Assistant entities
-    async def async_step_entity_details(self, user_input=None):
+    async def async_step_entity_details(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         spec = DRIVERS["entities"]
         if user_input is not None:
             self._d.update({k: user_input[k] for k in ("capacity_wh", "max_charge_w", "max_discharge_w", "min_soc") if k in user_input})
             self._d["invert_power"] = bool(user_input.get("invert_power", False))
             self._d["entities"] = {f["k"]: user_input[f"e_{f['k']}"] for f in spec["entities"] if user_input.get(f"e_{f['k']}")}
             return await self.async_step_battery_modes()
-        fields: dict = {
+        fields: dict[str, Any] = {
             vol.Required("capacity_wh"): _num(100, 200000, "Wh", 10),
             vol.Required("max_charge_w"): _num(0, 50000, "W", 50),
             vol.Required("max_discharge_w"): _num(0, 50000, "W", 50),
@@ -257,13 +266,13 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         fields[vol.Optional("invert_power", default=False)] = bool
         return self.async_show_form(step_id="entity_details", data_schema=vol.Schema(fields))
 
-    async def async_step_battery_modes(self, user_input=None):
+    async def async_step_battery_modes(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         spec = DRIVERS["entities"]
         if user_input is not None:
             self._d["mode_map"] = {m["k"]: user_input[f"mm_{m['k']}"] for m in spec["mode_map"] if user_input.get(f"mm_{m['k']}")}
             self._d["control_enabled"] = True
             return await self._save_battery()
-        fields: dict = {}
+        fields: dict[str, Any] = {}
         for m in spec["mode_map"]:
             st = self.hass.states.get(self._d["entities"].get(m["entity"], ""))
             opts = list((st.attributes.get("options") if st else None) or [])
@@ -273,7 +282,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             fields[key] = _dropdown(opts, custom=True) if opts else str
         return self.async_show_form(step_id="battery_modes", data_schema=vol.Schema(fields))
 
-    async def _save_battery(self):
+    async def _save_battery(self) -> config_entries.ConfigFlowResult:
         mgr = self._mgr()
         base = _slug(self._d["name"])
         did, n = base, 2
@@ -286,7 +295,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
         return self._done()
 
-    async def async_step_control_battery(self, user_input=None):
+    async def async_step_control_battery(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         mgr = self._mgr()
         if user_input is not None:
             dev = mgr.devices.get(user_input["device"])
@@ -301,7 +310,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         }))
 
     # ---------------------------------------------------------------- schedules
-    async def async_step_add_schedule(self, user_input=None):
+    async def async_step_add_schedule(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         mgr = self._mgr()
         if user_input is not None:
             raw = {
@@ -319,8 +328,8 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             except ValidationError as err:
                 return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
             return self._done()
-        devices = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
-        fields: dict = {
+        devices: list[sel.SelectOptionDict] = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
+        fields: dict[str, Any] = {
             vol.Required("name"): vol.All(str, vol.Length(min=1, max=120)),
             vol.Optional("devices", default=[]): sel.SelectSelector(sel.SelectSelectorConfig(options=devices, multiple=True, mode=sel.SelectSelectorMode.DROPDOWN)),
             vol.Required("mode", default="charge"): _dropdown(MODE_OPTIONS),
@@ -339,7 +348,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="add_schedule", data_schema=vol.Schema(fields))
 
     # ---------------------------------------------------------------- goals
-    async def async_step_add_goal(self, user_input=None):
+    async def async_step_add_goal(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         mgr = self._mgr()
         if user_input is not None:
             raw = {"id": user_input["name"].strip(), "device_ids": user_input.get("devices", []),
@@ -353,7 +362,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             except ValidationError as err:
                 return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
             return self._done()
-        devices = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
+        devices: list[sel.SelectOptionDict] = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
         return self.async_show_form(step_id="add_goal", data_schema=vol.Schema({
             vol.Required("name"): vol.All(str, vol.Length(min=1, max=120)),
             vol.Optional("devices", default=[]): sel.SelectSelector(sel.SelectSelectorConfig(options=devices, multiple=True, mode=sel.SelectSelectorMode.DROPDOWN)),
@@ -363,7 +372,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             vol.Optional("use_forecast", default=False): bool,
         }))
 
-    async def async_step_remove_goal(self, user_input=None):
+    async def async_step_remove_goal(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         mgr = self._mgr()
         if user_input is not None:
             await mgr.delete_goal(user_input["goal"])
@@ -372,7 +381,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="remove_goal", data_schema=vol.Schema({vol.Required("goal"): _dropdown(opts)}))
 
     # ---------------------------------------------------------------- settings (the common ones; the panel has all of them)
-    async def async_step_settings(self, user_input=None):
+    async def async_step_settings(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         cur = {**{k: v for k, v in DEFAULTS.items()}, **self.config_entry.options}
         if user_input is not None:
             try:
@@ -386,10 +395,10 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                 return self.async_abort(reason="invalid", description_placeholders={"error": _plain(err)})
             return self.async_create_entry(data={**self.config_entry.options, **new})
 
-        def ent(domains):
+        def ent(domains: list[str]) -> sel.EntitySelector:
             return sel.EntitySelector(sel.EntitySelectorConfig(domain=domains))
 
-        def opt(key, selector, default=None):
+        def opt(key: str, selector: object, default: Any = None) -> Any:
             d = cur.get(key)
             return vol.Optional(key, description={"suggested_value": d if d not in (None, "") else default})
 
@@ -413,7 +422,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
             opt("notify_service", str): str,
         }))
 
-    async def async_step_money(self, user_input=None):
+    async def async_step_money(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Paid export, battery wear, keeping energy for dearer hours, and grid events (saving sessions)."""
         cur = {**DEFAULTS, **self.config_entry.options}
         if user_input is not None:
@@ -427,7 +436,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                 return self.async_abort(reason="invalid", description_placeholders={"error": _plain(err)})
             return self.async_create_entry(data={**self.config_entry.options, **new})
 
-        def opt(key, default=None):
+        def opt(key: str, default: Any = None) -> Any:
             d = cur.get(key)
             if key == "event_entity":
                 d = [e.strip() for e in str(d or "").split(",") if e.strip()]
@@ -446,7 +455,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         }))
 
     # ---------------------------------------------------------------- remove
-    async def async_step_remove_battery(self, user_input=None):
+    async def async_step_remove_battery(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         mgr = self._mgr()
         if user_input is not None:
             try:
@@ -460,7 +469,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         opts = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
         return self.async_show_form(step_id="remove_battery", data_schema=vol.Schema({vol.Required("device"): _dropdown(opts)}))
 
-    async def async_step_edit_schedule(self, user_input=None):
+    async def async_step_edit_schedule(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         mgr = self._mgr()
         if user_input is not None:
             self._edit_id = user_input["schedule"]
@@ -468,10 +477,10 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         opts = [{"value": s["id"], "label": s["id"]} for s in mgr.schedules.values()]
         return self.async_show_form(step_id="edit_schedule", data_schema=vol.Schema({vol.Required("schedule"): _dropdown(opts)}))
 
-    async def async_step_edit_schedule_form(self, user_input=None):
+    async def async_step_edit_schedule_form(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Change an existing schedule. Anything this form does not show (season, priority, sharing...) is kept as it is."""
         mgr = self._mgr()
-        cur = mgr.schedules.get(getattr(self, "_edit_id", None))
+        cur = mgr.schedules.get(cast(str, getattr(self, "_edit_id", None)))
         if cur is None:
             return self.async_abort(reason="invalid", description_placeholders={"error": "that schedule no longer exists"})
         if user_input is not None:
@@ -489,13 +498,13 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
                 return self.async_abort(reason="invalid", description_placeholders={"error": str(err)})
             return self._done()
 
-        def opt(key: str):   # optional field pre-filled with the current value, which the user can still clear
+        def opt(key: str) -> Any:   # optional field pre-filled with the current value, which the user can still clear
             v = cur.get(key)
             return vol.Optional(key, description={"suggested_value": v}) if v not in (None, "") else vol.Optional(key)
 
         known = set(mgr.devices)
-        devices = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
-        fields: dict = {
+        devices: list[sel.SelectOptionDict] = [{"value": d["device_id"], "label": d["name"]} for d in mgr.devices.values()]
+        fields: dict[str, Any] = {
             vol.Optional("devices", default=[x for x in cur.get("device_ids", []) if x in known]): sel.SelectSelector(
                 sel.SelectSelectorConfig(options=devices, multiple=True, mode=sel.SelectSelectorMode.DROPDOWN)),
             vol.Required("mode", default=cur.get("mode", "charge")): _dropdown(MODE_OPTIONS),
@@ -516,7 +525,7 @@ class HomePowerOptionsFlow(config_entries.OptionsFlow):
         return self.async_show_form(step_id="edit_schedule_form", data_schema=vol.Schema(fields),
                                     description_placeholders={"name": cur["id"]})
 
-    async def async_step_remove_schedule(self, user_input=None):
+    async def async_step_remove_schedule(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         mgr = self._mgr()
         if user_input is not None:
             await mgr.delete_schedule(user_input["schedule"])

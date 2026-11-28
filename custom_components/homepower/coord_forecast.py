@@ -4,11 +4,11 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 run on the coordinator itself and use its state."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast, overload
 
 import sys
 import time as _time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from homeassistant.util import dt as dt_util
 
@@ -19,26 +19,38 @@ from .core.weather import BASE_C, cold_extra_wh, parse_open_meteo, pick_tomorrow
 from .core.solar_room import SolarDay, charge_ceiling_pct, split_by_capacity
 from .coord_base import _LOGGER, FORECAST_PLATFORMS, _real
 
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+    from .adapters.base import DeviceAdapter
+    from .core.insights import DailyStats
+    from .core.insights import UsageHistory
+    from .core.settings import AppSettings
+    from .core.solar_forecast import SolarForecastLog
+    from .core.weather import ColdModel
+    from .core.weather import TempLog
+    from .manager import HomePowerManager
+
 
 class ForecastMixin:
     if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
         _fc_at: Any
-        _fc_cache: Any
+        _fc_cache: dict[str, list[str]]
         _solar_busy: Any
         _solar_at: Any
         _solar_pruned: Any
         _weather_busy: Any
         _weather_at: Any
         _has_solar: Any
-        adapters: Any
-        cold_model: Any
-        daily: Any
-        hass: Any
-        manager: Any
-        settings: Any
-        solar_log: Any
-        temp_log: Any
-        usage: Any
+        adapters: list[DeviceAdapter]
+        cold_model: ColdModel
+        daily: DailyStats
+        hass: HomeAssistant
+        manager: HomePowerManager
+        settings: AppSettings
+        solar_log: SolarForecastLog
+        temp_log: TempLog
+        usage: UsageHistory
 
     def _forecast_entities(self) -> dict[str, list[str]]:
         """Forecast.Solar / Solcast sensors for today's and tomorrow's generation: all planes / sites of ONE of them, to be
@@ -63,9 +75,9 @@ class ForecastMixin:
         found: dict[str, list[str]] = {"today": [], "tomorrow": []}
         self.forecast_source = None                             # (a forecast integration removed since is not still named)
         for platform in FORECAST_PLATFORMS:                     # in order of preference
-            got = by_platform.get(platform)
-            if got and (got["today"] or got["tomorrow"]):
-                found = got
+            plat = by_platform.get(platform)
+            if plat and (plat["today"] or plat["tomorrow"]):
+                found = plat
                 self.forecast_source = platform
                 break
         self._fc_cache, self._fc_at = found, _time.monotonic()
@@ -139,7 +151,7 @@ class ForecastMixin:
             self.solar_log.prune(today)
             self._solar_pruned = today
 
-    def solar_view(self, now: datetime) -> dict | None:
+    def solar_view(self, now: datetime) -> dict[str, Any] | None:
         """Today's solar forecast for the Overview (None when no forecast is set up). Never raises: it is part of the live
         view, which must always be sent."""
         try:
@@ -148,7 +160,7 @@ class ForecastMixin:
             _LOGGER.debug("solar forecast view failed", exc_info=True)
             return None
 
-    def _solar_view(self, now: datetime) -> dict | None:
+    def _solar_view(self, now: datetime) -> dict[str, Any] | None:
         today, tomorrow = now.date().isoformat(), (now.date() + timedelta(days=1)).isoformat()
         fc, hours = self._forecast_by_day(now), self.solar_hours.get(today)
         total = fc.get(today)
@@ -163,7 +175,7 @@ class ForecastMixin:
                 "so_far_kwh": round((self.daily.days.get(today) or {}).get("pv", 0.0), 2) if measured else None,
                 "source": self.forecast_source, "use_pct": self.settings.forecast_use_pct}
 
-    def solar_comparison(self, days: int = 30, day: str | None = None) -> dict:
+    def solar_comparison(self, days: int = 30, day: str | None = None) -> dict[str, Any]:
         """Forecast against the solar HomePower measured: the last `days` days, and one day hour by hour (today by default)."""
         now = dt_util.now()
         today = now.date().isoformat()
@@ -181,11 +193,18 @@ class ForecastMixin:
 
     def _kwh(self, entity_id: str) -> float | None:
         st = self.hass.states.get(entity_id)
+        if st is None:
+            return None
         try:
-            v = _real(st.state)  # type: ignore[union-attr]
+            v = _real(st.state)
         except (AttributeError, TypeError, ValueError):
             return None
         return v / 1000 if str(st.attributes.get("unit_of_measurement", "")).lower() == "wh" else v
+
+    @overload
+    def _used_kwh(self, kwh: float) -> float: ...
+    @overload
+    def _used_kwh(self, kwh: None) -> None: ...
 
     def _used_kwh(self, kwh: float | None) -> float | None:
         """A forecast figure as HomePower counts on it (Settings > Solar forecast: how much of the forecast to use)."""
@@ -208,7 +227,7 @@ class ForecastMixin:
             vals = [self._kwh(e) for e in found[key]]
             # every plane / site or nothing: some of them added up would pass for the whole day's solar
             if vals and day not in out and None not in vals:
-                out[day] = sum(vals)
+                out[day] = sum(cast("list[float]", vals))     # none of them is None (checked just above)
         mem = self.manager.forecast_days
         for day in (today, tomorrow):
             if out.get(day) is not None and mem.get(day) != out[day]:
@@ -221,7 +240,7 @@ class ForecastMixin:
                 out[day] = mem[day]
         return out
 
-    def _sun(self, day) -> tuple[datetime, datetime] | None:
+    def _sun(self, day: date) -> tuple[datetime, datetime] | None:
         """Sunrise and sunset at the home location on a date (what the Sun integration shows, worked out the same way)."""
         try:
             from homeassistant.const import SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
@@ -239,7 +258,7 @@ class ForecastMixin:
         less the base load, never takes them over 100% (see core/solar_room.py). Without a forecast solar counts as zero
         and nothing is capped."""
         s = self.settings
-        info: dict = {"enabled": s.solar_room, "base_load_w": s.base_load_w, "batteries": {}}
+        info: dict[str, Any] = {"enabled": s.solar_room, "base_load_w": s.base_load_w, "batteries": {}}
         self.solar_room = info
         cfgs = {a.config.device_id: a.config for a in self.adapters}
         solar = {did: cfgs[did] for did in cfgs if self._has_solar(cfgs[did])}
@@ -247,7 +266,7 @@ class ForecastMixin:
         if not s.solar_room or not solar:
             return {}
         windows = bool(rates and rates.windows)
-        t0 = (rates.cheap_window_end(now) if windows else None) or now     # charging stops when the cheap rate ends
+        t0 = (cast(RateTable, rates).cheap_window_end(now) if windows else None) or now     # charging stops when the cheap rate ends
         sun = self._sun(t0.date())
         if sun is not None and t0 >= sun[1]:
             sun = self._sun(t0.date() + timedelta(days=1))
@@ -267,7 +286,7 @@ class ForecastMixin:
         base_share = split_by_capacity(s.base_load_w / 1000, {d: cfgs[d].caps.capacity_wh for d in online})
 
         def battery_pays(t: datetime) -> bool:
-            return not (windows and rates.in_cheap_window(t.time()))
+            return not (windows and cast(RateTable, rates).in_cheap_window(t.time()))
 
         out: dict[str, int] = {}
         for did, cfg in solar.items():
@@ -313,8 +332,10 @@ class ForecastMixin:
 
     def _forecast_kwh(self) -> float | None:
         st = self.hass.states.get(self.settings.forecast_entity) if self.settings.forecast_entity else None
+        if st is None:
+            return None
         try:
-            v = _real(st.state)  # type: ignore[union-attr]
+            v = _real(st.state)
         except (AttributeError, TypeError, ValueError):
             return None
         return v / 1000 if str(st.attributes.get("unit_of_measurement", "")).lower() == "wh" else v
@@ -339,15 +360,16 @@ class ForecastMixin:
         if t is not None and -60 < t < 60:
             self.temp_log.add(now.strftime("%Y-%m-%d"), t)
 
-    async def _fetch_json(self, url: str) -> dict | None:
+    async def _fetch_json(self, url: str) -> dict[str, Any] | None:
         from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
         from aiohttp import ClientTimeout
 
+
         async with async_get_clientsession(self.hass).get(url, timeout=ClientTimeout(total=15)) as resp:
             return await resp.json(content_type=None) if resp.status == 200 else None
 
-    async def _tomorrow_temp(self, tomorrow) -> tuple[float | None, str]:
+    async def _tomorrow_temp(self, tomorrow: date) -> tuple[float | None, str]:
         """Tomorrow's mean temperature (°C) and where it came from: the weather entity, then a sensor, then (only if switched on) Open-Meteo."""
         s, tz = self.settings, dt_util.now().tzinfo
         if s.weather_entity:
@@ -356,7 +378,8 @@ class ForecastMixin:
                 try:
                     reply = await self.hass.services.async_call("weather", "get_forecasts", {"entity_id": s.weather_entity, "type": kind},
                                                                  blocking=True, return_response=True)
-                    t = pick_tomorrow((reply or {}).get(s.weather_entity, {}).get("forecast", []), tomorrow, tz, unit)
+                    resp = cast("dict[str, Any]", reply or {})     # anything else fails below and the next source is tried
+                    t = pick_tomorrow(resp.get(s.weather_entity, {}).get("forecast", []), tomorrow, tz, unit)
                     if t is not None:
                         return t, f"weather entity ({kind})"
                 except Exception:  # noqa: BLE001 - this entity may not support that forecast type: try the next source

@@ -5,8 +5,9 @@ integration's saving-session entities (a list of joined events, each with start 
 {start, end} under `events`. An entity that only says on / off gives no times: it can still run the event, but nothing can
 be charged up for it beforehand."""
 from __future__ import annotations
+from typing import Any
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 
 from .goals import ALL_DAYS, Goal
 from .rates import _dt
@@ -17,13 +18,13 @@ _PAIRS = (("start_time", "end_time"),                                       # a 
           ("next_joined_event_start", "next_joined_event_end"))
 
 
-def all_day(attrs: dict | None) -> bool:
+def all_day(attrs: dict[str, Any] | None) -> bool:
     """A calendar entity showing an all-day entry (its state is on all day: that is not a session)."""
     return isinstance(attrs, dict) and attrs.get("all_day") is True
 GOAL_ID = "before grid event"
 
 
-def event_windows(attrs: dict | None, tz=None) -> list[tuple[datetime, datetime]]:
+def event_windows(attrs: dict[str, Any] | None, tz: tzinfo | None = None) -> list[tuple[datetime, datetime]]:
     """(start, end) of each event the entity describes, as aware datetimes, sorted, junk skipped."""
     attrs = attrs if isinstance(attrs, dict) else {}
     out: list[tuple[datetime, datetime]] = []

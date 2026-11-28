@@ -7,7 +7,8 @@ address that is not on a private network, so neither can be used to probe the in
 """
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, cast
 
 import asyncio
 import ipaddress
@@ -53,7 +54,7 @@ async def check_host(host: str) -> str:
             infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
         except OSError as err:
             raise ValueError(f"could not find '{host}' on your network") from err
-        found = sorted({ipaddress.ip_address(i[4][0].split("%")[0]) for i in infos}, key=str)
+        found = sorted({ipaddress.ip_address(cast(str, i[4][0]).split("%")[0]) for i in infos}, key=str)
         if not found:
             raise ValueError(f"could not find '{host}' on your network")
     if not all(_is_local(ip) for ip in found):
@@ -66,7 +67,7 @@ def _printable(raw: bytes) -> str:
     return " ".join(text.split())[:60]
 
 
-async def _probe(ip: str, port: int, timeout: float) -> dict:
+async def _probe(ip: str, port: int, timeout: float) -> dict[str, Any]:
     row = {"port": port, "service": "", "state": "closed", "banner": ""}
     try:
         reader, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
@@ -91,13 +92,13 @@ async def _probe(ip: str, port: int, timeout: float) -> dict:
     return row
 
 
-async def scan(host: str, ports: dict[int, str] | None = None, timeout: float = CONNECT_TIMEOUT_S) -> dict:
+async def scan(host: str, ports: dict[int, str] | None = None, timeout: float = CONNECT_TIMEOUT_S) -> dict[str, Any]:
     """Scan one device. Returns {"host", "address", "results": [{port, service, state, banner}]}, ports in order."""
     ports = PORTS if ports is None else ports
     ip = await check_host(host)
     gate = asyncio.Semaphore(PARALLEL)
 
-    async def one(port: int) -> dict:
+    async def one(port: int) -> dict[str, Any]:
         async with gate:
             row = await _probe(ip, port, timeout)
         row["service"] = ports.get(port, "")
@@ -107,8 +108,8 @@ async def scan(host: str, ports: dict[int, str] | None = None, timeout: float = 
     return {"host": host.strip(), "address": ip, "wide": False, "results": list(rows)}
 
 
-async def scan_wide(host: str, ports=None, timeout: float = WIDE_TIMEOUT_S, deadline_s: float = WIDE_DEADLINE_S,
-                    parallel: int = WIDE_PARALLEL) -> dict:
+async def scan_wide(host: str, ports: Iterable[int] | None = None, timeout: float = WIDE_TIMEOUT_S, deadline_s: float = WIDE_DEADLINE_S,
+                    parallel: int = WIDE_PARALLEL) -> dict[str, Any]:
     """Every port in the wide range on one device. Only open ports are listed, with counts for the rest. If the device is so
     silent that the time limit is reached, the probes not yet started are skipped and the result says it is incomplete."""
     global _wide_running
@@ -121,7 +122,7 @@ async def scan_wide(host: str, ports=None, timeout: float = WIDE_TIMEOUT_S, dead
         gate = asyncio.Semaphore(max(1, parallel))
         stop = time.monotonic() + deadline_s
         counts = {"open": 0, "closed": 0, "no answer": 0, "skipped": 0}
-        found: list[dict] = []
+        found: list[dict[str, Any]] = []
 
         async def one(port: int) -> None:
             async with gate:

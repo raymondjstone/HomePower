@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date, time
+from collections.abc import Container
 from typing import Any
 
 from .models import Capabilities, Desired, DeviceConfig, Mode
@@ -49,7 +50,7 @@ def _flag(v: Any, name: str, default: bool) -> bool:
     raise ValidationError(f"{name} must be true or false")
 
 
-def _ids(v: Any) -> frozenset:
+def _ids(v: Any) -> frozenset[Any]:
     """Device ids from a list of strings. A bare string or a list of other things is rejected (a string would be split into characters)."""
     if v in (None, "", []):
         return frozenset()
@@ -70,7 +71,7 @@ def _time(s: Any, name: str) -> time:
         raise ValidationError(f"{name} must be HH:MM") from e
 
 
-def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
+def _connection(driver: str, raw: Any, profile: dict[str, Any] | None = None) -> dict[str, Any]:
     raw = raw or {}
     if not isinstance(raw, dict):
         raise ValidationError("the connection settings are not valid")
@@ -111,7 +112,7 @@ def _connection(driver: str, raw: dict, profile: dict | None = None) -> dict:
     return {}
 
 
-def check_new_device(raw: dict, existing) -> None:
+def check_new_device(raw: dict[str, Any], existing: Container[str]) -> None:
     """A new battery's id becomes part of entity ids and saved keys ("x1lim:<id>:..."): the panel and Configure always make
     it from the name (a-z, 0-9, _), so anything else comes from a hand-made request or file and is refused. A battery saved
     before keeps its id. A very long name would make entity ids Home Assistant cannot register."""
@@ -122,7 +123,7 @@ def check_new_device(raw: dict, existing) -> None:
         raise ValidationError("the battery name is too long (80 characters at most)")
 
 
-def fill_from_probe(raw: dict, info: dict) -> dict:
+def fill_from_probe(raw: dict[str, Any], info: dict[str, Any]) -> dict[str, Any]:
     """Use what the battery itself reports for anything the user didn't enter (capacity, limits, min SOC)."""
     out = dict(raw)
     for key in ("capacity_wh", "max_charge_w", "max_discharge_w", "min_soc"):
@@ -131,7 +132,7 @@ def fill_from_probe(raw: dict, info: dict) -> dict:
     return out
 
 
-def device_from_dict(d: dict) -> DeviceConfig:
+def device_from_dict(d: dict[str, Any]) -> DeviceConfig:
     did = str(d.get("device_id") or "").strip()
     if not did:
         raise ValidationError("device_id is required")
@@ -161,7 +162,7 @@ def device_from_dict(d: dict) -> DeviceConfig:
         supported_modes=modes,
         power_control=bool(spec.get("power_control", True)),
     )
-    extra: dict = {"driver": driver}
+    extra: dict[str, Any] = {"driver": driver}
     if driver == "entities":
         valid_keys = {f["k"] for f in spec["entities"]}
         raw_ents, raw_mm = d.get("entities") or {}, d.get("mode_map") or {}
@@ -207,7 +208,7 @@ def device_from_dict(d: dict) -> DeviceConfig:
     )
 
 
-def device_to_dict(c: DeviceConfig) -> dict:
+def device_to_dict(c: DeviceConfig) -> dict[str, Any]:
     e = c.extra
     return {
         "device_id": c.device_id, "name": c.name, "kind": c.kind, "priority": c.priority,
@@ -221,14 +222,14 @@ def device_to_dict(c: DeviceConfig) -> dict:
     }
 
 
-def schedule_from_dict(d: dict) -> ScheduleEntry:
+def schedule_from_dict(d: dict[str, Any]) -> ScheduleEntry:
     sid = str(d.get("id") or "").strip()
     if not sid:
         raise ValidationError("id is required")
     if len(sid) > 120:
         raise ValidationError("the name is too long (120 characters at most)")
     try:
-        mode = Mode(d.get("mode"))
+        mode = Mode(d.get("mode"))  # type: ignore[arg-type]    # None or anything else: ValueError, refused below
     except ValueError as e:
         raise ValidationError("invalid mode") from e
     try:
@@ -238,7 +239,7 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
     if not days or not days <= ALL_DAYS:
         raise ValidationError("pick at least one weekday")
 
-    def md(v):
+    def md(v: Any) -> tuple[int, int] | None:
         if not v:
             return None
         m, dd = (int(x) for x in str(v).split("-")[-2:])
@@ -282,7 +283,7 @@ def schedule_from_dict(d: dict) -> ScheduleEntry:
     )
 
 
-def schedule_to_dict(e: ScheduleEntry) -> dict:
+def schedule_to_dict(e: ScheduleEntry) -> dict[str, Any]:
     ds = e.desired
     return {
         "id": e.id, "device_ids": sorted(e.device_ids),
@@ -301,14 +302,14 @@ def schedule_to_dict(e: ScheduleEntry) -> dict:
 from .goals import Goal  # noqa: E402
 
 
-def _goal_source(v) -> str:
+def _goal_source(v: object) -> str:
     v = str(v or "grid")
     if v not in ("grid", "solar", "both"):
         raise ValidationError("charge source must be grid, solar or both")
     return v
 
 
-def goal_from_dict(d: dict) -> Goal:
+def goal_from_dict(d: dict[str, Any]) -> Goal:
     gid = str(d.get("id") or "").strip()
     if not gid:
         raise ValidationError("id is required")
@@ -330,7 +331,7 @@ def goal_from_dict(d: dict) -> Goal:
     )
 
 
-def goal_to_dict(g: Goal) -> dict:
+def goal_to_dict(g: Goal) -> dict[str, Any]:
     return {
         "id": g.id, "device_ids": sorted(g.device_ids), "target_soc": g.target_soc,
         "by": g.by.strftime("%H:%M"), "days": sorted(g.days), "use_forecast": g.use_forecast,
@@ -338,7 +339,7 @@ def goal_to_dict(g: Goal) -> dict:
     }
 
 
-def current_abilities(saved: dict) -> dict:
+def current_abilities(saved: dict[str, Any]) -> dict[str, Any]:
     """What a saved battery can do now. Modes and limits come from its profile, not from the copy saved when it was added,
     so a new HomePower release shows new abilities without the battery being re-added. {} if it cannot be rebuilt."""
     try:

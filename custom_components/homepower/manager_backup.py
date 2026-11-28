@@ -4,7 +4,8 @@ Part of HomePowerManager (manager.py), kept in its own file so each file has one
 the manager itself and use its state."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
 
 import logging
 
@@ -19,26 +20,30 @@ from .core.serde import (
     schedule_to_dict,
 )
 
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+    from homeassistant.core import HomeAssistant
+
 _LOGGER = logging.getLogger(__name__.rsplit(".", 1)[0] + ".manager")   # the manager's own logger
 
 
 class BackupMixin:
     if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
-        devices: Any
-        schedules: Any
-        goals: Any
-        scenes: Any
+        devices: dict[str, dict[str, Any]]
+        schedules: dict[str, dict[str, Any]]
+        goals: dict[str, dict[str, Any]]
+        scenes: dict[str, dict[str, Any]]
         _apply: Any
         _check_new_device: Any
         _hand_back: Any
         _with_saved_secret: Any
-        hass: Any
+        hass: HomeAssistant
 
     def _backup_dir(self) -> str:
         return self.hass.config.path("homepower_backups")
 
-    async def list_backups(self) -> list[dict]:
-        def run() -> list[dict]:
+    async def list_backups(self) -> list[dict[str, Any]]:
+        def run() -> list[dict[str, Any]]:
             from pathlib import Path
 
             from . import backup_files
@@ -48,7 +53,7 @@ class BackupMixin:
 
         return await self.hass.async_add_executor_job(run)
 
-    async def restore_backup(self, name: str, entry) -> dict:
+    async def restore_backup(self, name: str, entry: ConfigEntry[Any] | None) -> dict[str, Any]:
         import json as _json
         import re as _re
         from pathlib import Path
@@ -56,8 +61,9 @@ class BackupMixin:
         if not _re.fullmatch(r"homepower-\d{4}-\d\d-\d\d\.json", name or ""):
             raise ValidationError("not one of HomePower's backup files")
 
-        def run() -> dict:
-            return _json.loads((Path(self._backup_dir()) / name).read_text(encoding="utf8"))
+        def run() -> dict[str, Any]:
+            data: dict[str, Any] = _json.loads((Path(self._backup_dir()) / name).read_text(encoding="utf8"))
+            return data
 
         try:
             data = await self.hass.async_add_executor_job(run)
@@ -65,7 +71,7 @@ class BackupMixin:
             raise ValidationError(f"could not read that backup: {err}") from err
         return await self.import_all(data, entry)
 
-    def export_all(self, settings: dict, include_secrets: bool = False) -> dict:
+    def export_all(self, settings: dict[str, Any], include_secrets: bool = False) -> dict[str, Any]:
         devices = []
         for d in self.devices.values():
             d = {**d, "connection": dict(d.get("connection", {}))}
@@ -78,7 +84,7 @@ class BackupMixin:
                 "schedules": list(self.schedules.values()), "goals": list(self.goals.values()),
                 "scenes": list(self.scenes.values()), "settings": settings}
 
-    async def import_all(self, data: dict, entry) -> dict:
+    async def import_all(self, data: dict[str, Any], entry: ConfigEntry[Any] | None) -> dict[str, Any]:
         """Restore from export_all(). Every row is validated on its own; bad ones are reported, never half-applied: if anything
         unexpected goes wrong the stored batteries, schedules, goals and scenes are put back as they were."""
         if not isinstance(data, dict) or data.get("homepower_export") != 1:
@@ -90,17 +96,17 @@ class BackupMixin:
         except Exception as err:  # noqa: BLE001 - nothing may stay half restored
             self.devices, self.schedules, self.goals, self.scenes = before
             if entry is not None and dict(entry.options) != options_before:
-                self.hass.config_entries.async_update_entry(entry, options=options_before)   # the settings too
+                self.hass.config_entries.async_update_entry(entry, options=cast("dict[str, Any]", options_before))   # the settings too
             if isinstance(err, ValidationError):
                 raise
             _LOGGER.warning("restore failed, nothing was changed", exc_info=True)
             raise ValidationError(f"the file could not be restored ({type(err).__name__}); nothing was changed") from err
 
     @staticmethod
-    def _row_name(raw, *keys: str) -> str:
+    def _row_name(raw: Any, *keys: str) -> str:
         return next((str(raw[k]) for k in keys if isinstance(raw, dict) and raw.get(k)), "?")
 
-    async def _import_rows(self, data: dict, entry) -> dict:
+    async def _import_rows(self, data: dict[str, Any], entry: ConfigEntry[Any] | None) -> dict[str, Any]:
         added, skipped = {"devices": 0, "schedules": 0, "goals": 0, "scenes": 0}, []
         for raw in data.get("devices") or []:
             try:
@@ -117,8 +123,9 @@ class BackupMixin:
             except (ValidationError, KeyError, TypeError, ValueError, AttributeError, OverflowError) as err:
                 name = self._row_name(raw, "name", "device_id")
                 skipped.append(f"battery {name}: {err} (re-add it, keys are not in the file)" if "required" in str(err) else f"battery {name}: {err}")
-        for kind, coll, parse, dump in (("schedules", self.schedules, schedule_from_dict, schedule_to_dict),
-                                        ("goals", self.goals, goal_from_dict, goal_to_dict)):
+        tables: tuple[tuple[str, dict[str, dict[str, Any]], Callable[[Any], Any], Callable[[Any], dict[str, Any]]], ...] = (
+            ("schedules", self.schedules, schedule_from_dict, schedule_to_dict), ("goals", self.goals, goal_from_dict, goal_to_dict))
+        for kind, coll, parse, dump in tables:
             for raw in data.get(kind) or []:
                 try:
                     row = dump(parse(raw))

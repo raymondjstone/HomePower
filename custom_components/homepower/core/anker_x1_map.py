@@ -196,9 +196,9 @@ X1_ALARMS: dict[tuple[int, int], str] = {
 X1_ALARM_FIRST = 10042
 
 
-def describe_all(x1: bool = True) -> dict[str, list[str]]:
+def describe_all(x1: bool = True) -> dict[str, list[str | int]]:
     """{register address: [name, access, kind, first address, number of registers]} for every register covered."""
-    out: dict[str, list[str]] = {}
+    out: dict[str, list[str | int]] = {}
     for addr, n, name, access, kind in (X1_REGISTERS if x1 else SOLARBANK_REGISTERS):
         for i in range(n):
             out[str(addr + i)] = [name, access, kind, addr, n]

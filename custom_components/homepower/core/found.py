@@ -6,6 +6,7 @@ batteries announce nothing). Either way the same question comes first: is this a
 it has moved to another address (a new DHCP lease), the stored address is put right; nothing is offered.
 """
 from __future__ import annotations
+from typing import Any
 
 import re
 
@@ -16,21 +17,21 @@ LOCAL_DRIVERS = ("anker_modbus", "ecoflow_modbus")
 VENDOR_DRIVERS = {"anker": ("anker_modbus",), "ecoflow": ("ecoflow_modbus", "ecoflow_stream")}
 
 
-def norm_serial(value) -> str | None:
+def norm_serial(value: Any) -> str | None:
     s = str(value or "").strip().upper()
     return s or None
 
 
-def _driver(dev: dict) -> str:
+def _driver(dev: dict[str, Any]) -> str:
     return str(dev.get("driver") or (PROFILE_BY_ID.get(str(dev.get("kind"))) or {}).get("driver") or "")
 
 
-def _serial(dev: dict) -> str | None:
+def _serial(dev: dict[str, Any]) -> str | None:
     conn = dev.get("connection") or {}
     return norm_serial(conn.get("serial") or conn.get("sn"))      # sn: an EcoFlow battery added through the cloud API
 
 
-def match_known(devices: dict[str, dict], vendor: str, host: str, port: int, serial: str | None) -> tuple[str | None, dict | None]:
+def match_known(devices: dict[str, dict[str, Any]], vendor: str, host: str, port: int, serial: str | None) -> tuple[str | None, dict[str, Any] | None]:
     """The battery HomePower already has for one found at host:port (with this serial, if it said), and the battery's settings
     to save when they need putting right, else None.
 
@@ -58,14 +59,14 @@ def match_known(devices: dict[str, dict], vendor: str, host: str, port: int, ser
     return None, None
 
 
-def known_hosts(devices: dict[str, dict]) -> set[str]:
+def known_hosts(devices: dict[str, dict[str, Any]]) -> set[str]:
     """Addresses of the local batteries HomePower already talks to: the network scan leaves them alone (an Anker battery takes
     one Modbus client at a time, and HomePower is it)."""
     return {str((d.get("connection") or {}).get("host")) for d in devices.values()
             if _driver(d) in LOCAL_DRIVERS and (d.get("connection") or {}).get("host")}
 
 
-def anker_kinds(x1: bool) -> tuple[list[dict], str | None]:
+def anker_kinds(x1: bool) -> tuple[list[dict[str, Any]], str | None]:
     """The Anker models to choose from for a found battery, and the one to start on: an X1 says it is one; the Solarbank
     models cannot be told apart from what the scan reads, so the user picks."""
     kinds = [{"value": p["id"], "label": p["label"]} for p in PROFILE_BY_ID.values() if p["driver"] == "anker_modbus"]
@@ -75,7 +76,7 @@ def anker_kinds(x1: bool) -> tuple[list[dict], str | None]:
 ECOFLOW_LOCAL_KIND = "ecoflow_stream_5000_local"
 
 
-def new_device_id(name: str, devices: dict) -> str:
+def new_device_id(name: str, devices: dict[str, Any]) -> str:
     """An id for a battery being added, from its name, that no battery already has (two of the same name must not overwrite
     each other). Letters, digits and _ only, as the options flow makes them."""
     base = re.sub(r"[^a-z0-9]+", "_", str(name or "").lower()).strip("_")[:80] or "battery"

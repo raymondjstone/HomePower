@@ -1,5 +1,7 @@
 """Config flow: one click to add. All settings, batteries and schedules live in the HomePower panel."""
 from __future__ import annotations
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
 from homeassistant import config_entries
 
@@ -12,25 +14,29 @@ from .core.serde import ValidationError, fill_from_probe
 from .options_flow import HomePowerOptionsFlow, _dropdown, _num, _readings
 from .runtime import running_manager
 
+if TYPE_CHECKING:
+    from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
+    from homeassistant.helpers.typing import DiscoveryInfoType
+
 
 class HomePowerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
+    def async_get_options_flow(config_entry: config_entries.ConfigEntry[Any]) -> HomePowerOptionsFlow:
         return HomePowerOptionsFlow()
 
     def __init__(self) -> None:
-        self._found: dict = {}          # the battery a discovery offers: vendor, host, port, serial, model (, x1)
-        self._raw: dict = {}            # the battery being added
-        self._info: dict = {}           # what it reported when probed
+        self._found: dict[str, Any] = {}          # the battery a discovery offers: vendor, host, port, serial, model (, x1)
+        self._raw: dict[str, Any] = {}            # the battery being added
+        self._info: dict[str, Any] = {}           # what it reported when probed
 
-    def _home(self):
+    def _home(self) -> config_entries.ConfigEntry[Any] | None:
         """HomePower's own entry, if it is set up (an ignored discovery is not one)."""
         return next(iter(self._async_current_entries(include_ignore=False)), None)
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         # One HomePower per Home Assistant. (Not the manifest's single_config_entry: that would also stop every discovered
         # battery being offered once HomePower is set up, since each one arrives as a config flow of its own.)
         if self._home() is not None:
@@ -42,16 +48,16 @@ class HomePowerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(step_id="user")
 
     # ---- a battery found on the network: EcoFlow announces itself (zeroconf); Anker is found by HomePower's own scan
-    async def async_step_zeroconf(self, discovery_info):
+    async def async_step_zeroconf(self, discovery_info: ZeroconfServiceInfo) -> config_entries.ConfigFlowResult:
         props = discovery_info.properties or {}
         return await self._discovered({
             "vendor": "ecoflow", "host": str(discovery_info.host), "port": int(discovery_info.port or 502),
             "serial": norm_serial(props.get("serial")), "model": (str(props.get("model") or "").strip() or None)})
 
-    async def async_step_integration_discovery(self, discovery_info):
+    async def async_step_integration_discovery(self, discovery_info: DiscoveryInfoType) -> config_entries.ConfigFlowResult:
         return await self._discovered(dict(discovery_info))
 
-    async def _discovered(self, found: dict):
+    async def _discovered(self, found: dict[str, Any]) -> config_entries.ConfigFlowResult:
         vendor, host, port, serial = found["vendor"], found["host"], int(found.get("port") or 502), norm_serial(found.get("serial"))
         await self.async_set_unique_id(f"{vendor}_{serial}" if serial else f"{vendor}_{host}:{port}")
         self._abort_if_unique_id_configured()         # the user chose Ignore for this battery before
@@ -72,14 +78,14 @@ class HomePowerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.context["title_placeholders"] = {"name": discovered_name(vendor, found.get("model"), serial)}
         return await self.async_step_discovery_confirm()
 
-    def _kind_field(self):
+    def _kind_field(self) -> dict[Any, Any]:
         if self._found["vendor"] != "anker":
             return {}
         kinds, start = anker_kinds(bool(self._found.get("x1")))
         key = vol.Required("kind", default=start) if start else vol.Required("kind")
         return {key: _dropdown(kinds)}
 
-    async def async_step_discovery_confirm(self, user_input=None):
+    async def async_step_discovery_confirm(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         found, errors, detail = self._found, {}, ""
         home, mgr = self._home(), running_manager(self.hass)
         if home is not None and mgr is None:
@@ -106,7 +112,7 @@ class HomePowerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"name": discovered_name(found["vendor"], found.get("model"), found.get("serial")),
                                       "host": f"{found['host']}:{found['port']}", "error": detail})
 
-    async def async_step_discovery_details(self, user_input=None):
+    async def async_step_discovery_details(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         """Only what the battery did not report itself (usually nothing)."""
         missing = [k for k in ("capacity_wh", "max_charge_w", "max_discharge_w") if not self._info.get(k)]
         if user_input is None and missing:
@@ -126,10 +132,10 @@ class HomePowerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_abort(reason="battery_added", description_placeholders={"name": raw["name"]})
 
     # ---- EcoFlow refused the account keys: take new ones, for every EcoFlow battery on that account
-    async def async_step_reauth(self, entry_data):
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> config_entries.ConfigFlowResult:
         return await self.async_step_reauth_confirm()
 
-    async def async_step_reauth_confirm(self, user_input=None):
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None) -> config_entries.ConfigFlowResult:
         mgr = running_manager(self.hass)
         if mgr is None:
             return self.async_abort(reason="not_loaded")

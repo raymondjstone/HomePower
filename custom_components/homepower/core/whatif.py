@@ -6,14 +6,15 @@ battery down to the reserve (then imported). In cheap-rate periods the battery i
 `cheap_pct`. It is an estimate: a fixed 95% one-way efficiency, one battery made of all of yours, and none of HomePower's
 other rules (limits, forecast, goals)."""
 from __future__ import annotations
+from typing import Any
 
 from .tariffs import _in_window
 
 ONE_WAY = 0.95
 
 
-def simulate(days: dict[str, dict[str, list[float]]], tariff: dict, capacity_kwh: float, max_kw: float,
-             reserve_pct: float = 10, cheap_pct: float = 0) -> dict:
+def simulate(days: dict[str, dict[str, list[float]]], tariff: dict[str, Any], capacity_kwh: float, max_kw: float,
+             reserve_pct: float = 10, cheap_pct: float = 0) -> dict[str, Any]:
     cap, step = float(capacity_kwh), float(max_kw) * 0.5          # kWh the battery can move in a half-hour
     floor = cap * max(0.0, min(100.0, reserve_pct)) / 100
     target = cap * max(0.0, min(100.0, cheap_pct)) / 100

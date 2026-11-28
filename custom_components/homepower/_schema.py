@@ -12,6 +12,6 @@ from homeassistant.helpers import config_validation as _cv
 vol: Any = getattr(_cv, "vol", None)      # whichever of the two libraries: typed as Any
 if vol is None or not hasattr(vol, "Required"):
     try:
-        import probatio as vol  # type: ignore[no-redef]
+        import probatio as vol  # type: ignore[no-redef,import-not-found,unused-ignore]    # (newer cores only)
     except ImportError:  # pragma: no cover
-        import voluptuous as vol  # type: ignore[no-redef]
+        import voluptuous as vol  # type: ignore[no-redef,unused-ignore]

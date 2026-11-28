@@ -5,6 +5,7 @@ house's own response to cold is learned from its recorded daily use against the 
 imports, so everything here is unit-tested directly.
 """
 from __future__ import annotations
+from typing import Any
 
 from datetime import date, datetime, tzinfo
 from math import isfinite
@@ -26,11 +27,11 @@ def degree_days(temp_c: float) -> float:
     return max(0.0, BASE_C - temp_c)
 
 
-def _num(v) -> float | None:
+def _num(v: Any) -> float | None:
     return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and isfinite(v) else None
 
 
-def pick_tomorrow(forecast: list, tomorrow: date, tz: tzinfo | None, unit: str | None = "C") -> float | None:
+def pick_tomorrow(forecast: list[Any], tomorrow: date, tz: tzinfo | None, unit: str | None = "C") -> float | None:
     """Tomorrow's mean temperature (°C) from a weather entity's forecast list (daily entries, or hourly ones)."""
     temps: list[float] = []
     for item in forecast if isinstance(forecast, (list, tuple)) else []:
@@ -51,7 +52,7 @@ def pick_tomorrow(forecast: list, tomorrow: date, tz: tzinfo | None, unit: str |
     return round(to_celsius(sum(temps) / len(temps), unit), 1) if temps else None
 
 
-def parse_open_meteo(data: dict, tomorrow: date) -> float | None:
+def parse_open_meteo(data: dict[str, Any], tomorrow: date) -> float | None:
     """Tomorrow's mean of the daily high and low from an Open-Meteo reply (°C)."""
     try:
         d = data["daily"]
@@ -67,7 +68,7 @@ class TempLog:
 
     KEEP = 60
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
         self.days: dict[str, list[float]] = {}
         for k, v in (data.items() if isinstance(data, dict) else ()):
             if isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) and isfinite(x) for x in v):
@@ -84,20 +85,20 @@ class TempLog:
         d = self.days.get(day)
         return d[0] / d[1] if d and d[1] >= min_samples else None
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return {k: [round(v[0], 2), int(v[1])] for k, v in self.days.items()}
 
 
 class ColdModel:
     """Extra watt-hours the house uses per degree-day, fitted from its own recorded days."""
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
         d = data if isinstance(data, dict) else {}
         self.k: float | None = float(d["k"]) if isinstance(d.get("k"), (int, float)) and isfinite(d["k"]) else None     # Wh per degree-day
         self.days: int = int(d.get("days", 0)) if isinstance(d.get("days"), (int, float)) else 0
         self.r: float | None = float(d["r"]) if isinstance(d.get("r"), (int, float)) else None
 
-    def fit(self, temps: TempLog, usage_days: dict, today: str) -> None:
+    def fit(self, temps: TempLog, usage_days: dict[str, Any], today: str) -> None:
         """Line through (degree-days, kWh used) for every finished day with both figures."""
         xs, ys = [], []
         for day, rec in usage_days.items():
@@ -126,7 +127,7 @@ class ColdModel:
         self.r = round(r, 2)
         self.k = round(slope * 1000, 1) if slope > 0 and r >= MIN_R else None
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return {"k": self.k, "days": self.days, "r": self.r}
 
 

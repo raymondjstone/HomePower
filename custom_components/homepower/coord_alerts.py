@@ -19,35 +19,52 @@ from .core.sanity import grid_sign_mismatch, offline_hint
 from .core.reconcile import Decision
 from .coord_base import (_LOGGER, OFFLINE_ALERT_AFTER_S, PROTECT_ALERT_AFTER_S, UNCONFIRMED_ALERT_AFTER, ACTION_PAUSE, ACTION_HAND_BACK, REPAIR_KINDS, repair_id)
 
+if TYPE_CHECKING:
+    from homeassistant.core import Event, HomeAssistant
+
+    from .adapters.base import DeviceAdapter
+    from .coord_base import Snapshot
+    from .core.alerts import AlertTracker
+    from .core.energy import Ledger
+    from .core.insights import DailyStats
+    from .core.insights import GridEvents
+    from .core.insights import Health
+    from .core.insights import HealthTrend
+    from .core.insights import UsageHistory
+    from .core.pv_health import PvHealth
+    from .core.sanity import ChargeWatch
+    from .core.settings import AppSettings
+    from .manager import HomePowerManager
+
 
 class AlertsMixin:
     if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
         _combined: Any
         _cover_text: Any
-        _event_state: Any
+        _event_state: dict[str, Any]
         _grid_charging: Any
         _log: Any
         _log_failure: Any
-        _snap: Any
-        adapters: Any
-        alerts: Any
-        charge_watch: Any
-        daily: Any
-        grid_events: Any
-        hass: Any
-        health: Any
-        last_grid: Any
-        ledger: Any
-        manager: Any
+        _snap: Snapshot
+        adapters: list[DeviceAdapter]
+        alerts: AlertTracker
+        charge_watch: ChargeWatch
+        daily: DailyStats
+        grid_events: GridEvents
+        hass: HomeAssistant
+        health: Health
+        last_grid: float | None
+        ledger: Ledger
+        manager: HomePowerManager
         paused: Any
-        pv_health: Any
+        pv_health: PvHealth
         release_all: Any
-        settings: Any
+        settings: AppSettings
         shown_actuals: Any
         tariff_comparison: Any
-        testing: Any
-        trend: Any
-        usage: Any
+        testing: set[str]
+        trend: HealthTrend
+        usage: UsageHistory
 
     def _weekly_digest(self, now: datetime) -> str:
         """One message a week: savings, grid use, outages and how the batteries are doing."""
@@ -90,7 +107,7 @@ class AlertsMixin:
                 # some have an obvious remedy, offered right there (repairs.py): test the battery or stop commanding it; use the
                 # cheap hours found in the price history
                 fix = {"unconfirmed": "battery", "stuck": "battery", "tariffdrift": "tariff"}.get(kind)
-                data = {"fix": fix, "message": message[:500], "title": REPAIR_KINDS[kind]}
+                data: dict[str, Any] = {"fix": fix, "message": message[:500], "title": REPAIR_KINDS[kind]}
                 if fix == "battery":
                     data["device_id"] = key.split(":", 1)[1]
                 ir.async_create_issue(self.hass, DOMAIN, iid, is_fixable=fix is not None, is_persistent=False, data=data if fix else None,
@@ -132,11 +149,11 @@ class AlertsMixin:
             svc = self.settings.notify_service
             if svc and "." in svc:
                 domain, name = svc.split(".", 1)
-                data = {"title": "HomePower", "message": message if raised else f"Resolved: {message}"}
+                note: dict[str, Any] = {"title": "HomePower", "message": message if raised else f"Resolved: {message}"}
                 if raised and name.startswith("mobile_app_"):     # the phone app shows these as buttons on the notification
-                    data["data"] = {"tag": nid, "actions": [{"action": ACTION_PAUSE, "title": "Pause HomePower"},
+                    note["data"] = {"tag": nid, "actions": [{"action": ACTION_PAUSE, "title": "Pause HomePower"},
                                                             {"action": ACTION_HAND_BACK, "title": "Hand back to Auto"}]}
-                await self.hass.services.async_call(domain, name, data)
+                await self.hass.services.async_call(domain, name, note)
         except Exception:  # noqa: BLE001
             _LOGGER.debug("phone alert delivery failed", exc_info=True)
 
@@ -193,7 +210,7 @@ class AlertsMixin:
             due = now.time() >= s.daily_summary_time and (now.hour * 60 + now.minute) - (s.daily_summary_time.hour * 60 + s.daily_summary_time.minute) < 30
             await edge(f"summary_{now:%Y%m%d}", due, False, self._daily_summary(now, fig))
 
-    def _daily_summary(self, now: datetime, fig: dict) -> str:
+    def _daily_summary(self, now: datetime, fig: dict[str, Any]) -> str:
         """One message a day: where the battery is and how yesterday went."""
         y = (now - timedelta(days=1)).strftime("%Y-%m-%d")
         led, cur = self.ledger.days.get(y), self.settings.currency
@@ -230,7 +247,7 @@ class AlertsMixin:
                 watching = bool(act and act.online and did not in self.testing and not self.settings.dry_run
                                 and a.config.extra.get("control_enabled", True) and not self.paused and not st.awaiting_confirm
                                 and st.decision is not None and st.decision is not Decision.SKIP_PROTECTED)   # nothing was sent otherwise
-                if watching:
+                if watching and act is not None:        # (watching needs a reading)
                     tgt = st.desired.target_soc if st.desired else None
                     stuck = self.charge_watch.stuck(did, self._grid_charging(st), act.soc, act.power_w, tgt, now_s)
                 else:
@@ -239,7 +256,7 @@ class AlertsMixin:
                 checks[f"stuck:{did}"] = (stuck, f"{name} was told to charge but is not charging (no power and no rise in charge for "
                                                  f"{int(self.charge_watch.after_s // 60)} min). Check the battery's own app for a mode or schedule overriding HomePower.", 0)
                 if a.config.extra.get("driver") in ("ecoflow_stream", "ecoflow_modbus"):
-                    checks[f"gridsign:{did}"] = (bool(act and act.online) and grid_sign_mismatch(self.last_grid, act.grid_w),
+                    checks[f"gridsign:{did}"] = (act is not None and act.online and grid_sign_mismatch(self.last_grid, act.grid_w),
                                                  f"{name}'s grid reading ({act.grid_w:g} W) points the opposite way to your grid meter ({self.last_grid:g} W). "
                                                  "One of them is reversed or measures a different point: check Settings > grid sensor and its 'invert' option."
                                                  if self.last_grid is not None and act and act.grid_w is not None else "", 600)
@@ -271,7 +288,7 @@ class AlertsMixin:
             except Exception:  # noqa: BLE001 - one battery whose alerts cannot be worked out must not silence the others
                 self._log_failure(f"alerts {a.config.device_id}", "could not check the alerts of battery %s", a.config.device_id)
 
-    async def _on_action(self, event) -> None:
+    async def _on_action(self, event: Event) -> None:
         """A button on a HomePower phone notification was tapped."""
         action = (event.data or {}).get("action")
         try:

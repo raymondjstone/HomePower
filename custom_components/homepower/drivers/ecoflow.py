@@ -20,10 +20,16 @@ import re
 import logging
 import secrets
 import time
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, cast
 
 from ..core.models import Actual, Desired, DeviceConfig, Mode
 from .stamp import stamp
+
+if TYPE_CHECKING:
+    from aiohttp import ClientSession
+
+    from .ecoflow_live import EcoFlowLive
 
 _LOGGER = logging.getLogger(__name__)
 HOSTS = {"eu": "api-e.ecoflow.com", "america": "api-a.ecoflow.com", "global": "api.ecoflow.com"}
@@ -39,7 +45,7 @@ SELF_MODE = "SELF_CONSUMPTION"   # STREAM 5000 series operating modes: SELF_CONS
 
 
 class EcoFlowError(Exception):
-    pass
+    code: str = ""          # EcoFlow's own error code, when it sent one (read with getattr(err, "code", "") throughout)
 
 
 PV_SPIKE_MIN_W = 500        # a solar reading below this is never second-guessed (see _screen_pv)
@@ -52,7 +58,7 @@ _SETTINGISH = re.compile(r"backup|reserve|cfg|mode|onoff|switch|limit|timer|task
 _TELEMETRY = re.compile(r"pwr|power|watt|volt|temp|energy|cur(rent)?$|freq|cycle|^bpSoc$|^soc$|f32|show|time$|stamp", re.I)
 
 
-def setting_changes(old: dict, new: dict) -> list[dict]:
+def setting_changes(old: dict[str, Any], new: dict[str, Any]) -> list[dict[str, Any]]:
     """Settings that differ between two readings (what someone changed in the EcoFlow app): booleans, text and
     anything named like a setting; live power/voltage/charge figures are ignored."""
     out = []
@@ -98,7 +104,7 @@ def flatten(obj: Any, prefix: str = "") -> dict[str, str]:
     return out
 
 
-def sign(params: dict | None, access_key: str, secret_key: str, nonce: str, timestamp: str) -> str:
+def sign(params: dict[str, Any] | None, access_key: str, secret_key: str, nonce: str, timestamp: str) -> str:
     flat = flatten(params or {})
     base = "&".join(f"{k}={flat[k]}" for k in sorted(flat))
     tail = f"accessKey={access_key}&nonce={nonce}&timestamp={timestamp}"
@@ -107,17 +113,17 @@ def sign(params: dict | None, access_key: str, secret_key: str, nonce: str, time
 
 
 class EcoFlowApi:
-    def __init__(self, session, region: str, access_key: str, secret_key: str) -> None:
+    def __init__(self, session: ClientSession, region: str, access_key: str, secret_key: str) -> None:
         self._s = session
         self._base = f"https://{HOSTS.get(region, HOSTS['global'])}"
         self._ak, self._sk = access_key, secret_key
 
-    def _headers(self, params: dict | None) -> dict[str, str]:
+    def _headers(self, params: dict[str, Any] | None) -> dict[str, str]:
         nonce, ts = str(secrets.randbelow(900000) + 100000), str(int(time.time() * 1000))
         return {"accessKey": self._ak, "nonce": nonce, "timestamp": ts,
                 "sign": sign(params, self._ak, self._sk, nonce, ts)}
 
-    async def _call(self, method: str, path: str, params: dict | None = None, body: dict | None = None) -> Any:
+    async def _call(self, method: str, path: str, params: dict[str, Any] | None = None, body: dict[str, Any] | None = None) -> Any:
         from aiohttp import ClientTimeout
 
         signed = body if body is not None else params
@@ -140,14 +146,14 @@ class EcoFlowApi:
             raise refused
         return data.get("data")
 
-    async def devices(self) -> list[dict]:
+    async def devices(self) -> list[dict[str, Any]]:
         return await self._call("GET", "/iot-open/sign/device/list") or []
 
-    async def certification(self) -> dict:
+    async def certification(self) -> dict[str, Any]:
         """MQTT broker address and login for live updates."""
         return await self._call("GET", "/iot-open/sign/certification") or {}
 
-    async def quota(self, sn: str) -> dict:
+    async def quota(self, sn: str) -> dict[str, Any]:
         try:
             return await self._call("GET", "/iot-open/sign/device/quota/all", {"sn": sn}) or {}
         except EcoFlowError as err:
@@ -157,17 +163,17 @@ class EcoFlowApi:
         got = await self._call("POST", "/iot-open/sign/device/quota", body={"sn": sn, "params": {"quotas": list(QUOTAS)}})
         return got if isinstance(got, dict) else {}
 
-    async def command(self, sn: str, params: dict, cmd_id: int = 17) -> None:
+    async def command(self, sn: str, params: dict[str, Any], cmd_id: int = 17) -> None:
         await self._call("PUT", "/iot-open/sign/device/quota", body={
             "sn": sn, "cmdId": cmd_id, "cmdFunc": 254, "dirDest": 1, "dirSrc": 1, "dest": 2,
             "needAck": True, "params": params})
 
 
-def normalise(q: Any) -> dict:
+def normalise(q: Any) -> dict[str, Any]:
     """Quota keys may carry a prefix ('20_1.soc') and numbers may be strings: return a flat {key: value}."""
     if isinstance(q, dict) and isinstance(q.get("quotaMap"), dict):
         q = q["quotaMap"]
-    out: dict = {}
+    out: dict[str, Any] = {}
     for k, v in (q or {}).items() if isinstance(q, dict) else []:
         k = str(k).rsplit(".", 1)[-1].rsplit("-", 1)[-1]   # "20_1.soc" / "sysEnergyStreamReport-bpSoc"
         if isinstance(v, str):
@@ -185,7 +191,7 @@ def normalise(q: Any) -> dict:
 _BAD_SOC = re.compile(r"backup|reserve|min|max|lim|cfg|set|charge|discharge|upper|lower|ctrl", re.I)
 
 
-def _guess(q: dict, pattern: str, bad: re.Pattern | None = None, positive: bool = False) -> float | None:
+def _guess(q: dict[str, Any], pattern: str, bad: re.Pattern[str] | None = None, positive: bool = False) -> float | None:
     rx = re.compile(pattern, re.I)
     for k, v in q.items():
         if isinstance(v, (int, float)) and not isinstance(v, bool) and rx.search(k) and not (bad and bad.search(k)) \
@@ -194,7 +200,7 @@ def _guess(q: dict, pattern: str, bad: re.Pattern | None = None, positive: bool 
     return None
 
 
-def _first(q: dict, *keys: str, positive: bool = False) -> float | None:
+def _first(q: dict[str, Any], *keys: str, positive: bool = False) -> float | None:
     for k in keys:
         v = q.get(k)
         if isinstance(v, (int, float)) and not (positive and v <= 0):
@@ -206,40 +212,41 @@ class EcoFlowStreamDriver:
     logs_link = True         # logs its own read failures and recovery
     auth_failed = False      # EcoFlow refused the account keys at the last read
     _blocked_until = 0.0     # class defaults so a driver built without __init__ (tests) still works
-    _orig_val = None
-    _on_orig = None
+    _orig_val: dict[str, Any] | None = None
+    _on_orig: Callable[[dict[str, Any] | None], None] | None = None
     _handed_at = -1e9
     _failing: str | None = None       # the read failure last logged (None while reads work)
     _warned_no_soc = False
     _warned_unknown = False   # logged once that a hand-back was skipped (original unknown)
-    _pv_prev = None           # (time, pv_w) of the last solar reading accepted; see _screen_pv
+    _pv_prev: tuple[float, float] | None = None           # (time, pv_w) of the last solar reading accepted; see _screen_pv
     _pv_run = 0
     pv_ignored = 0            # solar readings held back because they looked like grid charging
 
 
-    def __init__(self, config: DeviceConfig, session, hub=None, orig: dict | None = None, on_orig=None) -> None:
+    def __init__(self, config: DeviceConfig, session: ClientSession, hub: EcoFlowLive | None = None, orig: dict[str, Any] | None = None,
+                 on_orig: Callable[[dict[str, Any] | None], None] | None = None) -> None:
         self.config = config
         c = config.extra["connection"]
         self.sn = c["sn"]
         self.api = EcoFlowApi(session, c.get("region", "global"), c["access_key"], c["secret_key"])
-        self.last_quota: dict = {}
+        self.last_quota: dict[str, Any] = {}
         self.last_error: str | None = None
         self._cache: tuple[float, Actual] | None = None  # the cloud API is rate limited: poll at most every 30 s
         self.hub = hub                  # shared live (MQTT) connection for this account, or None
-        self._state: dict = {}          # last full reading with live updates merged in
+        self._state: dict[str, Any] = {}          # last full reading with live updates merged in
         self._pushed = 0.0              # when a live update last arrived
         self._polled = 0.0              # when the full reading was last fetched
-        self._orig_val: dict | None = dict(orig) if orig else None   # STREAM 5000: reserve switch/level and mode before HomePower changed them
+        self._orig_val = dict(orig) if orig else None   # STREAM 5000: reserve switch/level and mode before HomePower changed them
         self._on_orig = on_orig         # called with the new value whenever it changes, so it survives a restart
-        self.changes: list[dict] = []   # recent settings changes seen between readings (made in the EcoFlow app, or by us)
+        self.changes: list[dict[str, Any]] = []   # recent settings changes seen between readings (made in the EcoFlow app, or by us)
         self._blocked_until = 0.0       # backing off after a rate limit or a refusal
 
     @property
-    def _orig(self) -> dict | None:
+    def _orig(self) -> dict[str, Any] | None:
         return self._orig_val
 
     @_orig.setter
-    def _orig(self, value: dict | None) -> None:
+    def _orig(self, value: dict[str, Any] | None) -> None:
         self._orig_val = value
         if self._on_orig is not None:
             try:
@@ -247,7 +254,7 @@ class EcoFlowStreamDriver:
             except Exception:  # noqa: BLE001 - failing to save must never stop a command
                 _LOGGER.debug("could not save the EcoFlow originals", exc_info=True)
 
-    async def _fresh(self) -> dict:
+    async def _fresh(self) -> dict[str, Any]:
         """The battery's settings read now, just before HomePower first changes them (the cached reading can be 30 s old,
         or older while live updates flow). Anything the fresh reading leaves out is taken from the cached one."""
         q = normalise(await self.api.quota(self.sn))
@@ -256,7 +263,7 @@ class EcoFlowStreamDriver:
             self.last_quota = dict(self._state)
         return self._state or self.last_quota
 
-    async def _write_reserve(self, params: dict, level: int, cmd_id: int = 17) -> None:
+    async def _write_reserve(self, params: dict[str, Any], level: int, cmd_id: int = 17) -> None:
         """Send a reserve change of HomePower's own, noting the level first (and saving it with the originals), so hand-back
         can tell HomePower's raise from a change someone made in the EcoFlow app meanwhile. Noted before sending: a command
         that fails after it took effect still counts as ours."""
@@ -265,7 +272,7 @@ class EcoFlowStreamDriver:
             self._orig = {**self._orig, "wrote": wrote}
         await self.api.command(self.sn, params, cmd_id=cmd_id)
 
-    def _ours(self, level: float | None, q: dict | None = None) -> bool:
+    def _ours(self, level: float | None, q: dict[str, Any] | None = None) -> bool:
         """True when a reserve reading is one HomePower wrote during this takeover. The battery keeps a reserve between its
         discharge limit + 3 and its charge limit (95 at most on the Ultra), so a value HomePower wrote may show clamped into
         that range, or rounded: within a point of what was written, or of that clamped value, still counts. (Mistaking a
@@ -273,13 +280,14 @@ class EcoFlowStreamDriver:
         if level is None:
             return False
         q = q or self._state or self.last_quota
-        lo_soc = q.get("cmsMinDsgSoc") if isinstance(q.get("cmsMinDsgSoc"), (int, float)) else self.config.caps.min_soc
-        hi_soc = q.get("cmsMaxChgSoc") if isinstance(q.get("cmsMaxChgSoc"), (int, float)) and q.get("cmsMaxChgSoc") > 0 else 100
+        lo_soc: Any = q.get("cmsMinDsgSoc") if isinstance(q.get("cmsMinDsgSoc"), (int, float)) else self.config.caps.min_soc
+        max_chg: Any = q.get("cmsMaxChgSoc")
+        hi_soc: Any = max_chg if isinstance(max_chg, (int, float)) and max_chg > 0 else 100
         lo, hi = max(3, (lo_soc or 0) + 3), min(HOLD_RESERVE if "backupReverseSoc" in q else 100, hi_soc)
         return any(abs(level - w) <= 1 or abs(level - min(max(w, lo), max(lo, hi))) <= 1
                    for w in (self._orig or {}).get("wrote", []))
 
-    def _changed_by_user(self, what: str, now) -> None:
+    def _changed_by_user(self, what: str, now: object) -> None:
         _LOGGER.info("%s: the %s was changed (to %s) while HomePower held the battery, so the new setting is kept on hand-back",
                      self.config.device_id, what, now)
 
@@ -292,7 +300,7 @@ class EcoFlowStreamDriver:
     def _just_handed_back(self) -> bool:
         return time.monotonic() - self._handed_at < HANDBACK_QUIET_S
 
-    def _note_changes(self, before: dict, after: dict) -> None:
+    def _note_changes(self, before: dict[str, Any], after: dict[str, Any]) -> None:
         found = setting_changes(before, after) if before else []
         if found:
             self.changes = (self.changes + [{"at": stamp(), **c} for c in found])[-40:]
@@ -303,7 +311,7 @@ class EcoFlowStreamDriver:
         if self.hub is not None:
             self.hub.unregister(self.sn, self.merge_push)
 
-    def merge_push(self, flat: dict) -> None:
+    def merge_push(self, flat: dict[str, Any]) -> None:
         """A live update arrived: fold it into the current reading (called on the event loop)."""
         if not self._state:
             return                       # wait for the first full reading so nothing is missing
@@ -324,7 +332,7 @@ class EcoFlowStreamDriver:
         return Mode.AUTO
 
     @staticmethod
-    def _decode(q: dict, min_soc: float | None = None) -> Actual:
+    def _decode(q: dict[str, Any], min_soc: float | None = None) -> Actual:
         reserve = _first(q, "backupReverseSoc")
         if reserve is None and q.get("backupSocOnOff"):
             reserve = _first(q, "backupSoc")      # STREAM 5000 series: the same reserve, behind an on/off switch
@@ -352,12 +360,14 @@ class EcoFlowStreamDriver:
         )
 
     @staticmethod
-    def _strings(q: dict) -> tuple:
+    def _strings(q: dict[str, Any]) -> tuple[Any, ...]:
         """Each solar input's (volts, amps): plugInInfoPvVol / Amp for input 1, plugInInfoPv2Vol ... for 2-4 (named as the
         Ecoflow-Cloud integration names them). () when the battery sends none of them; missing inputs read as (0, 0)."""
-        out, seen = [], False
+        out: list[tuple[float, float]] = []
+        seen = False
         for n in ("", "2", "3", "4"):
-            v, a = q.get(f"plugInInfoPv{n}Vol"), q.get(f"plugInInfoPv{n}Amp")
+            v: Any = q.get(f"plugInInfoPv{n}Vol")
+            a: Any = q.get(f"plugInInfoPv{n}Amp")
             try:
                 v, a = float(v), float(a)
                 if v != v or a != a or abs(v) == float("inf") or abs(a) == float("inf"):
@@ -433,7 +443,7 @@ class EcoFlowStreamDriver:
                 _LOGGER.debug("%s: EcoFlow read still failing: %s", self.config.device_id, self.last_error)
             return Actual(online=False)
 
-    async def probe(self) -> dict:
+    async def probe(self) -> dict[str, Any]:
         q = normalise(await self.api.quota(self.sn))
         self.last_quota = q
         a = self._decode(q)
@@ -497,7 +507,7 @@ class EcoFlowStreamDriver:
             raise ValueError("cannot hold or charge: the battery's charge level is not known yet")
         if self._orig is None:              # taking control: read what the user has now, before the first write, and save it
             q = await self._fresh()
-            soc = self._decode(q).soc if self._decode(q).soc is not None else soc     # the fresh charge level for the Hold level too
+            soc = cast(float, self._decode(q).soc if self._decode(q).soc is not None else soc)     # the fresh charge level for the Hold level too
             level = q.get("backupSoc")
             # "on" is None when the reading did not include the switch (EcoFlow's fallback request leaves it out): unknown, so
             # hand-back leaves the reserve alone rather than switching it off
@@ -507,7 +517,7 @@ class EcoFlowStreamDriver:
             self._warned_unknown = False
         if isinstance(q.get("workMode"), str) and q["workMode"] != SELF_MODE:
             await self.api.command(self.sn, {"workMode": SELF_MODE}, cmd_id=38)
-        target = soc
+        target: float = soc
         if desired.mode is Mode.CHARGE:
             target = max(soc, desired.target_soc if desired.target_soc is not None else 100)
         level = int(max(0, min(100, target)))
@@ -567,7 +577,7 @@ class EcoFlowStreamDriver:
                 if o is not None:
                     self._orig = None             # saved by an older version without the reserve: nothing to put back
                 return
-            if "wrote" in o:                      # (an entry from an older version has no record of what HomePower wrote)
+            if "wrote" in cast("dict[str, Any]", o):    # (o is there: it held the saved reserve) (an entry from an older version has no record of what HomePower wrote)
                 q = await self._fresh()
                 cur = _first(q, "backupReverseSoc")
                 if cur is not None and abs(cur - saved) > 1 and not self._ours(cur, q):
@@ -585,7 +595,7 @@ class EcoFlowStreamDriver:
             # A reserve above the charge level makes the battery top itself up from the grid, at its own rate (the power
             # cannot be set). It stops when it reaches the reserve, so the reserve is the target (95 % at most).
             soc = self._decode(self._state or self.last_quota).soc
-            target = desired.target_soc if desired.target_soc is not None else HOLD_RESERVE
+            target: float = desired.target_soc if desired.target_soc is not None else HOLD_RESERVE
             if soc is not None and soc >= target:
                 target = soc                      # already there: hold rather than top up further
             level = int(max(3, min(HOLD_RESERVE, target)))

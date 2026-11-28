@@ -1,6 +1,7 @@
 """Schedule resolution: time windows, weekday/weekend, seasonal, overrides."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
@@ -58,7 +59,8 @@ class ScheduleEntry:
 
 
 def resolve_entry(
-    entries: list[ScheduleEntry], device_id: str, now: datetime, condition_ok=None, away: bool = False
+    entries: list[ScheduleEntry], device_id: str, now: datetime, condition_ok: Callable[[str], bool] | None = None,
+    away: bool = False,
 ) -> ScheduleEntry | None:
     """Highest-priority matching entry wins; a date-specific entry beats recurring on ties."""
     hits = [
@@ -72,6 +74,7 @@ def resolve_entry(
     return max(hits, key=lambda e: (e.priority, e.on_date is not None))
 
 
-def resolve(entries: list[ScheduleEntry], device_id: str, now: datetime, condition_ok=None, away: bool = False) -> Desired | None:
+def resolve(entries: list[ScheduleEntry], device_id: str, now: datetime, condition_ok: Callable[[str], bool] | None = None,
+            away: bool = False) -> Desired | None:
     e = resolve_entry(entries, device_id, now, condition_ok, away)
     return e.desired if e else None

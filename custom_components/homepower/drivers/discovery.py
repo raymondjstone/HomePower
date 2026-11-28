@@ -1,5 +1,6 @@
 """Find batteries without the user having to know anything: scan the LAN for Anker Modbus devices."""
 from __future__ import annotations
+from typing import Any
 
 import asyncio
 import ipaddress
@@ -28,7 +29,7 @@ async def read_serial(client: ModbusTcpClient, x1: bool) -> str | None:
         return None
 
 
-async def probe_host(host: str, port: int = 502, unit: int = 1, timeout: float = 1.0) -> dict | None:
+async def probe_host(host: str, port: int = 502, unit: int = 1, timeout: float = 1.0) -> dict[str, Any] | None:
     """Return details if an Anker-style battery answers on host:port, else None."""
     client = ModbusTcpClient(host, port, unit, timeout=timeout)
     try:
@@ -61,10 +62,10 @@ async def probe_host(host: str, port: int = 502, unit: int = 1, timeout: float =
         await client.close()
 
 
-async def scan(hosts: list[str], port: int = 502, unit: int = 1, concurrency: int = 64) -> list[dict]:
+async def scan(hosts: list[str], port: int = 502, unit: int = 1, concurrency: int = 64) -> list[dict[str, Any]]:
     sem = asyncio.Semaphore(concurrency)
 
-    async def one(h: str):
+    async def one(h: str) -> dict[str, Any] | None:
         async with sem:
             try:  # cheap TCP check first so dead addresses cost ~0.4 s, not a Modbus timeout
                 _, w = await asyncio.wait_for(asyncio.open_connection(h, port), 0.4)

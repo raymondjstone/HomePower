@@ -1,5 +1,7 @@
 """HomePower: central battery scheduling for Anker SOLIX and EcoFlow STREAM systems."""
 from __future__ import annotations
+from datetime import datetime
+from typing import Any
 
 import logging
 import json
@@ -8,7 +10,8 @@ from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
@@ -50,7 +53,7 @@ PLATFORMS = ["sensor", "switch"]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)     # set up from the UI only, nothing in configuration.yaml
 
 
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """HomePower's actions are registered here, once, so they exist even while the integration is not loaded (they then
     say so instead of doing nothing)."""
     services.async_register(hass)
@@ -74,7 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) ->
 
     # If HA shuts down while a battery is being forced, hand it back (best effort; the
     # persisted flag makes the next start retry if this does not complete).
-    async def _on_stop(_event) -> None:
+    async def _on_stop(_event: Event) -> None:
         await coordinator.release_all(closing=True)
 
     entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_stop))
@@ -100,7 +103,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HomePowerConfigEntry) ->
     autodiscover.async_start(hass, entry, manager)        # Anker batteries found on the network (Settings: find automatically)
 
     # A daily safety copy of batteries, schedules, goals, scenes and settings (no secrets), newest 7 kept.
-    async def _backup(_now=None) -> None:
+    async def _backup(_now: datetime | None = None) -> None:
         try:
             from homeassistant.util import dt as dt_util
             await hass.async_add_executor_job(_write_backup, hass.config.path("homepower_backups"),
@@ -138,7 +141,7 @@ async def _add_discovered(hass: HomeAssistant, entry: HomePowerConfigEntry, mana
 BACKUPS_KEPT = 7
 
 
-async def _backup_if_missing(hass, manager, entry) -> None:
+async def _backup_if_missing(hass: HomeAssistant, manager: HomePowerManager, entry: ConfigEntry) -> None:
     from homeassistant.util import dt as dt_util
 
     folder = hass.config.path("homepower_backups")
@@ -150,7 +153,7 @@ async def _backup_if_missing(hass, manager, entry) -> None:
         _LOGGER.warning("could not write the HomePower backup copy", exc_info=True)
 
 
-def _write_backup(folder: str, data: dict, day: str | None = None, only_if_missing: bool = False) -> None:
+def _write_backup(folder: str, data: dict[str, Any], day: str | None = None, only_if_missing: bool = False) -> None:
     """Write the copy for `day` (Home Assistant's date; the system date if not given) and delete the oldest beyond the
     newest BACKUPS_KEPT. With only_if_missing, a copy already made that day is left as it is."""
     from datetime import date
@@ -185,7 +188,7 @@ def _notify(hass: HomeAssistant, key: str, message: str) -> None:
         _LOGGER.debug("could not create notification", exc_info=True)
 
 
-async def _async_setup_ui_api(hass: HomeAssistant, domain_data: dict) -> None:
+async def _async_setup_ui_api(hass: HomeAssistant, domain_data: dict[str, Any]) -> None:
     if domain_data.get("ui_api"):
         return
     try:
@@ -229,7 +232,7 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
                 "Services > HomePower > Configure to add batteries and schedules.")
 
 
-async def async_remove_config_entry_device(hass: HomeAssistant, entry: HomePowerConfigEntry, device) -> bool:
+async def async_remove_config_entry_device(hass: HomeAssistant, entry: HomePowerConfigEntry, device: dr.DeviceEntry) -> bool:
     """May the user delete this device in Home Assistant? Only one left over from a battery HomePower no longer has."""
     rd = getattr(entry, "runtime_data", None)
     return isinstance(rd, HomePowerData) and not device.identifiers & battery_ids(entry.entry_id, rd.manager.devices)

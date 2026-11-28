@@ -1,5 +1,6 @@
 """Download diagnostics from Settings > Devices & Services > HomePower (secrets are redacted)."""
 from __future__ import annotations
+from typing import Any
 
 from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
@@ -10,7 +11,7 @@ from .runtime import HomePowerData
 REDACT = {"secret_key", "access_key", "host", "sn", "serial", "notify_service"}
 
 
-async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict:
+async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigEntry) -> dict[str, Any]:
     rd = getattr(entry, "runtime_data", None)
     coord = rd.coordinator if isinstance(rd, HomePowerData) else None
     if coord is None:

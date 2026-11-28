@@ -1,5 +1,6 @@
 """Common data model shared by all device adapters."""
 from __future__ import annotations
+from typing import Any
 
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -51,14 +52,14 @@ class Actual:
     grid_w: float | None = None     # house grid power if the device can see it (+ importing)
     pv_w: float | None = None
     load_w: float | None = None
-    limits: tuple | None = None     # the battery's own (charge limit %, discharge limit %, backup reserve %, backup on) - Solarbank
+    limits: tuple[Any, ...] | None = None     # the battery's own (charge limit %, discharge limit %, backup reserve %, backup on) - Solarbank
     firmware: str | None = None     # software version the device reports (X1)
     temp_c: float | None = None     # internal temperature (X1)
-    alarms: tuple = ()              # active alarms the device reports, as plain text (X1)
+    alarms: tuple[str, ...] = ()              # active alarms the device reports, as plain text (X1)
     off_grid: bool | None = None    # the device reports the grid is lost (None = it cannot tell)
-    pv_strings: tuple = ()          # X1: (volts, amps) of each of PV1-PV8 (registers 10167-10182); () = not read yet
+    pv_strings: tuple[tuple[float, float], ...] = ()          # X1: (volts, amps) of each of PV1-PV8 (registers 10167-10182); () = not read yet
     pv_total_w: float | None = None  # X1: the inverter's own total PV power (register 10183)
-    pack_v: tuple = ()              # X1: raw voltage reading of each battery pack (for the health trend)
+    pack_v: tuple[Any, ...] = ()              # X1: raw voltage reading of each battery pack (for the health trend)
     gone: bool = False              # not read, and known to be off the network (not just a refused or unanswered request)
 
 
@@ -69,4 +70,4 @@ class DeviceConfig:
     kind: str                       # anker_x1 | anker_e5000 | ecoflow_ultra_x | ecoflow_es5000
     caps: Capabilities
     priority: int = 0               # lower = preferred discharge first
-    extra: dict = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)

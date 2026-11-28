@@ -4,6 +4,8 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 the coordinator itself and use its state."""
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import time as _time
@@ -13,16 +15,26 @@ from homeassistant.util import dt as dt_util
 from .core.models import Actual
 from .coord_base import _LOGGER, GLOW_DOMAIN, _real
 
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+    from .core.meter import MeterReader
+    from .core.models import DeviceConfig
+
+    from .adapters.base import DeviceAdapter
+    from .core.settings import AppSettings
+    from .manager import HomePowerManager
+
 
 class InputsMixin:
     if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
         _glow_at: Any
-        _glow_cache: Any
-        _meter: Any
-        adapters: Any
-        hass: Any
-        manager: Any
-        settings: Any
+        _glow_cache: dict[str, str]
+        _meter: MeterReader
+        adapters: list[DeviceAdapter]
+        hass: HomeAssistant
+        manager: HomePowerManager
+        settings: AppSettings
 
     def _glow(self) -> dict[str, str]:
         """Entities of the Hildebrand Glow (DCC) integration, if it is set up: its live electricity power sensor
@@ -101,7 +113,7 @@ class InputsMixin:
             ent = g.get("power", "") or g.get("usage", "")
             return from_sensor(ent) if ent and not (s.grid_entity or s.grid_export_entity) else None
 
-        sources = {
+        sources: dict[str, Callable[[], float | None]] = {
             "sensor": lambda: from_sensor(s.grid_entity) if (s.grid_entity or s.grid_export_entity) else None,
             "battery": lambda: from_battery(True), "glow": glow, "cloud": lambda: from_battery(False),
         }
@@ -113,11 +125,11 @@ class InputsMixin:
         return None
 
     @staticmethod
-    def _measures_house(cfg) -> bool:
+    def _measures_house(cfg: DeviceConfig) -> bool:
         """Does this battery's grid figure cover the whole house? What the user said; else what is usual for the model
         (an X1 sits at the grid connection; plug-in batteries only see their own socket; EcoFlow's cloud figure is kept
         as a last resort)."""
-        said = cfg.extra.get("grid_meter", "auto")
+        said: object = cfg.extra.get("grid_meter", "auto")
         if said != "auto":
             return said == "yes"
         return bool(cfg.extra.get("house_meter")) or cfg.extra.get("driver") in ("ecoflow_stream", "ecoflow_modbus")
@@ -126,14 +138,14 @@ class InputsMixin:
         st = self.hass.states.get(entity_id) if entity_id else None
         if st is None:
             return None
-        seen = getattr(st, "last_reported", None) or st.last_updated
+        seen: datetime = getattr(st, "last_reported", None) or st.last_updated
         return max(0.0, (dt_util.utcnow() - seen).total_seconds())
 
     def _meter_w(self, imp_ent: str) -> float | None:
         """Smart-meter reading in W (+ importing): an import sensor, less an optional export sensor. Each may be
         a power sensor (W/kW) or a cumulative energy counter (Wh/kWh)."""
         s, now = self.settings, _time.monotonic()
-        out = []
+        out: list[float | None] = []
         for key, ent in (("imp", imp_ent), ("exp", s.grid_export_entity)):
             st = self.hass.states.get(ent) if ent else None
             out.append(None if st is None else self._meter.read(key, st.state, st.attributes.get("unit_of_measurement"), now))
@@ -152,9 +164,9 @@ class InputsMixin:
         bat = sum(a.power_w or 0.0 for a in actuals.values() if a.online)   # + charging
         return max(0.0, grid - bat + pv_w)
 
-    def _has_solar(self, cfg) -> bool | None:
+    def _has_solar(self, cfg: DeviceConfig) -> bool | None:
         """Are panels attached to this battery? What the user said, else whether it has ever reported solar power."""
-        said = cfg.extra.get("solar", "auto")
+        said: object = cfg.extra.get("solar", "auto")
         if said != "auto":
             return said == "yes"
         return True if cfg.device_id in self.manager.pv_seen else None

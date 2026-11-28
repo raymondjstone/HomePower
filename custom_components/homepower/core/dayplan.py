@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Any, Callable
 
 from .rates import Slot
 
@@ -34,7 +34,7 @@ class PlanSlot:
     house_wh: float = 0.0      # stored energy planned to run the house here
     export_wh: float = 0.0     # stored energy planned to go out to the grid here
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> dict[str, Any]:
         return {"start": self.start.isoformat(), "end": self.end.isoformat(), "import": self.import_price, "export": self.export_price,
                 "load_wh": round(self.load_wh), "house_wh": round(self.house_wh), "export_wh": round(self.export_wh)}
 
@@ -52,7 +52,7 @@ class DayPlan:
     def used_wh(self) -> float:
         return sum(s.house_wh + s.export_wh for s in self.slots)
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> dict[str, Any]:
         return {"until": self.until.isoformat() if self.until else None, "budget_wh": round(self.budget_wh), "used_wh": round(self.used_wh),
                 "threshold": round(self.threshold, 4), "export_now_w": self.export_now_w, "hold_now": self.hold_now,
                 "slots": [s.as_dict() for s in self.slots]}

@@ -11,19 +11,19 @@ import json
 import logging
 import threading
 import time
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 _LOGGER = logging.getLogger(__name__)
 RETRY_AFTER_S = 600
 
 
-def push_params(obj: Any) -> dict:
+def push_params(obj: Any) -> dict[str, Any]:
     """The readings inside one pushed message: under 'params'/'param'/'quotaMap', or at the top level."""
     from .ecoflow import normalise
 
     if not isinstance(obj, dict):
         return {}
-    flat: dict = {}
+    flat: dict[str, Any] = {}
     for key in ("params", "param", "quotaMap"):
         inner = obj.get(key)
         if isinstance(inner, dict):
@@ -42,7 +42,11 @@ def parse_topic(topic: str) -> tuple[str, str] | None:
     return None
 
 
-def _close(client) -> None:
+if TYPE_CHECKING:
+    from .ecoflow import EcoFlowApi
+
+
+def _close(client: Any) -> None:
     """Disconnect first, while the network loop can still send it, then stop the loop. Blocking: call off the event loop."""
     try:
         client.disconnect()
@@ -54,21 +58,21 @@ def _close(client) -> None:
 class EcoFlowLive:
     """One MQTT connection per EcoFlow account, shared by that account's batteries."""
 
-    def __init__(self, api, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(self, api: EcoFlowApi, loop: asyncio.AbstractEventLoop) -> None:
         self.api, self.loop = api, loop
-        self._devs: dict[str, Callable[[dict], None]] = {}
-        self._client = None
+        self._devs: dict[str, Callable[[dict[str, Any]], None]] = {}
+        self._client: Any = None        # a paho-mqtt client while connected
         self._account = ""
         self._gen = 0                   # bumped by stop(): a connection that finishes after a stop is closed at once, not kept
         self._lock = threading.Lock()
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self._next_try = 0.0
         self.error: str | None = None
         self.connected = False
         self.messages = 0
         self.enabled = False            # opt-in: a second connection on the same account could disturb other EcoFlow integrations
 
-    def register(self, sn: str, callback: Callable[[dict], None]) -> None:
+    def register(self, sn: str, callback: Callable[[dict[str, Any]], None]) -> None:
         with self._lock:                # (the MQTT thread copies this dict when it (re)connects)
             new = sn not in self._devs
             self._devs[sn] = callback
@@ -81,7 +85,7 @@ class EcoFlowLive:
             except Exception:  # noqa: BLE001 - it is subscribed at the next reconnect anyway
                 _LOGGER.debug("could not subscribe %s now", sn, exc_info=True)
 
-    def unregister(self, sn: str, callback: Callable[[dict], None] | None = None) -> None:
+    def unregister(self, sn: str, callback: Callable[[dict[str, Any]], None] | None = None) -> None:
         with self._lock:
             if callback is not None and self._devs.get(sn) != callback:
                 return                  # a different driver object now owns this battery (e.g. a connection test closed)
@@ -111,14 +115,14 @@ class EcoFlowLive:
             self.error, self._next_try = f"live updates unavailable: {err}", time.monotonic() + RETRY_AFTER_S
             _LOGGER.debug("EcoFlow live connection failed", exc_info=True)
 
-    def _connect(self, mqtt, cert: dict, gen: int) -> None:
+    def _connect(self, mqtt: Any, cert: dict[str, Any], gen: int) -> None:
         account = str(cert["certificateAccount"])
         self._account = account
         client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=f"HomePower-{account}-{int(time.time()) % 100000}")
         client.username_pw_set(account, str(cert["certificatePassword"]))
         client.tls_set()
 
-        def on_connect(c, _u, _f, rc, _p=None):
+        def on_connect(c: Any, _u: Any, _f: Any, rc: Any, _p: Any = None) -> None:
             self.connected = not getattr(rc, "is_failure", bool(rc))
             if self.connected:
                 with self._lock:        # runs on the MQTT thread: copy while the event loop cannot be changing it
@@ -126,10 +130,10 @@ class EcoFlowLive:
                 for sn in sns:
                     c.subscribe([(f"/open/{account}/{sn}/quota", 1), (f"/open/{account}/{sn}/status", 1)])
 
-        def on_disconnect(*_a):
+        def on_disconnect(*_a: Any) -> None:
             self.connected = False
 
-        def on_message(_c, _u, msg):
+        def on_message(_c: Any, _u: Any, msg: Any) -> None:
             if gen != self._gen:            # stopped (unload, reload): paho's thread may still deliver a few before it ends
                 return
             try:

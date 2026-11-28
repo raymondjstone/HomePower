@@ -1,12 +1,17 @@
 """Fixes offered from Settings > Repairs for HomePower's alerts that have an obvious remedy."""
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.repairs import RepairsFlow
 from homeassistant.core import HomeAssistant
 
 from .runtime import running_manager
+
+if TYPE_CHECKING:
+    from homeassistant.data_entry_flow import FlowResult
+
+    from .manager import HomePowerManager
 
 from .const import DOMAIN
 
@@ -17,14 +22,14 @@ class BatteryFix(RepairsFlow):
     def __init__(self, device_id: str, message: str, title: str = "") -> None:
         self._did, self._msg, self._title = device_id, message, title or "battery"
 
-    def _mgr(self):
+    def _mgr(self) -> HomePowerManager | None:
         return running_manager(self.hass)
 
-    async def async_step_init(self, user_input=None) -> Any:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         return self.async_show_menu(step_id="init", menu_options=["test", "monitor"],
                                     description_placeholders={"message": self._msg, "title": self._title})
 
-    async def async_step_test(self, user_input=None) -> Any:
+    async def async_step_test(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         mgr = self._mgr()
         if mgr is None or mgr.coordinator is None:
             return self.async_abort(reason="not_ready")
@@ -36,10 +41,10 @@ class BatteryFix(RepairsFlow):
             return self.async_create_entry(data={})
         return self.async_abort(reason="test_failed", description_placeholders={"steps": steps or "no steps ran"})
 
-    async def async_step_monitor(self, user_input=None) -> Any:
+    async def async_step_monitor(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         mgr = self._mgr()
         dev = mgr.devices.get(self._did) if mgr else None
-        if dev is None:
+        if mgr is None or dev is None:
             return self.async_abort(reason="not_ready")
         await mgr.save_device({**dev, "control_enabled": False})       # hands it back to its own control and sends nothing more
         if mgr.coordinator is not None:
@@ -53,7 +58,7 @@ class TariffFix(RepairsFlow):
     def __init__(self, message: str) -> None:
         self._msg = message
 
-    async def async_step_init(self, user_input=None) -> Any:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
             entries = self.hass.config_entries.async_entries(DOMAIN)
             if not entries:
@@ -73,7 +78,7 @@ class TariffFix(RepairsFlow):
         return self.async_show_form(step_id="init", description_placeholders={"message": self._msg})
 
 
-async def async_create_fix_flow(hass: HomeAssistant, issue_id: str, data: dict | None) -> RepairsFlow:
+async def async_create_fix_flow(hass: HomeAssistant, issue_id: str, data: dict[str, Any] | None) -> RepairsFlow:
     data = data or {}
     if data.get("fix") == "battery" and data.get("device_id"):
         return BatteryFix(str(data["device_id"]), str(data.get("message", "")), str(data.get("title", "")))

@@ -1,5 +1,6 @@
 """All user settings in one place: parsing, defaults and validation (HA-free)."""
 from __future__ import annotations
+from typing import Any
 
 import json
 from dataclasses import dataclass, field
@@ -8,7 +9,7 @@ from datetime import time
 from .engine import Settings as EngineSettings
 
 # key -> default. Everything the panel / Configure flow can change lives under these keys.
-DEFAULTS: dict = {
+DEFAULTS: dict[str, Any] = {
     "import_limit_w": 7000, "cooldown_s": 120, "total_charge_limit_w": 0, "total_discharge_limit_w": 0,
     "export_limit_w": 0, "peak_shaving": False,
     "grid_import_entity": "", "grid_export_entity": "", "grid_invert": False, "grid_order": "sensor,battery,glow,cloud", "zero_import_device": "",
@@ -49,7 +50,7 @@ def _t(v: str) -> time | None:
 GRID_SOURCES = ("sensor", "battery", "glow", "cloud")
 
 
-def parse_grid_order(v) -> list[str]:
+def parse_grid_order(v: Any) -> list[str]:
     """'battery, sensor' -> ['battery', 'sensor']: which grid readings to use, most trusted first. Left-out ones are never used."""
     out: list[str] = []
     for part in str(v or "").replace(";", ",").split(","):
@@ -82,9 +83,9 @@ def parse_windows(v: str) -> list[tuple[time, time]]:
     return out
 
 
-def clean(raw: dict) -> dict:
+def clean(raw: dict[str, Any]) -> dict[str, Any]:
     """Validate/normalise user-supplied settings; unknown keys are dropped. Partial updates allowed."""
-    out: dict = {}
+    out: dict[str, Any] = {}
     for k, v in raw.items():
         if k not in DEFAULTS:
             continue
@@ -144,7 +145,7 @@ def clean(raw: dict) -> dict:
     return out
 
 
-def clean_rules(v) -> list[dict]:
+def clean_rules(v: Any) -> list[dict[str, Any]]:
     if isinstance(v, str):
         v = json.loads(v) if v.strip() else []
     rules = []
@@ -160,7 +161,7 @@ def clean_rules(v) -> list[dict]:
     return rules
 
 
-def _bool(v) -> bool:
+def _bool(v: Any) -> bool:
     """A switch setting. bool("false") is True, so text from a restored or hand-edited file is read as words."""
     if isinstance(v, str):
         t = v.strip().lower()
@@ -172,7 +173,7 @@ def _bool(v) -> bool:
     return bool(v)
 
 
-def _finite(v) -> float:
+def _finite(v: Any) -> float:
     """float(v), but NaN and infinity are refused (they would flow into prices, savings and comparisons)."""
     f = float(v)
     if f != f or f in (float("inf"), float("-inf")):
@@ -187,7 +188,7 @@ class AppSettings:
     grid_entity: str = ""
     grid_export_entity: str = ""
     grid_invert: bool = False
-    grid_order: list = field(default_factory=lambda: list(GRID_SOURCES))   # grid reading sources, most trusted first
+    grid_order: list[Any] = field(default_factory=lambda: list(GRID_SOURCES))   # grid reading sources, most trusted first
     rates_entity: str = ""
     rates_unit: str = "auto"   # auto | pence | main
     price_peak: float | None = None
@@ -207,7 +208,7 @@ class AppSettings:
     storm_entity: str = ""
     away_entity: str = ""
     notify_service: str = ""
-    load_rules: list[dict] = field(default_factory=list)
+    load_rules: list[dict[str, Any]] = field(default_factory=list)
     ecoflow_live: bool = False
     x1_grid_limits: bool = False   # mirror the import/export limits into an Anker X1's own registers
     divert_cheap: bool = False     # also run the surplus load during cheap-rate hours
@@ -218,7 +219,7 @@ class AppSettings:
     dry_run: bool = False          # work everything out and log it, but send no commands
     solar_room: bool = True        # cap overnight charging of batteries with panels to leave room for the solar forecast
     base_load_w: int = 0           # the house's steady use, assumed taken from the batteries outside cheap hours
-    offpeak_extra: list = field(default_factory=list)   # further cheap windows [(start, end)]
+    offpeak_extra: list[Any] = field(default_factory=list)   # further cheap windows [(start, end)]
     daily_summary_time: time | None = None
     divert_entity: str = ""
     divert_export_w: int = 500
@@ -235,12 +236,12 @@ class AppSettings:
     offline_after_min: int = 5        # a battery whose reads keep failing is shown offline after this long (stale readings before)
 
 
-def _int_or(v, default: int) -> int:
+def _int_or(v: Any, default: int) -> int:
     """The saved number, with 0 kept as 0 (only a missing value falls back to the default)."""
     return default if v in (None, "") else int(v)
 
 
-def build(cfg: dict) -> AppSettings:
+def build(cfg: dict[str, Any]) -> AppSettings:
     c = {**DEFAULTS, **{k: v for k, v in cfg.items() if k in DEFAULTS}}
     eng = EngineSettings(
         charge_cap_w=c["total_charge_limit_w"] or None, discharge_cap_w=c["total_discharge_limit_w"] or None,

@@ -5,6 +5,7 @@ took and the most power seen. After a few of them there is real evidence of whet
 model. Pure Python (no Home Assistant), so it is unit-tested directly.
 """
 from __future__ import annotations
+from typing import Any
 
 WINDOW_S = 600          # how long a command is watched
 CHARGING_W = 500        # this much power counts as "it is charging"
@@ -15,18 +16,18 @@ NEAR_FULL = 85          # a Charge that had no effect from this charge level up 
 
 
 class CommandTrace:
-    def __init__(self, data: dict | None = None) -> None:
-        self.results: dict[str, list[dict]] = {}
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
+        self.results: dict[str, list[dict[str, Any]]] = {}
         for did, rows in (data.items() if isinstance(data, dict) else ()):
             if isinstance(rows, list):
                 self.results[did] = [r for r in rows if isinstance(r, dict) and isinstance(r.get("mode"), str) and "ok" in r][-KEEP:]
-        self._open: dict[str, dict] = {}
+        self._open: dict[str, dict[str, Any]] = {}
 
     def start(self, did: str, mode: str, now_s: float, at: str, soc: float | None, power_w: float | None) -> None:
         """A command was sent. Charge is only worth watching when there was room to charge: the caller checks that."""
         self._open[did] = {"mode": mode, "t0": now_s, "at": at, "soc0": soc, "peak_w": max(0.0, power_w or 0.0), "soc": soc}
 
-    def observe(self, did: str, now_s: float, soc: float | None, power_w: float | None, mode: str | None) -> dict | None:
+    def observe(self, did: str, now_s: float, soc: float | None, power_w: float | None, mode: str | None) -> dict[str, Any] | None:
         """Look at the battery. Returns the finished record when the watch ends (it reacted, or the window ran out)."""
         t = self._open.get(did)
         if t is None:
@@ -72,12 +73,12 @@ class CommandTrace:
             return 1
         return max(1, min(4, 1 + int(max(times) // retry_s)))
 
-    def recent(self, did: str, n: int = 6) -> list[dict]:
+    def recent(self, did: str, n: int = 6) -> list[dict[str, Any]]:
         return list(self.results.get(did, []))[-n:]
 
     def forget(self, did: str) -> None:
         self.results.pop(did, None)
         self._open.pop(did, None)
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return {k: list(v) for k, v in self.results.items()}

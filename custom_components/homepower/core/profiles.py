@@ -11,6 +11,7 @@ protocols (register map / API) that the devices speak.
 HA-free and JSON-serialisable (sent to the panel).
 """
 from __future__ import annotations
+from typing import Any
 
 from .models import Mode
 
@@ -18,16 +19,16 @@ A, C, D, H = Mode.AUTO.value, Mode.CHARGE.value, Mode.DISCHARGE.value, Mode.HOLD
 ALL_MODES = [A, C, D, H]
 
 
-def _f(k, label, domains, req=False, rx=""):
+def _f(k: str, label: str, domains: list[str], req: bool = False, rx: str = "") -> dict[str, Any]:
     return {"k": k, "label": label, "domains": list(domains), "req": req, "keys": [], "rx": rx, "hint": ""}
 
 
-def _m(k, label, entity, rx="", optional=False):
+def _m(k: str, label: str, entity: str, rx: str = "", optional: bool = False) -> dict[str, Any]:
     return {"k": k, "label": label, "entity": entity, "rx": rx, "optional": optional}
 
 
 # Connection fields per driver (what the setup form asks for).
-DRIVERS: dict[str, dict] = {
+DRIVERS: dict[str, dict[str, Any]] = {
     "anker_modbus": {
         "modes": ALL_MODES,
         "connection": [
@@ -111,7 +112,7 @@ DRIVERS: dict[str, dict] = {
     },
 }
 
-VENDORS: dict[str, dict] = {
+VENDORS: dict[str, dict[str, Any]] = {
     "Anker": {"regions": (
         "Works in every region: HomePower connects to the battery on your own network (Modbus TCP, no cloud). "
         "Grid feed-in is off by default in Italy, Spain, Thailand, Vietnam and the Philippines, which affects "
@@ -131,11 +132,11 @@ _EF = ("Uses EcoFlow's developer API. Auto = the battery's own settings, exactly
        "rate (the power cannot be set, and it is not tested on hardware yet). Force discharge is not available.")
 
 
-def _p(pid, vendor, label, driver, notes="", **extra):
+def _p(pid: str, vendor: str, label: str, driver: str, notes: str = "", **extra: Any) -> dict[str, Any]:
     return {"id": pid, "vendor": vendor, "label": label, "driver": driver, "notes": notes, **extra}
 
 
-PROFILES: list[dict] = [
+PROFILES: list[dict[str, Any]] = [
     _p("anker_solarbank_max_ac", "Anker", "Anker SOLIX Solarbank Max AC", "anker_modbus", _ANKER, watchdog=False),
     _p("anker_solarbank_max", "Anker", "Anker SOLIX Solarbank Max", "anker_modbus", _ANKER, watchdog=False),
     _p("anker_xe_ac", "Anker", "Anker SOLIX XE AC", "anker_modbus", _ANKER, watchdog=False),
@@ -171,5 +172,5 @@ PROFILES: list[dict] = [
 PROFILE_BY_ID = {p["id"]: p for p in PROFILES}
 
 
-def catalogue() -> dict:
+def catalogue() -> dict[str, Any]:
     return {"profiles": PROFILES, "drivers": DRIVERS, "vendors": VENDORS}

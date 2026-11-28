@@ -3,6 +3,7 @@
 No Home Assistant imports, so they are unit-tested directly.
 """
 from __future__ import annotations
+from typing import Any
 
 CHARGING_W = 50          # below this a battery told to charge is not really charging
 STUCK_AFTER_S = 20 * 60  # told to charge, but nothing happened for this long
@@ -39,7 +40,7 @@ def grid_sign_mismatch(meter_w: float | None, device_w: float | None, min_w: flo
     return (meter_w > 0) != (device_w > 0)
 
 
-def cycling_margin(buy: float, avoided: float, efficiency: float, wear: float = 0.0) -> dict:
+def cycling_margin(buy: float, avoided: float, efficiency: float, wear: float = 0.0) -> dict[str, Any]:
     """What storing one kWh is worth: `buy` is what it costs to charge it, `avoided` what the energy would otherwise cost
     (or earn if exported) when it is used later, `efficiency` the battery's round trip (0-1), `wear` what cycling a kWh
     through the battery costs in wear. Prices in the same unit."""
@@ -61,7 +62,7 @@ class RateLearner:
     KEEP = 20
     MIN_W = 500          # slower than this is a battery tapering or being throttled, not its rate
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
         self.rates: dict[str, int] = {k: int(v) for k, v in (data.items() if isinstance(data, dict) else ())
                                       if isinstance(v, (int, float)) and 0 < v < 1e6}
         self._samples: dict[str, list[float]] = {}

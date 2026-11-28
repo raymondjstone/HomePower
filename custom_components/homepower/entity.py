@@ -1,5 +1,7 @@
 """What every HomePower entity has in common: it follows the coordinator and sits on the one HomePower device."""
 from __future__ import annotations
+from collections.abc import Iterable
+from typing import Any, cast
 
 import logging
 
@@ -11,6 +13,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import HomePowerCoordinator
+from .core.models import DeviceConfig
 from .core.profiles import PROFILE_BY_ID
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,14 +36,14 @@ def battery_device_name(name: str) -> str:
     return f"HomePower {name}"
 
 
-def find_device(registry, identifier: tuple[str, str], entry_id: str):
+def find_device(registry: dr.DeviceRegistry, identifier: tuple[str, str], entry_id: str) -> dr.DeviceEntry | None:
     """One of HomePower's devices. Newer Home Assistant releases look it up by identifier and config entry."""
     if by_identifier := getattr(registry, "async_get_device_by_identifier", None):
-        return by_identifier(identifier, entry_id)
+        return cast("dr.DeviceEntry | None", by_identifier(identifier, entry_id))
     return registry.async_get_device(identifiers={identifier})
 
 
-def _under_system(hass: HomeAssistant, entry_id: str) -> dict:
+def _under_system(hass: HomeAssistant, entry_id: str) -> dict[str, Any]:
     """"Connected via HomePower": newer releases want the parent device's id, older ones its identifier."""
     if "via_device_id" not in DeviceInfo.__annotations__:
         return {"via_device": (DOMAIN, entry_id)}
@@ -52,21 +55,21 @@ def _under_system(hass: HomeAssistant, entry_id: str) -> dict:
     return {"via_device_id": parent.id} if parent else {}
 
 
-def battery_device(hass: HomeAssistant, entry_id: str, config) -> DeviceInfo:
+def battery_device(hass: HomeAssistant, entry_id: str, config: DeviceConfig) -> DeviceInfo:
     profile = PROFILE_BY_ID.get(config.kind) or {}
     return DeviceInfo(
         identifiers={battery_identifier(entry_id, config.device_id)}, name=battery_device_name(config.name),
         manufacturer=profile.get("vendor"), model=profile.get("label"),
-        configuration_url="homeassistant://homepower", **_under_system(hass, entry_id),
+        configuration_url="homeassistant://homepower", **cast(DeviceInfo, _under_system(hass, entry_id)),
     )
 
 
-def battery_ids(entry_id: str, stored) -> set[tuple[str, str]]:
+def battery_ids(entry_id: str, stored: Iterable[str]) -> set[tuple[str, str]]:
     """The device identifiers that belong to something HomePower still has: itself and each stored battery."""
     return {(DOMAIN, entry_id)} | {battery_identifier(entry_id, d) for d in stored}
 
 
-def prepare_devices(hass: HomeAssistant, entry: ConfigEntry, stored) -> None:
+def prepare_devices(hass: HomeAssistant, entry: ConfigEntry, stored: Iterable[str]) -> None:
     """Before the sensors are added: HomePower's own device exists (the batteries hang off it), and devices of batteries
     deleted while HomePower was not loaded are gone. Cosmetic: it never stops setup."""
     try:

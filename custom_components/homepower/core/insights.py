@@ -23,7 +23,7 @@ class LoadProfile:
     MIN_VISITS = 2
     MIN_SAMPLES_PER_VISIT = 6   # ignore a half-hour that was barely observed (e.g. Home Assistant restarted in it)
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
         from .energy import finite
 
         d = data if isinstance(data, dict) else {}
@@ -37,13 +37,13 @@ class LoadProfile:
             if isinstance(a_k, list) and isinstance(n_k, list) and len(a_k) == 48 and len(n_k) == 48:
                 self.avg[k] = [max(0.0, finite(x)) for x in a_k]
                 self.n[k] = [max(0, int(finite(x))) for x in n_k]
-        self._cur: list | None = None    # [(kind, slot, date), sum, count]
+        self._cur: list[Any] | None = None    # [(kind, slot, date), sum, count]
 
     @staticmethod
     def _slot(t: datetime) -> tuple[str, int]:
         return ("we" if t.weekday() >= 5 else "wd"), t.hour * 2 + t.minute // 30
 
-    def _blend(self, avg: dict, n: dict, cur: list | None) -> None:
+    def _blend(self, avg: dict[str, Any], n: dict[str, Any], cur: list[Any] | None) -> None:
         """Blend a finished visit into `avg`/`n` (the long-term figures)."""
         if cur is None:
             return
@@ -88,7 +88,7 @@ class LoadProfile:
             t = nxt
         return total
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         # A visit in progress counts too once it has enough samples, but only in the copy that is saved: folding it for real on
         # every save (every few minutes) would turn one half-hour into many "visits" and make a new day look like days of history.
         avg, n = {k: list(v) for k, v in self.avg.items()}, {k: list(v) for k, v in self.n.items()}
@@ -111,7 +111,7 @@ def auto_target_soc(usage_wh: float | None, capacity_wh: float, floor_pct: float
 class DailyStats:
     KEEP_DAYS = 120
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
         from .energy import finite
         blank = {"pv": 0.0, "export": 0.0, "import": 0.0, "import_cheap": 0.0, "import_known": 0.0}
         # every figure present (a damaged saved day missing one must not break today's percentages or the next update)
@@ -145,7 +145,7 @@ class DailyStats:
             return None
         return round(100 * d["import_cheap"] / d["import_known"], 1)
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return {k: {kk: round(vv, 4) for kk, vv in v.items()} for k, v in self.days.items()}
 
 
@@ -173,9 +173,9 @@ class UsageHistory:
 
     KEEP_DAYS = 200
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
         self.days: dict[str, dict[str, list[float]]] = {}
-        def num(x) -> float:
+        def num(x: Any) -> float:
             f = float(x)
             if f != f or f in (float("inf"), float("-inf")):
                 raise ValueError("not finite")
@@ -208,7 +208,7 @@ class UsageHistory:
         for old in sorted(self.days)[:-self.KEEP_DAYS]:
             del self.days[old]
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return {k: {n: [round(x, 4) for x in v[n]] for n in ("imp", "exp", "load", "pv") if n in v} for k, v in self.days.items()}
 
 
@@ -220,17 +220,17 @@ class Health:
 
     KEEP_WEEKS = 26
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
         from .energy import finite
         d = data if isinstance(data, dict) else {}
 
-        def pair(v) -> dict[str, float] | None:          # {"in": kWh, "out": kWh}, or None when damaged (then dropped)
+        def pair(v: Any) -> dict[str, float] | None:          # {"in": kWh, "out": kWh}, or None when damaged (then dropped)
             return {"in": finite(v.get("in")), "out": finite(v.get("out"))} if isinstance(v, dict) else None
 
-        weeks = d.get("weeks") if isinstance(d.get("weeks"), dict) else {}
+        weeks: Any = d.get("weeks") if isinstance(d.get("weeks"), dict) else {}
         self.weeks: dict[str, dict[str, dict[str, float]]] = {
             w: {k: p for k, v in x.items() if (p := pair(v))} for w, x in weeks.items() if isinstance(x, dict)}
-        base = d.get("base") if isinstance(d.get("base"), dict) else {}
+        base: Any = d.get("base") if isinstance(d.get("base"), dict) else {}
         self.base: dict[str, dict[str, float]] = {k: p for k, v in base.items() if (p := pair(v))}
         week: Any = d.get("base_week")
         self.base_week: str = week if isinstance(week, str) else ""
@@ -277,7 +277,7 @@ class Health:
             return f"round-trip efficiency fell to {latest:g}% in week {week} (it was about {base:g}%)"
         return None
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return {"weeks": self.weeks, "base": self.base, "base_week": self.base_week}
 
 
@@ -286,8 +286,8 @@ class GridEvents:
 
     KEEP = 50
 
-    def __init__(self, data: list | None = None) -> None:
-        self.events: list[dict] = [dict(e) for e in (data or []) if isinstance(e, dict) and isinstance(e.get("start"), str) and e.get("start") and e.get("did")][-self.KEEP:]
+    def __init__(self, data: list[Any] | None = None) -> None:
+        self.events: list[dict[str, Any]] = [dict(e) for e in (data or []) if isinstance(e, dict) and isinstance(e.get("start"), str) and e.get("start") and e.get("did")][-self.KEEP:]
 
     def observe(self, did: str, name: str, off_grid: bool | None, now: datetime, soc: float | None) -> None:
         if off_grid is None:
@@ -305,7 +305,7 @@ class GridEvents:
             if e["did"] == did and e.get("end") is None:
                 e["end"] = now.isoformat(timespec="seconds")
 
-    def dump(self) -> list[dict]:
+    def dump(self) -> list[dict[str, Any]]:
         return self.events
 
     def outages_since(self, cutoff_iso: str, now: datetime) -> tuple[int, float]:
@@ -322,7 +322,7 @@ class GridEvents:
                 continue
             spans.append((a, max(a, b)))
         spans.sort()
-        merged: list[list] = []
+        merged: list[list[Any]] = []
         for a, b in spans:
             if merged and a <= merged[-1][1]:
                 merged[-1][1] = max(merged[-1][1], b)
@@ -330,7 +330,7 @@ class GridEvents:
                 merged.append([a, b])
         return len(merged), sum((b - a).total_seconds() for a, b in merged) / 60
 
-    def view(self, n: int = 20) -> list[dict]:
+    def view(self, n: int = 20) -> list[dict[str, Any]]:
         return list(reversed(self.events[-n:]))
 
 
@@ -343,14 +343,15 @@ class HealthTrend:
     ABS_SPREAD = 1.5      # percentage points: a spread under this is never worth a warning
     HOT_C = 65.0          # an inverter's internal temperature runs well above the air around it
 
-    def __init__(self, data: dict | None = None) -> None:
-        self.days: dict[str, dict[str, dict]] = {}
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
+        self.days: dict[str, dict[str, dict[str, Any]]] = {}
         for did, rows in (data.items() if isinstance(data, dict) else ()):
             if isinstance(rows, dict):
-                num = lambda x: float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and x == x and abs(x) != float("inf") else None  # noqa: E731
+                def num(x: Any) -> float | None:
+                    return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and x == x and abs(x) != float("inf") else None
                 self.days[did] = {d: {"tmax": num(v.get("tmax")), "spread": num(v.get("spread"))} for d, v in rows.items() if isinstance(v, dict)}
 
-    def update(self, day: str, did: str, temp_c: float | None, pack_v: tuple) -> None:
+    def update(self, day: str, did: str, temp_c: float | None, pack_v: tuple[Any, ...]) -> None:
         rec = self.days.setdefault(did, {}).setdefault(day, {"tmax": None, "spread": None})
         if temp_c is not None:
             rec["tmax"] = temp_c if rec["tmax"] is None else max(rec["tmax"], temp_c)
@@ -360,7 +361,7 @@ class HealthTrend:
         for old in sorted(self.days[did])[:-self.KEEP_DAYS]:
             del self.days[did][old]
 
-    def series(self, did: str, n: int = 14) -> list[list]:
+    def series(self, did: str, n: int = 14) -> list[list[Any]]:
         d = self.days.get(did, {})
         return [[k, d[k]["tmax"], d[k]["spread"]] for k in sorted(d)[-n:]]
 
@@ -379,7 +380,7 @@ class HealthTrend:
                 return f"its battery packs have drifted apart ({last['spread']:g}% voltage spread, usually {base:g}%)"
         return None
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return self.days
 
 
@@ -397,7 +398,7 @@ class BatteryFigures:
     max_charge_w: float = 0.0
 
 
-def combine(items: list[BatteryFigures], load_w: float | None = None) -> dict:
+def combine(items: list[BatteryFigures], load_w: float | None = None) -> dict[str, Any]:
     """Totals across every online battery: charge level (capacity weighted), stored and usable energy, flow, and how long
     the battery would last at the current draw / take to fill."""
     on: list[Any] = [BatteryFigures(b.capacity_wh, max(0.0, min(100.0, b.soc)), b.online, b.power_w, b.min_soc, b.load_w, b.max_charge_w)
@@ -436,7 +437,7 @@ class SceneError(ValueError):
     pass
 
 
-def clean_scene(raw: dict) -> dict:
+def clean_scene(raw: dict[str, Any]) -> dict[str, Any]:
     from .settings import _bool                      # "false" from a restored or hand-edited file is off, not on
     name = str(raw.get("name") or "").strip()
     if not name:
@@ -449,7 +450,7 @@ def clean_scene(raw: dict) -> dict:
             out[k] = _bool(raw.get(k, False))
         except ValueError as err:
             raise SceneError(f"{k}: {err}") from err
-    st = raw.get("settings") if isinstance(raw.get("settings"), dict) else {}
+    st: Any = raw.get("settings") if isinstance(raw.get("settings"), dict) else {}
     out["settings"] = {}
     for k in SCENE_SETTINGS:
         if k in st and st[k] not in (None, ""):
@@ -508,7 +509,7 @@ class PlanLog:
 
     KEEP_DAYS = 8
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
         self.days: dict[str, dict[str, dict[str, list[float]]]] = {}
         for day, devs in (data.items() if isinstance(data, dict) else ()):
             for did, r in (devs.items() if isinstance(devs, dict) else ()):
@@ -532,7 +533,7 @@ class PlanLog:
         for old in sorted(self.days)[:-self.KEEP_DAYS]:
             del self.days[old]
 
-    def view(self, did: str, now: datetime, hours: int = 24) -> dict:
+    def view(self, did: str, now: datetime, hours: int = 24) -> dict[str, Any]:
         """The last `hours` hours as half-hour rows [start iso, planned W, actual W] (None = no reading), plus how closely
         the battery followed the plan over the slots that had both."""
         end = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0) + timedelta(minutes=30)
@@ -552,5 +553,5 @@ class PlanLog:
         both = sum(1 for _, p, a in rows if p is not None and a is not None)
         return {"rows": rows, "match_pct": round(100 * (1 - num / den)) if both >= 4 and den > 0 else None}
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return {d: {did: {k: [round(x, 1) for x in v] for k, v in r.items()} for did, r in devs.items()} for d, devs in self.days.items()}

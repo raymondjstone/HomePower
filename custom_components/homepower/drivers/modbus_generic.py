@@ -1,5 +1,6 @@
 """Any Modbus TCP battery described by a register map (see core/modbus_map.py)."""
 from __future__ import annotations
+from typing import Any
 
 import logging
 
@@ -34,7 +35,7 @@ class GenericModbusDriver:
     async def close(self) -> None:
         await self.client.close()
 
-    async def _value(self, reg: dict | None) -> float | None:
+    async def _value(self, reg: dict[str, Any] | None) -> float | None:
         if not reg:
             return None
         total = 0.0
@@ -44,7 +45,7 @@ class GenericModbusDriver:
             total += _decode(await fn(addr, n), reg["type"], self.map["word_order"]) * reg["scale"]
         return total
 
-    async def _snapshot(self) -> dict:
+    async def _snapshot(self) -> dict[str, Any]:
         m = self.map
         soc, power = await self._value(m["soc"]), await self._value(m["power"])
         if m["power"]["positive_is"] == "discharging" and power is not None:
@@ -77,7 +78,7 @@ class GenericModbusDriver:
             _LOGGER.debug("%s read failed: %s", self.config.device_id, err)
             return Actual(online=False, gone=known_down(err))
 
-    async def probe(self) -> dict:
+    async def probe(self) -> dict[str, Any]:
         s = await self._snapshot()
         return {**s, "mode": None, "model": None, "serial": None, "capacity_wh": None,
                 "max_charge_w": None, "max_discharge_w": None, "min_soc": None, "control": has_control(self.map)}
@@ -90,7 +91,7 @@ class GenericModbusDriver:
             raise ValueError("this register map is read-only")
         sp_reg, mode_reg, order = m["setpoint"], m["mode"], m["word_order"]
 
-        async def write(reg: dict, value: float) -> None:
+        async def write(reg: dict[str, Any], value: float) -> None:
             raw = int(round(value / reg["scale"]))
             await self.client.write_multiple(reg["addrs"][0], _encode(raw, reg["type"], order))
 

@@ -12,3 +12,19 @@ parallel = true
 
 [tool.coverage.report]
 show_missing = false
+
+# Strict typing (Home Assistant quality scale, Platinum): `python -m mypy` from the repo root, with Home Assistant installed.
+[tool.mypy]
+python_version = "3.13"
+files = ["custom_components/homepower"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["ignore-without-code", "redundant-self", "truthy-iterable"]
+extra_checks = true
+local_partial_types = true
+
+# Home Assistant re-exports names with plain imports (websocket_api.websocket_command, recorder.get_instance...); its own
+# type checking allows that, so ours does too for its modules only.
+[[tool.mypy.overrides]]
+module = ["homeassistant.*"]
+implicit_reexport = true

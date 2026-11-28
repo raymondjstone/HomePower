@@ -4,7 +4,7 @@ Part of HomePowerCoordinator (coordinator.py), kept in its own file so each file
 run on the coordinator itself and use its state."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import re
 import time as _time
@@ -16,6 +16,33 @@ from .core.preview import find_conflicts, preview as build_preview
 from .core.report import ecoflow_report
 from .core.sanity import explain_idle, offline_hint
 from .coord_base import _LOGGER, GRID_SLOW_AFTER_S, DeviceStatus, _PRIVATE_KEY
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
+    from .adapters.base import DeviceAdapter
+    from .coord_base import Snapshot
+    from .core.alerts import AlertTracker
+    from .core.energy import EnergyMeter
+    from .core.energy import Ledger
+    from .core.insights import DailyStats
+    from .core.insights import Diverter
+    from .core.insights import GridEvents
+    from .core.insights import Health
+    from .core.insights import HealthTrend
+    from .core.insights import LoadProfile
+    from .core.insights import PlanLog
+    from .core.insights import UsageHistory
+
+    from .core.pv_health import PvHealth
+    from .core.sanity import RateLearner
+    from .core.settings import AppSettings
+
+    from .core.traces import CommandTrace
+    from .manager import HomePowerManager
+
+
+_T = TypeVar("_T")
 
 
 class ReportsMixin:
@@ -33,47 +60,47 @@ class ReportsMixin:
         _price_slots: Any
         _rates: Any
         _rates_entity: Any
-        _snap: Any
+        _snap: Snapshot
         _tariff: Any
-        adapters: Any
-        alerts: Any
+        adapters: list[DeviceAdapter]
+        alerts: AlertTracker
         away: Any
         backup_active: Any
-        daily: Any
+        daily: DailyStats
         day_plan: Any
-        diverter: Any
+        diverter: Diverter
         forecast_floor: Any
         grid_age_s: Any
         grid_event: Any
-        grid_events: Any
+        grid_events: GridEvents
         grid_source: Any
-        hass: Any
-        health: Any
-        last_grid: Any
+        hass: HomeAssistant
+        health: Health
+        last_grid: float | None
         last_result: Any
-        ledger: Any
+        ledger: Ledger
         link: Any
-        manager: Any
-        meter: Any
+        manager: HomePowerManager
+        meter: EnergyMeter
         overrides: Any
         paused: Any
-        plan_log: Any
-        profile: Any
-        pv_health: Any
-        rate_learner: Any
+        plan_log: PlanLog
+        profile: LoadProfile
+        pv_health: PvHealth
+        rate_learner: RateLearner
         schedules: Any
-        settings: Any
+        settings: AppSettings
         shown_actual: Any
         shown_actuals: Any
         solar_room: Any
         solar_view: Any
         startup_note: Any
-        traces: Any
-        trend: Any
-        usage: Any
+        traces: CommandTrace
+        trend: HealthTrend
+        usage: UsageHistory
         weather: Any
 
-    def readiness(self) -> dict | None:
+    def readiness(self) -> dict[str, Any] | None:
         """How long the batteries could run the house if the grid went down now: the usable energy (above each battery's
         minimum) against the usual household load for the coming hours, or the current load if that is not learned yet.
         Ignores solar, so it is the cautious figure."""
@@ -112,7 +139,7 @@ class ReportsMixin:
             return ""
         return f" About {'more than ' if r['capped'] else ''}{r['hours']:g} h of cover left at {r['basis']}, ignoring solar."
 
-    def whatif(self, days: int, base: dict, alt: dict) -> dict:
+    def whatif(self, days: int, base: dict[str, Any], alt: dict[str, Any]) -> dict[str, Any]:
         """Replay the recorded house load and solar with two different sets of battery settings (core/whatif.py)."""
         from .core.tariffs import parse_tariffs
         from .core.whatif import simulate
@@ -131,7 +158,7 @@ class ReportsMixin:
         return {"days": len(keys), "capacity_kwh": round(cap, 1), "max_kw": round(kw, 1), "tariff": ts[0]["name"],
                 "base": simulate(data, ts[0], cap, kw, **base), "alt": simulate(data, ts[0], cap, kw, **alt)}
 
-    def setup_check(self) -> list[dict]:
+    def setup_check(self) -> list[dict[str, Any]]:
         """Is everything set up? A plain checklist for the panel (ok / what is missing / where to fix it)."""
         s, items = self.settings, []
 
@@ -195,7 +222,7 @@ class ReportsMixin:
         now = _time.monotonic()
         cache = getattr(self, "_big_cache", None)
         if cache is not None and now - cache[0] < 300 and cache[1] == repr(self.settings.load_rules):
-            return cache[2]
+            return cast("list[str]", cache[2])
         from .core.loads import big_load_sensors
 
         try:
@@ -208,7 +235,7 @@ class ReportsMixin:
         self._big_cache = (now, repr(self.settings.load_rules), found)
         return found
 
-    def pv_view(self, did: str) -> dict | None:
+    def pv_view(self, did: str) -> dict[str, Any] | None:
         """One X1's solar strings for the panel: live volts, amps and watts with each string's health."""
         st = self._snap.devices.get(did)
         act = self.shown_actual(did) or (st.actual if st else None)     # the last reading while only stale, like the card
@@ -224,7 +251,7 @@ class ReportsMixin:
                 r.update({"volts": round(v, 1), "amps": round(a, 2), "watts": round(v * a)})
         return {"strings": rows, "total_w": None if not (act and act.online and act.pv_total_w is not None) else round(act.pv_total_w)}
 
-    def preview_view(self, hours: int = 24) -> dict:
+    def preview_view(self, hours: int = 24) -> dict[str, Any]:
         now = dt_util.now()
         ids = [a.config.device_id for a in self.adapters]
         kw = dict(condition_ok=self._condition_ok, away=self.away)
@@ -247,7 +274,7 @@ class ReportsMixin:
 
     _IPV4 = re.compile(r"(?<![\w.])\d{1,3}(?:\.\d{1,3}){3}(?![\w])")
 
-    def scrub(self, obj, strict: bool = False):
+    def scrub(self, obj: _T, strict: bool = False) -> _T:
         """Remove what must never be shared from any text: the keys and passwords always, and (strict, for anything the
         user may paste or attach) also each battery's address and serial number and any IPv4 address. Error messages are
         where these end up, so this works on every string, however deep."""
@@ -265,7 +292,7 @@ class ReportsMixin:
                 text = text.replace(s, "<hidden>")
             return self._IPV4.sub("<ip>", text) if strict else text
 
-        def walk(x):
+        def walk(x: Any) -> Any:
             if isinstance(x, str):
                 return clean(x)
             if isinstance(x, dict):
@@ -273,9 +300,9 @@ class ReportsMixin:
             if isinstance(x, (list, tuple)):
                 return [walk(v) for v in x]
             return x
-        return walk(obj)
+        return cast(_T, walk(obj))        # (a tuple comes back as a list: the same once sent as JSON)
 
-    def debug_bundle(self) -> dict:
+    def debug_bundle(self) -> dict[str, Any]:
         """One file for a bug report: everything below is already free of keys; serial numbers and addresses are removed too."""
         now = dt_util.now()
         diag = self.diagnostics()
@@ -290,7 +317,7 @@ class ReportsMixin:
                 "plan_against_actual": {a.config.device_id: self.plan_log.view(a.config.device_id, now) for a in self.adapters},
                 "events": [list(e) for e in list(self._snap.events)[-150:]], "alerts": sorted(self.alerts.active())}, strict=True)
 
-    def hardware_report(self) -> dict:
+    def hardware_report(self) -> dict[str, Any]:
         """What each battery really did under HomePower's control, to share so a model can be marked as proven on real hardware.
         Only model, firmware, limits and results: no names, keys, serial numbers or addresses (scrubbed again to be sure)."""
         now = dt_util.now()
@@ -331,7 +358,7 @@ class ReportsMixin:
                            "how_to_read": "proven = Test control passed and the battery followed at least 80% of HomePower's plan over the last day"},
                           strict=True)
 
-    def diagnostics(self) -> dict:
+    def diagnostics(self) -> dict[str, Any]:
         out = {}
         for a in self.adapters:
             did, st = a.config.device_id, self._snap.devices.get(a.config.device_id)
@@ -364,7 +391,7 @@ class ReportsMixin:
             }
         return out
 
-    def devices_view(self, now: datetime | None = None) -> dict:
+    def devices_view(self, now: datetime | None = None) -> dict[str, Any]:
         """Per-battery part of the live view (also what the sensors' attributes are built from)."""
         now = now or dt_util.now()
         out = {}
@@ -425,7 +452,7 @@ class ReportsMixin:
                             "view_error": True, "alarms": [], "active_schedules": [], "traces": [], "setting_changes": []}
         return out
 
-    def view(self) -> dict:
+    def view(self) -> dict[str, Any]:
         """JSON-safe live view for the panel."""
         now = dt_util.now()
         day_key = now.strftime("%Y-%m-%d")

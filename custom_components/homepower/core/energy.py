@@ -1,10 +1,11 @@
 """Energy counters (for the HA Energy dashboard) and the savings ledger."""
 from __future__ import annotations
+from typing import Any
 
 MAX_GAP_S = 300  # don't integrate across gaps longer than this (restart, outage)
 
 
-def finite(v, default: float = 0.0) -> float:
+def finite(v: Any, default: float = 0.0) -> float:
     """A saved or measured number as a float; junk, null, NaN and infinity become `default` (they would poison totals for good)."""
     try:
         f = float(v)
@@ -16,7 +17,7 @@ def finite(v, default: float = 0.0) -> float:
 class EnergyMeter:
     """Integrates power into lifetime kWh totals. Positive watts -> `<key>_in`, negative -> `<key>_out`."""
 
-    def __init__(self, totals: dict | None = None) -> None:
+    def __init__(self, totals: dict[str, Any] | None = None) -> None:
         self.totals: dict[str, float] = {k: finite(v) for k, v in (totals or {}).items() if isinstance(k, str)}
         self._last: dict[str, tuple[float, float]] = {}
 
@@ -54,7 +55,7 @@ class Ledger:
 
     KEEP_DAYS = 400
 
-    def __init__(self, data: dict | None = None, stores: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None, stores: dict[str, Any] | None = None) -> None:
         self.days: dict[str, dict[str, float]] = {k: {kk: finite(vv) for kk, vv in v.items()} for k, v in (data or {}).items() if isinstance(v, dict)}
         # battery -> [kWh stored, cost per stored kWh]
         self.stores: dict[str, list[float]] = {k: [finite(v[0]), finite(v[1])] for k, v in (stores or {}).items() if isinstance(v, (list, tuple)) and len(v) == 2}
@@ -114,5 +115,5 @@ class Ledger:
         """Savings for a day ("2026-11-10") or a month ("2026-11")."""
         return self._sum(prefix, "value") - self._sum(prefix, "cost")
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return self.days

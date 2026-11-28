@@ -13,6 +13,8 @@ Register map (from the vendors' published Modbus protocol as used by the open-so
 units seen so far send the HIGH word first).
 """
 from __future__ import annotations
+from collections.abc import Callable
+from typing import Any
 
 import logging
 
@@ -44,7 +46,8 @@ class AnkerModbusDriver:
     _pv_total_ok: float | None = None
     logs_link = True          # says itself when the battery stops answering and when it answers again
 
-    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None, orig: dict | None = None, on_orig=None) -> None:
+    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None, orig: dict[str, Any] | None = None,
+                 on_orig: Callable[[dict[str, Any] | None], None] | None = None) -> None:
         self.config = config
         c = config.extra["connection"]
         self.client = client or ModbusTcpClient(c["host"], int(c.get("port", 502)), int(c.get("unit_id", 1)))
@@ -57,14 +60,14 @@ class AnkerModbusDriver:
         self._slow_at = 0.0               # X1: next time to refresh the slowly-changing extras (temperature)
         self._firmware: str | None = None
         self._temp: float | None = None
-        self._limits: tuple | None = None
-        self._pack_v: tuple = ()
+        self._limits: tuple[Any, ...] | None = None
+        self._pack_v: tuple[Any, ...] = ()
         self._packs_at = 0.0
-        self._pv: tuple = ()                   # X1: ((V, A) x 8) from 10167-10182
+        self._pv: tuple[Any, ...] = ()                   # X1: ((V, A) x 8) from 10167-10182
         self._pv_total: float | None = None    # X1: total PV power, 10183
         self._pv_at = 0.0
         self.last_error: str | None = None     # why the last read failed, in plain words (None while it answers)
-        self.outages: list[dict] = []          # the last few times it stopped answering: {"at": when it went quiet, "seconds": for how long}
+        self.outages: list[dict[str, Any]] = []          # the last few times it stopped answering: {"at": when it went quiet, "seconds": for how long}
         self._down_since: float | None = None
         self._down_wall = 0.0
 
@@ -252,12 +255,12 @@ class AnkerModbusDriver:
         self._note_up()
         return actual
 
-    async def probe(self) -> dict:
+    async def probe(self) -> dict[str, Any]:
         """Everything useful for setup, read from the battery itself: live values, model, capacity,
         power limits and its configured minimum charge. Never writes."""
         inp, hold = await self._blocks()
         a = self._decode(inp, hold)
-        info: dict = {
+        info: dict[str, Any] = {
             "soc": a.soc, "power_w": a.power_w, "mode": a.mode.value if a.mode else None,
             "grid_w": a.grid_w, "pv_w": a.pv_w, "load_w": a.load_w, "word_order": self._order,
             "max_charge_w": self._i32(inp, 10036) or None, "max_discharge_w": self._i32(inp, 10038) or None,
@@ -277,7 +280,8 @@ class AnkerModbusDriver:
             except ModbusError:
                 pass
         try:
-            rated = to_u32(*await self.client.read_input(10250, 2), self._order or "big")
+            hi_w, lo_w = await self.client.read_input(10250, 2)
+            rated = to_u32(hi_w, lo_w, self._order or "big")
             info["capacity_wh"] = int(rated * 100) or None  # register is in 0.1 kWh
         except ModbusError:
             info["capacity_wh"] = None
@@ -288,7 +292,7 @@ class AnkerModbusDriver:
         return info
 
     async def set_grid_limits(self, import_w: int | None, export_w: int | None, mine: dict[str, int] | None = None,
-                              orig: dict[str, list] | None = None) -> list[str]:
+                              orig: dict[str, list[Any]] | None = None) -> list[str]:
         """X1 only: mirror HomePower's house import / export limit into the inverter's own limit registers
         (10074 export mode, 10075-76 value, 10077 import mode, 10078-79 value; mode 0 off, 2 fixed watts), so the
         limit also holds if Home Assistant is down. Cautious by design: a limit HomePower did not write (an installer's
@@ -335,7 +339,7 @@ class AnkerModbusDriver:
             changed.append(f"{label} limit {want} W")
         return changed
 
-    async def scan(self, ranges=((10000, 10700), (60000, 60100))) -> dict[str, dict[str, int]]:
+    async def scan(self, ranges: tuple[tuple[int, int], ...] = ((10000, 10700), (60000, 60100))) -> dict[str, dict[str, int]]:
         """Read-only dump of raw registers (holding and input) for finding which register an app setting lives in:
         scan, change one setting in the vendor app, scan again and compare. Never writes. A device that does not
         answer a range at all (some stay silent instead of returning an error) is skipped after a few tries."""

@@ -7,6 +7,8 @@ addresses HomePower already talks to are left out of the scan: an Anker battery 
 Switched off with Settings > "Find batteries automatically".
 """
 from __future__ import annotations
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
 import asyncio
 import logging
@@ -21,16 +23,21 @@ from .const import DOMAIN
 from .core.found import known_hosts, match_known, norm_serial
 from .core.serde import ValidationError
 
+if TYPE_CHECKING:
+    from homeassistant.config_entries import ConfigEntry
+
+    from .manager import HomePowerManager
+
 _LOGGER = logging.getLogger(__name__)
 FIRST_SCAN_AFTER_S = 120          # after start-up has settled (and never in the middle of it)
 SCAN_EVERY = timedelta(hours=12)
 
 
-def enabled(entry) -> bool:
+def enabled(entry: ConfigEntry[Any]) -> bool:
     return bool(entry.options.get("auto_discover", True))
 
 
-async def learn_serials(manager) -> None:
+async def learn_serials(manager: HomePowerManager) -> None:
     """Anker batteries saved before serials were kept: read each one's serial over HomePower's own connection, so a later move
     to another address is recognised."""
     coord = manager.coordinator
@@ -52,7 +59,7 @@ async def learn_serials(manager) -> None:
                 _LOGGER.debug("could not save the serial of %s", a.config.device_id, exc_info=True)
 
 
-async def scan_once(hass: HomeAssistant, entry, manager) -> list[dict]:
+async def scan_once(hass: HomeAssistant, entry: ConfigEntry[Any], manager: HomePowerManager) -> list[dict[str, Any]]:
     """One scan: put right the address of a known battery that moved, and offer the new ones. Returns what was found."""
     if not enabled(entry):
         return []
@@ -76,7 +83,7 @@ async def scan_once(hass: HomeAssistant, entry, manager) -> list[dict]:
     return found
 
 
-def async_start(hass: HomeAssistant, entry, manager) -> None:
+def async_start(hass: HomeAssistant, entry: ConfigEntry[Any], manager: HomePowerManager) -> None:
     """The first scan a little after start-up, then every 12 hours, for as long as the entry is loaded."""
 
     async def _run() -> None:
@@ -92,7 +99,7 @@ def async_start(hass: HomeAssistant, entry, manager) -> None:
         await _run()
 
     @callback
-    def _every(_now) -> None:
+    def _every(_now: datetime) -> None:
         entry.async_create_background_task(hass, _run(), "homepower battery scan")
 
     entry.async_create_background_task(hass, _first(), "homepower battery scan")

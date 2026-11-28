@@ -10,27 +10,31 @@ import logging
 
 from .core.serde import ValidationError
 
+if TYPE_CHECKING:
+    from .adapters.base import DeviceAdapter
+    from .coordinator import HomePowerCoordinator
+
 _LOGGER = logging.getLogger(__name__.rsplit(".", 1)[0] + ".manager")   # the manager's own logger
 
 
 class DetailsMixin:
     if TYPE_CHECKING:    # used here but defined on the class this is mixed into: declared for the type checker only
-        _adapters: Any
+        _adapters: dict[str, tuple[dict[str, Any], DeviceAdapter]]
         _save: Any
-        coordinator: Any
-        devices: Any
-        paused: Any
-        register_notes: Any
-        safe: Any
+        coordinator: HomePowerCoordinator | None
+        devices: dict[str, dict[str, Any]]
+        paused: bool
+        register_notes: dict[str, dict[str, str]]
+        safe: bool
 
-    async def scan_registers(self, device_id: str) -> dict:
+    async def scan_registers(self, device_id: str) -> dict[str, Any]:
         """Raw register dump of a connected battery (read-only), for the panel's register compare tool."""
         cached = self._adapters.get(device_id)
         driver = getattr(cached[1], "driver", None) if cached else None
         if driver is None or not hasattr(driver, "scan"):
             raise ValidationError("this battery does not support a register scan")
         try:
-            out = await driver.scan()
+            out: dict[str, Any] = await driver.scan()
         except Exception as err:  # noqa: BLE001 - shown to the user
             raise ValidationError(f"could not scan: {err}") from err
         from .core.anker_x1_map import describe_all
@@ -39,7 +43,7 @@ class DetailsMixin:
         out["names"] = describe_all(bool(driver.config.extra.get("house_meter")))   # Anker's register lists: names, read/write, live-or-setting
         return out
 
-    async def read_registers(self, device_id: str, addrs: list[int], names: bool = False) -> dict:
+    async def read_registers(self, device_id: str, addrs: list[int], names: bool = False) -> dict[str, Any]:
         """Current value of a few registers (read-only), for the panel's register watch."""
         cached = self._adapters.get(device_id)
         driver = getattr(cached[1], "driver", None) if cached else None
@@ -55,11 +59,11 @@ class DetailsMixin:
         except Exception as err:  # noqa: BLE001 - shown to the user
             raise ValidationError(f"could not read: {err}") from err
 
-    def _controlled(self, driver) -> bool:
+    def _controlled(self, driver: Any) -> bool:
         """HomePower is currently driving this battery (so the settings it drives are locked in the panel)."""
         return bool(driver.config.extra.get("control_enabled", True)) and not (self.paused or self.safe)
 
-    async def set_device_setting(self, device_id: str, key: str, value) -> dict:
+    async def set_device_setting(self, device_id: str, key: str, value: Any) -> dict[str, Any]:
         """Change one setting of a battery from the panel (admin only). Checked against the vendor's own ranges and rules first."""
         from .core.device_settings import apply_change, read_settings
 
@@ -90,18 +94,18 @@ class DetailsMixin:
             settings = []
         return {"settings": settings, "pending": family == "ecoflow"}
 
-    async def device_details(self, device_id: str) -> dict:
+    async def device_details(self, device_id: str) -> dict[str, Any]:
         """Everything one battery reports, for the panel's details sheet (read-only): the last reading, plus the named
         registers of an Anker battery (read now), or every value an EcoFlow battery has sent."""
         from .core.device_details import actual_fields, addresses, anker_rows, wanted
-        from .coordinator import _PRIVATE_KEY
+        from .coord_base import _PRIVATE_KEY
 
         cached = self._adapters.get(device_id)
         if device_id not in self.devices or cached is None:
             raise ValidationError("unknown battery")
         driver = getattr(cached[1], "driver", None)
         st = self.coordinator._snap.devices.get(device_id) if self.coordinator else None
-        out: dict = {"actual": actual_fields(st.actual if st else None), "registers": None, "raw": None, "changes": [], "serial": None,
+        out: dict[str, Any] = {"actual": actual_fields(st.actual if st else None), "registers": None, "raw": None, "changes": [], "serial": None,
                      "pv": self.coordinator.pv_view(device_id) if self.coordinator else None}
         if driver is None:
             return out
@@ -148,7 +152,7 @@ class DetailsMixin:
         out["serial"] = out["serial"] or conn.get("sn")
         return out
 
-    async def register_note(self, device_id: str, address: int | None = None, label: str | None = None) -> dict:
+    async def register_note(self, device_id: str, address: int | None = None, label: str | None = None) -> dict[str, Any]:
         """The user's own names for registers (what they found by watching), per battery. A label of "" removes one."""
         if device_id not in self.devices:
             raise ValidationError("unknown battery")

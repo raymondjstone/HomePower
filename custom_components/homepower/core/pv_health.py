@@ -9,7 +9,7 @@ Two checks, both comparing a string with the other strings on the same inverter,
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from statistics import median
 
@@ -25,7 +25,7 @@ BASELINE_DAYS = 3       # days needed (before the two being judged) to know a st
 MAX_STEP_S = 120        # a gap longer than this (restart, offline) is not filled in
 
 
-def _num(x) -> float:
+def _num(x: Any) -> float:
     f = float(x)
     if f != f or abs(f) == float("inf"):
         raise ValueError("not finite")
@@ -35,7 +35,7 @@ def _num(x) -> float:
 class PvHealth:
     """Per battery (inverter): which strings are used, energy per string per day, and the live "dead" timers."""
 
-    def __init__(self, data: dict | None = None) -> None:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
         self.used: dict[str, list[bool]] = {}
         self.days: dict[str, dict[str, list[float]]] = {}
         d = data if isinstance(data, dict) else {}
@@ -60,7 +60,7 @@ class PvHealth:
         # good light counts: a string that went quiet at dusk must not count the whole night as 'dead'.
         self._quiet: dict[tuple[str, int], list[float]] = {}
 
-    def dump(self) -> dict:
+    def dump(self) -> dict[str, Any]:
         return {did: {"used": self.used.get(did, [False] * 8), "days": self.days.get(did, {})}
                 for did in set(self.used) | set(self.days)}
 
@@ -71,7 +71,7 @@ class PvHealth:
         for k in [k for k in self._quiet if k[0] == did]:
             del self._quiet[k]
 
-    def observe(self, did: str, day: str, strings, now_s: float) -> None:
+    def observe(self, did: str, day: str, strings: Any, now_s: float) -> None:
         """One reading: `strings` is ((volts, amps), ...) for PV1-PV8, `day` the local date (YYYY-MM-DD)."""
         try:
             pts = [(_num(v), _num(a)) for v, a in (strings or ())][:8]
@@ -128,7 +128,7 @@ class PvHealth:
             return [None] * 8
         return [median(s[i] for s in good) for i in range(8)]
 
-    def status(self, did: str, today: str, now_s: float) -> list[dict]:
+    def status(self, did: str, today: str, now_s: float) -> list[dict[str, Any]]:
         """Per string: in use, today's energy and share, the usual share, and a state: ok / weak / dead / unused / learning."""
         used = self.used.get(did, [False] * 8)
         days = self.days.get(did, {})
@@ -144,18 +144,19 @@ class PvHealth:
                 out.append({"string": i + 1, "state": "unused"})
                 continue
             item: dict[str, Any] = {"string": i + 1, "today_wh": round(now_row[i]), "today_share": None if now_shares is None else round(now_shares[i] * 100, 1),
-                    "usual_share": None if usual[i] is None else round(usual[i] * 100, 1), "state": "ok", "note": ""}
+                    "usual_share": None if usual[i] is None else round(cast(float, usual[i]) * 100, 1), "state": "ok", "note": ""}
             quiet = self._quiet.get((did, i))
             if quiet is not None and quiet[0] >= DEAD_AFTER_S:
                 item["state"] = "dead"
                 item["note"] = f"PV{i + 1} has given almost nothing for {int(quiet[0] // 60)} min while the other strings produce"
             elif usual[i] is None:
                 item["state"] = "learning"
-            elif (base[i] is not None and base[i] >= MIN_SHARE and len(recent) == 2
-                  and all(r is not None and r[i] < WEAK_RATIO * base[i] for r in recent)):
+            elif (base[i] is not None and cast(float, base[i]) >= MIN_SHARE and len(recent) == 2
+                  and all(r is not None and r[i] < WEAK_RATIO * cast(float, base[i]) for r in recent)):
                 item["state"] = "weak"
-                item["note"] = (f"PV{i + 1} gave {recent[0][i] * 100:.0f}% and {recent[1][i] * 100:.0f}% of the solar on the last two days, "
-                                f"against its usual {base[i] * 100:.0f}% (new shading, dirt or a failing panel?)")
+                r0, r1 = cast("list[list[float]]", recent)          # both there: checked just above
+                item["note"] = (f"PV{i + 1} gave {r0[i] * 100:.0f}% and {r1[i] * 100:.0f}% of the solar on the last two days, "
+                                f"against its usual {cast(float, base[i]) * 100:.0f}% (new shading, dirt or a failing panel?)")
             out.append(item)
         return out
 

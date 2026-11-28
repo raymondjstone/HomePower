@@ -10,6 +10,7 @@ Optional control (a signed setpoint plus a mode register):
   "mode":     {"addr": 10064, "control_value": 3, "auto_value": 0}
 """
 from __future__ import annotations
+from typing import Any
 
 import json
 
@@ -20,7 +21,7 @@ class MapError(ValueError):
     pass
 
 
-def _reg(name: str, raw: dict, positive: tuple[str, str] | None = None) -> dict:
+def _reg(name: str, raw: dict[str, Any], positive: tuple[str, str] | None = None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise MapError(f"'{name}' must be an object")
     addrs = raw.get("addrs") or ([raw["addr"]] if "addr" in raw else None)
@@ -50,7 +51,7 @@ def _reg(name: str, raw: dict, positive: tuple[str, str] | None = None) -> dict:
     return out
 
 
-def parse_map(raw: dict | str | None) -> dict:
+def parse_map(raw: dict[str, Any] | str | None) -> dict[str, Any]:
     if isinstance(raw, str):
         try:
             raw = json.loads(raw) if raw.strip() else None
@@ -58,7 +59,7 @@ def parse_map(raw: dict | str | None) -> dict:
             raise MapError(f"register map is not valid JSON: {e.msg}") from e
     if not isinstance(raw, dict):
         raise MapError("a register map is required")
-    out: dict = {"word_order": raw.get("word_order", "big")}
+    out: dict[str, Any] = {"word_order": raw.get("word_order", "big")}
     if out["word_order"] not in ("big", "little"):
         raise MapError("word_order must be big or little")
     for k in ("soc", "power"):
@@ -87,5 +88,5 @@ def parse_map(raw: dict | str | None) -> dict:
     return out
 
 
-def has_control(parsed: dict) -> bool:
+def has_control(parsed: dict[str, Any]) -> bool:
     return bool(parsed.get("setpoint") and parsed.get("mode"))

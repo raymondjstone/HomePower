@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone, tzinfo
 from statistics import median
 from typing import Any
 
@@ -23,7 +23,7 @@ class Slot:
         return Slot(s, e, self.price) if e > s else None
 
 
-def _dt(v: Any, tz=None) -> datetime | None:
+def _dt(v: Any, tz: tzinfo | None = None) -> datetime | None:
     """Parse a timestamp; one without a timezone is read in `tz` (local time), else UTC.
     Always returns an aware datetime so it can be compared with 'now'."""
     if isinstance(v, str):
@@ -36,18 +36,18 @@ def _dt(v: Any, tz=None) -> datetime | None:
     return None
 
 
-def _first(d: dict, keys: tuple) -> Any:
+def _first(d: dict[str, Any], keys: tuple[Any, ...]) -> Any:
     for k in keys:
         if d.get(k) is not None:
             return d[k]
     return None
 
 
-def parse_rates(attrs: dict | None, tz=None) -> list[Slot]:
+def parse_rates(attrs: dict[str, Any] | None, tz: tzinfo | None = None) -> list[Slot]:
     """Understands the common shapes: Octopus `rates`, Nord Pool style `raw_today`/`raw_tomorrow`,
     and `today`/`tomorrow` lists of {start, end, value}."""
     attrs = attrs or {}
-    lists: list[list] = []
+    lists: list[list[Any]] = []
     if isinstance(attrs.get("rates"), list):
         lists.append(attrs["rates"])
     for a, b in (("raw_today", "raw_tomorrow"), ("today", "tomorrow")):
@@ -171,7 +171,7 @@ def _bucket(t: datetime) -> int:
     return t.hour * 2 + t.minute // 30
 
 
-def infer_offpeak(samples: list[tuple[datetime, float]], until: datetime, tz=None, min_days: float = 1.0,
+def infer_offpeak(samples: list[tuple[datetime, float]], until: datetime, tz: tzinfo | None = None, min_days: float = 1.0,
                   min_spread: float = 0.2) -> InferredTariff | None:
     """Find the recurring cheap (night) window from a price sensor's history.
 

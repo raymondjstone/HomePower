@@ -15,6 +15,8 @@ opposite way. The battery's power reading keeps its own sign: it is what Test co
 zero-import and the savings use, so flipping it too would turn every reading round and make the test flip-flop.
 """
 from __future__ import annotations
+from collections.abc import Callable
+from typing import Any, cast
 
 import logging
 import struct
@@ -39,7 +41,7 @@ MODELS = {"ES21": "STREAM 5000", "ES22": "STREAM AC 5000"}
 
 
 def _float(a: int, b: int) -> float:
-    return struct.unpack(">f", struct.pack(">HH", a & 0xFFFF, b & 0xFFFF))[0]
+    return cast(float, struct.unpack(">f", struct.pack(">HH", a & 0xFFFF, b & 0xFFFF))[0])
 
 
 def _signed16(v: int) -> int:
@@ -51,12 +53,13 @@ def _clean(x: float | None) -> float | None:
 
 
 class EcoFlowModbusDriver:
-    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None, orig: dict | None = None, on_orig=None) -> None:
+    def __init__(self, config: DeviceConfig, client: ModbusTcpClient | None = None, orig: dict[str, Any] | None = None,
+                 on_orig: Callable[[dict[str, Any] | None], None] | None = None) -> None:
         self.config = config
         c = config.extra["connection"]
         self.client = client or ModbusTcpClient(c["host"], int(c.get("port", 502)), int(c.get("unit_id", 1)))
         self.sign = -1 if c.get("reverse_sign") else 1     # the set point's sign only (see above)
-        self.last_quota: dict = {}
+        self.last_quota: dict[str, Any] = {}
         self.last_error: str | None = None
         self._beat = 0.0
         self._on_orig = on_orig                       # called when the remembered point changes, so it survives a restart or an edit
@@ -130,14 +133,14 @@ class EcoFlowModbusDriver:
         return Actual(online=True, soc=soc, power_w=batt, mode=mode, set_power_w=set_w,
                       grid_w=grid, pv_w=pv, load_w=load)
 
-    async def probe(self) -> dict:
+    async def probe(self) -> dict[str, Any]:
         try:
             flow = await self._read(REG_FLOW, FLOW_COUNT)
         except ModbusError as err:
             raise ModbusError(f"{err}. Is Modbus TCP switched on in the EcoFlow app (STREAM system > Energy management > "
                               "Third-party control)? It is off by default.") from err
         load, grid, pv, batt = (_clean(_float(flow[i], flow[i + 1])) for i in (0, 2, 4, 6))
-        info: dict = {"soc": float(flow[8]) if flow[8] <= 100 else None, "power_w": batt,
+        info: dict[str, Any] = {"soc": float(flow[8]) if flow[8] <= 100 else None, "power_w": batt,
                       "grid_w": grid, "pv_w": pv, "load_w": load, "mode": None, "model": None, "serial": None, "firmware": None,
                       "capacity_wh": None, "max_charge_w": None, "max_discharge_w": None, "min_soc": None, "control": True}
         for key, offset, count, fn in (
@@ -162,12 +165,12 @@ class EcoFlowModbusDriver:
     async def apply(self, desired: Desired) -> None:
         caps = self.config.caps
         try:
-            block = await self._read(REG_CONTROL_POINT, 5)          # control point, then the four target powers
+            block: list[int | None] = list(await self._read(REG_CONTROL_POINT, 5))          # control point, then the four target powers
         except ModbusError as err:
             if err.code is None:
                 raise
-            block = await self._read(REG_CONTROL_POINT, 2) + [None, None, None]     # the other targets: read one by one if needed
-        point = block[0]
+            block = cast("list[int | None]", await self._read(REG_CONTROL_POINT, 2)) + [None, None, None]     # the other targets: read one by one if needed
+        point = cast(int, block[0])             # always read: only the target powers may be missing
         if desired.mode is not Mode.AUTO or point == POINT_BATTERY:
             try:
                 await self._heartbeat(force=True, strict=True)

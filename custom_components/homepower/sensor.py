@@ -1,5 +1,6 @@
 """HomePower sensors: whole-system totals plus per-battery target/decision."""
 from __future__ import annotations
+from typing import Any, cast
 
 import logging
 
@@ -12,6 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coord_base import MONEY_EXPORT, MONEY_SAVED
 from .coordinator import HomePowerCoordinator
+from .core.models import Actual
 from .entity import HomePowerEntity, battery_device_name, battery_identifier, find_device
 
 PARALLEL_UPDATES = 0    # read-only: the coordinator does the fetching
@@ -87,12 +89,12 @@ class BatteryFlow(_AnyBattery):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
 
-    def __init__(self, coord, entry) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coord, entry)
         self._attr_unique_id = f"{entry.entry_id}_battery_power"
 
     @property
-    def native_value(self):
+    def native_value(self) -> int | None:
         vals = [a.power_w for a in self.coordinator.shown_actuals().values() if a.online and a.power_w is not None]
         return round(sum(vals)) if vals else None
 
@@ -103,12 +105,12 @@ class StoredEnergy(_AnyBattery):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 
-    def __init__(self, coord, entry) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coord, entry)
         self._attr_unique_id = f"{entry.entry_id}_stored_energy"
 
     @property
-    def native_value(self):
+    def native_value(self) -> float | None:
         total, seen = 0.0, False
         for a in self.coordinator.adapters:
             act = self.coordinator.shown_actual(a.config.device_id)
@@ -124,14 +126,14 @@ class BatteryTarget(_Base):
     _attr_translation_key = "target"
     _unrecorded_attributes = frozenset({MATCH_ALL})   # they change every cycle and have sensors of their own: keep the database small
 
-    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, device_id: str, name: str) -> None:
         super().__init__(coord, entry)
         self._did = device_id
         self._on_battery(device_id)
         self._attr_unique_id = f"{entry.entry_id}_{device_id}_target"
 
     @property
-    def native_value(self):
+    def native_value(self) -> str | None:
         st = self.coordinator._snap.devices.get(self._did)
         if not st:
             return None
@@ -143,7 +145,7 @@ class BatteryTarget(_Base):
         return st.desired.mode.value if st.desired else "unmanaged"
 
     @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         v = self.coordinator.devices_view().get(self._did, {})
         return {k: v.get(k) for k in ("decision", "desired_power_w", "mode", "soc", "power_w", "online", "stale",
                                      "active_schedules", "override", "last_error", "reason")}
@@ -157,25 +159,25 @@ class GridPower(_Base):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
 
-    def __init__(self, coord, entry) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coord, entry)
         self._attr_unique_id = f"{entry.entry_id}_grid_power"
 
     @property
-    def native_value(self):
+    def native_value(self) -> int | None:
         v = self.coordinator.last_grid
         return None if v is None else round(v)
 
 
 class _BatteryBase(_Base):
-    def __init__(self, coord, entry, device_id: str, name: str, suffix: str, translation_key: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, device_id: str, name: str, suffix: str, translation_key: str) -> None:
         super().__init__(coord, entry)
         self._did = device_id
         self._on_battery(device_id)
         self._attr_translation_key = translation_key      # the name is in strings.json (entity.sensor.<key>.name)
         self._attr_unique_id = f"{entry.entry_id}_{device_id}_{suffix}"
 
-    def _actual(self):
+    def _actual(self) -> Actual | None:
         return self.coordinator.shown_actual(self._did)     # the last reading while the readings are only stale
 
 
@@ -194,11 +196,11 @@ class BatterySoc(_LiveReading):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
 
-    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, device_id: str, name: str) -> None:
         super().__init__(coord, entry, device_id, name, "soc", "charge")
 
     @property
-    def native_value(self):
+    def native_value(self) -> float | None:
         a = self._actual()
         return None if a is None or a.soc is None else round(a.soc, 1)
 
@@ -210,11 +212,11 @@ class BatteryDevicePower(_LiveReading):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
 
-    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, device_id: str, name: str) -> None:
         super().__init__(coord, entry, device_id, name, "power", "battery_device_power")
 
     @property
-    def native_value(self):
+    def native_value(self) -> int | None:
         a = self._actual()
         return None if a is None or a.power_w is None else round(a.power_w)
 
@@ -228,11 +230,11 @@ class BatterySolarPower(_LiveReading):
     _attr_device_class = SensorDeviceClass.POWER
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
-    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, device_id: str, name: str) -> None:
         super().__init__(coord, entry, device_id, name, "solar", "solar_power")
 
     @property
-    def native_value(self):
+    def native_value(self) -> int | None:
         a = self._actual()
         return None if a is None or a.pv_w is None else round(a.pv_w)
 
@@ -244,11 +246,11 @@ class PvTotal(_LiveReading):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfPower.WATT
 
-    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, device_id: str, name: str) -> None:
         super().__init__(coord, entry, device_id, name, "pv_total", "pv_total")
 
     @property
-    def native_value(self):
+    def native_value(self) -> int | None:
         a = self._actual()
         return None if a is None or a.pv_total_w is None else round(a.pv_total_w)
 
@@ -261,7 +263,7 @@ class PvString(_LiveReading):
               "power": (SensorDeviceClass.POWER, UnitOfPower.WATT, 0)}
     _attr_state_class = SensorStateClass.MEASUREMENT
 
-    def __init__(self, coord, entry, device_id: str, name: str, index: int, kind: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, device_id: str, name: str, index: int, kind: str) -> None:
         super().__init__(coord, entry, device_id, name, f"pv{index + 1}_{kind}", f"pv_string_{kind}")
         self._attr_translation_placeholders = {"index": str(index + 1)}
         self._i, self._kind = index, kind
@@ -271,12 +273,13 @@ class PvString(_LiveReading):
             self._attr_entity_category = EntityCategory.DIAGNOSTIC
 
     @property
-    def native_value(self):
+    def native_value(self) -> float | None:
         a = self._actual()
         if a is None or len(a.pv_strings) <= self._i:
             return None
         v, amps = a.pv_strings[self._i]
-        return round({"voltage": v, "current": amps, "power": v * amps}[self._kind], self._digits)
+        digits: int = self._digits
+        return round({"voltage": v, "current": amps, "power": v * amps}[self._kind], digits)
 
 
 class EnergyTotal(_Base):
@@ -287,7 +290,7 @@ class EnergyTotal(_Base):
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coord, entry, key: str, translation_key: str, device_id: str | None = None) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, key: str, translation_key: str, device_id: str | None = None) -> None:
         super().__init__(coord, entry)
         if device_id is not None:
             self._on_battery(device_id)
@@ -296,7 +299,7 @@ class EnergyTotal(_Base):
         self._attr_unique_id = f"{entry.entry_id}_energy_{key.replace(':', '_')}"
 
     @property
-    def native_value(self):
+    def native_value(self) -> float:
         return round(self.coordinator.meter.get(self._key), 3)
 
 
@@ -305,18 +308,18 @@ class Savings(_Base):
 
     _attr_state_class = None
 
-    def __init__(self, coord, entry, period: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, period: str) -> None:
         super().__init__(coord, entry)
         self._period = period
         self._attr_translation_key = "savings_today" if period == "today" else "savings_month"
         self._attr_unique_id = f"{entry.entry_id}_savings_{period}"
 
     @property
-    def native_unit_of_measurement(self):
+    def native_unit_of_measurement(self) -> str:
         return self.coordinator.settings.currency
 
     @property
-    def native_value(self):
+    def native_value(self) -> float:
         from homeassistant.util import dt as dt_util
 
         now = dt_util.now()
@@ -333,34 +336,34 @@ class MoneyTotal(_Base):
     _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coord, entry, key: str, translation_key: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, key: str, translation_key: str) -> None:
         super().__init__(coord, entry)
         self._key = key
         self._attr_translation_key = translation_key
         self._attr_unique_id = f"{entry.entry_id}_{key.replace(':', '_')}_total"
 
     @property
-    def native_unit_of_measurement(self):
+    def native_unit_of_measurement(self) -> str:
         return getattr(self.coordinator.hass.config, "currency", None) or "GBP"
 
     @property
-    def native_value(self):
+    def native_value(self) -> float:
         return round(self.coordinator.meter.totals.get(self._key, 0.0), 4) + 0.0
 
 
 class PriceNow(_Base):
     _attr_translation_key = "price_now"
 
-    def __init__(self, coord, entry) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coord, entry)
         self._attr_unique_id = f"{entry.entry_id}_price_now"
 
     @property
-    def native_unit_of_measurement(self):
+    def native_unit_of_measurement(self) -> str:
         return f"{self.coordinator.settings.currency}/kWh"
 
     @property
-    def native_value(self):
+    def native_value(self) -> float | None:
         from homeassistant.util import dt as dt_util
 
         p = self.coordinator._price_now(self.coordinator._rates(), dt_util.now())
@@ -374,11 +377,11 @@ class Efficiency(_BatteryBase):
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coord, entry, device_id: str, name: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, device_id: str, name: str) -> None:
         super().__init__(coord, entry, device_id, name, "efficiency", "efficiency")
 
     @property
-    def native_value(self):
+    def native_value(self) -> float | None:
         m = self.coordinator.meter
         cin = m.get(f"bat:{self._did}_in")
         return round(100 * m.get(f"bat:{self._did}_out") / cin, 1) if cin >= 1.0 else None   # needs >= 1 kWh of history
@@ -391,11 +394,11 @@ class Cycles(_BatteryBase):
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_native_unit_of_measurement = "cycles"
 
-    def __init__(self, coord, entry, device_id: str, name: str, capacity_wh: int) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, device_id: str, name: str, capacity_wh: int) -> None:
         super().__init__(coord, entry, device_id, name, "cycles", "cycles")
 
     @property
-    def native_value(self):
+    def native_value(self) -> float:
         a = next((x for x in self.coordinator.adapters if x.config.device_id == self._did), None)
         cap_kwh = max(a.config.caps.capacity_wh if a else 1, 1) / 1000   # follows edits to the capacity
         return round(self.coordinator.meter.get(f"bat:{self._did}_out") / cap_kwh, 1)
@@ -410,19 +413,19 @@ class HomeBattery(_Base):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = PERCENTAGE
 
-    def __init__(self, coord, entry) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coord, entry)
         self._attr_unique_id = f"{entry.entry_id}_home_battery"
 
-    def _fig(self) -> dict:
+    def _fig(self) -> dict[str, Any]:
         return self.coordinator._combined(self.coordinator.shown_actuals())
 
     @property
-    def native_value(self):
-        return self._fig()["soc"]
+    def native_value(self) -> float | None:
+        return cast("float | None", self._fig()["soc"])
 
     @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         fig = self._fig()
         v = self.coordinator.devices_view()
         return {**fig, "homepower": True,
@@ -437,15 +440,15 @@ class DailyShare(_Base):
 
     _attr_device_class = None
     _attr_native_unit_of_measurement = PERCENTAGE
-    def __init__(self, coord, entry, key: str) -> None:
+    def __init__(self, coord: HomePowerCoordinator, entry: ConfigEntry, key: str) -> None:
         super().__init__(coord, entry)
         self._key = key
         self._attr_translation_key = key
         self._attr_unique_id = f"{entry.entry_id}_{key}_today"
 
     @property
-    def native_value(self):
+    def native_value(self) -> float | None:
         from homeassistant.util import dt as dt_util
 
         day = dt_util.now().strftime("%Y-%m-%d")
-        return getattr(self.coordinator.daily, self._key)(day)
+        return cast("float | None", getattr(self.coordinator.daily, self._key)(day))

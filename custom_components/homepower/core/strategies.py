@@ -18,7 +18,7 @@ def num(s: str | None) -> float | None:
     if s in BAD:
         return None
     try:
-        v = float(s)  # type: ignore[arg-type]
+        v = float(s)  # type: ignore[arg-type,unused-ignore]
     except (TypeError, ValueError):
         return None
     return v if v == v and abs(v) != float("inf") else None          # "nan" / "inf" are no reading
@@ -38,25 +38,25 @@ def _domain(entity_id: str, own: str, helper: str) -> str:
     return helper if str(entity_id).startswith(helper + ".") else own
 
 
-def _number(ent: dict, key: str, value: int) -> list[Command]:
+def _number(ent: dict[str, Any], key: str, value: int) -> list[Command]:
     return [(_domain(ent[key], "number", "input_number"), "set_value", {"entity_id": ent[key], "value": value})] if ent.get(key) else []
 
 
-def _select(ent: dict, key: str, option: str | None) -> list[Command]:
+def _select(ent: dict[str, Any], key: str, option: str | None) -> list[Command]:
     return [(_domain(ent[key], "select", "input_select"), "select_option", {"entity_id": ent[key], "option": option})] if ent.get(key) and option else []
 
 
-def _switch(ent: dict, key: str, on: bool) -> list[Command]:
+def _switch(ent: dict[str, Any], key: str, on: bool) -> list[Command]:
     return [("switch", "turn_on" if on else "turn_off", {"entity_id": ent[key]})] if ent.get(key) else []
 
 
-def _power(extra: dict, st: dict, key: str = "power") -> float | None:
+def _power(extra: dict[str, Any], st: dict[str, Any], key: str = "power") -> float | None:
     p = num(st.get(key))
     return -p if p is not None and extra.get("invert_power") else p  # normalise: + charging
 
 
 # ---------------------------------------------------------------- generic
-def _interpret_generic(extra, caps, st) -> Actual:
+def _interpret_generic(extra: dict[str, Any], caps: Capabilities, st: dict[str, str | None]) -> Actual:
     if st.get("mode") in BAD:
         return Actual(online=False)
     # One select option may stand for two of our modes (e.g. "Self-consumption" for both Auto and Hold). Read back, it says
@@ -70,7 +70,7 @@ def _interpret_generic(extra, caps, st) -> Actual:
     )
 
 
-def _plan_generic(extra, caps, d) -> list[Command]:
+def _plan_generic(extra: dict[str, Any], caps: Capabilities, d: Desired) -> list[Command]:
     ent, mm = extra["entities"], extra["mode_map"]
     out: list[Command] = []  # limits first, mode last, so a mode flip never runs on stale setpoints
     if d.reserve_soc is not None:
@@ -86,11 +86,11 @@ def _plan_generic(extra, caps, d) -> list[Command]:
 _IMPL = {"generic": (_interpret_generic, _plan_generic)}
 
 
-def interpret(extra: dict, caps: Capabilities, states: dict[str, str | None]) -> Actual:
+def interpret(extra: dict[str, Any], caps: Capabilities, states: dict[str, str | None]) -> Actual:
     return _IMPL[extra.get("strategy", "generic")][0](extra, caps, states)
 
 
-def plan(extra: dict, caps: Capabilities, desired: Desired) -> list[Command]:
+def plan(extra: dict[str, Any], caps: Capabilities, desired: Desired) -> list[Command]:
     if desired.mode not in caps.supported_modes:
         raise ValueError(f"mode '{desired.mode.value}' is not supported by this battery")
     return _IMPL[extra.get("strategy", "generic")][1](extra, caps, desired)

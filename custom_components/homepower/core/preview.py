@@ -1,6 +1,8 @@
 """Look ahead: what will each battery do over the next hours, and where do schedules clash?"""
 from __future__ import annotations
+from typing import Any
 
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -19,7 +21,7 @@ class Segment:
     shared_w: int | None = None    # a total the schedule shares between its batteries (each one's part depends on charge then)
 
 
-def _steps(start: datetime, hours: int, step_min: int):
+def _steps(start: datetime, hours: int, step_min: int) -> Iterator[tuple[datetime, datetime]]:
     """(from, to) pieces of the look-ahead, cut on the clock (quarter hours) and not counted from the minute it was asked
     for: otherwise a 23:30 start asked about at 08:08 would show as 23:38. Counted in real time and given back on the home's
     clock, so the hour the clocks repeat is walked twice and the one they skip not at all."""
@@ -35,13 +37,14 @@ def _steps(start: datetime, hours: int, step_min: int):
 
 def preview(
     schedules: list[ScheduleEntry], device_ids: list[str], start: datetime, hours: int = 24, step_min: int = 15,
-    condition_ok=None, away: bool = False, allocs: list[Alloc] | None = None,
+    condition_ok: Callable[[str], bool] | None = None, away: bool = False, allocs: list[Alloc] | None = None,
 ) -> dict[str, list[Segment]]:
     """Per battery, merged segments of schedule (or planned goal) behaviour. Gaps mean 'no instruction'."""
     out: dict[str, list[Segment]] = {d: [] for d in device_ids}
     for t, nxt in _steps(start, hours, step_min):
         for did in device_ids:
             e = resolve_entry(schedules, did, t, condition_ok, away)
+            key: tuple[str, int | None, str, int | None] | None
             if e is not None:
                 shared = e.total_power_w if e.desired.mode in (Mode.CHARGE, Mode.DISCHARGE) else None
                 key = (e.desired.mode.value, None if shared else e.desired.power_w, f"schedule {e.id}", shared or None)
@@ -60,10 +63,10 @@ def preview(
 
 def find_conflicts(
     schedules: list[ScheduleEntry], device_ids: list[str], start: datetime, hours: int = 48, step_min: int = 15,
-    condition_ok=None, away: bool = False,
-) -> list[dict]:
+    condition_ok: Callable[[str], bool] | None = None, away: bool = False,
+) -> list[dict[str, Any]]:
     """Times where two enabled schedules tie for the top priority but ask for different things."""
-    found: dict[tuple, dict] = {}
+    found: dict[tuple[Any, ...], dict[str, Any]] = {}
     for t, nxt in _steps(start, hours, step_min):
         for did in device_ids:
             hits = [
